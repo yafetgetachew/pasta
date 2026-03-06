@@ -436,9 +436,7 @@ impl LauncherView {
         self.revealed_secret_id = Some(item.id);
         self.reveal_until = Some(Instant::now() + Duration::from_secs(12));
 
-        if copy_after
-            && let Some(ix) = self.items.iter().position(|i| i.id == item.id)
-        {
+        if copy_after && let Some(ix) = self.items.iter().position(|i| i.id == item.id) {
             self.copy_index_to_clipboard(ix, cx);
             return;
         }
@@ -529,8 +527,8 @@ impl LauncherView {
             }
         }
 
-        let quantized_height = (self.window_height / WINDOW_HEIGHT_RESIZE_STEP).round()
-            * WINDOW_HEIGHT_RESIZE_STEP;
+        let quantized_height =
+            (self.window_height / WINDOW_HEIGHT_RESIZE_STEP).round() * WINDOW_HEIGHT_RESIZE_STEP;
         self.window_height = quantized_height.clamp(LAUNCHER_HEIGHT, LAUNCHER_EXPANDED_HEIGHT);
 
         let needs_resize =
@@ -645,6 +643,43 @@ impl LauncherView {
             }
             Err(err) => {
                 eprintln!("warning: failed to delete clipboard item: {err}");
+            }
+        }
+    }
+
+    fn mark_selected_item_as_secret(&mut self, cx: &mut Context<Self>) {
+        let Some(item_id) = self.items.get(self.selected_index).map(|item| item.id) else {
+            return;
+        };
+
+        match self.storage.mark_item_as_secret(item_id) {
+            Ok(true) => {
+                self.revealed_secret_id = None;
+                self.reveal_until = None;
+                self.last_reveal_second_bucket = None;
+
+                let previous_index = self.selected_index;
+                self.refresh_items();
+                if let Some(ix) = self.items.iter().position(|entry| entry.id == item_id) {
+                    self.selected_index = ix;
+                } else if !self.items.is_empty() {
+                    self.selected_index = previous_index.min(self.items.len().saturating_sub(1));
+                } else {
+                    self.selected_index = 0;
+                }
+                if !self.items.is_empty() {
+                    self.results_scroll.scroll_to_item(self.selected_index);
+                }
+                self.selection_changed_at = Instant::now();
+                show_macos_notification("Pasta", "Item marked as secret.");
+                cx.notify();
+            }
+            Ok(false) => {
+                show_macos_notification("Pasta", "Item is already protected.");
+            }
+            Err(err) => {
+                eprintln!("warning: failed to mark item as secret: {err}");
+                show_macos_notification("Pasta", "Failed to mark item as secret.");
             }
         }
     }
@@ -794,10 +829,26 @@ impl LauncherView {
         let no_modifiers = !modifiers.modified();
         let platform_only =
             modifiers.platform && !modifiers.control && !modifiers.alt && !modifiers.function;
+        let option_navigation =
+            modifiers.alt && !modifiers.platform && !modifiers.control && !modifiers.function;
 
         if self.tag_editor_target_id.is_some() {
             self.handle_tag_editor_keystroke(event, cx);
             return;
+        }
+
+        if option_navigation {
+            match key {
+                "j" | ";" | "semicolon" => {
+                    self.move_selection(1, cx);
+                    return;
+                }
+                "k" | "l" => {
+                    self.move_selection(-1, cx);
+                    return;
+                }
+                _ => {}
+            }
         }
 
         if key == "escape" || key == "esc" {
@@ -837,6 +888,15 @@ impl LauncherView {
                 && !modifiers.function =>
             {
                 self.reveal_and_copy_selected_secret(cx);
+                return;
+            }
+            "s" if modifiers.platform
+                && modifiers.shift
+                && !modifiers.control
+                && !modifiers.alt
+                && !modifiers.function =>
+            {
+                self.mark_selected_item_as_secret(cx);
                 return;
             }
             "h" if modifiers.platform
@@ -932,18 +992,14 @@ impl Render for LauncherView {
         };
         let query_is_selected = self.query_select_all && !self.query.is_empty();
         let tag_editor_open = self.tag_editor_target_id.is_some();
-        let selection_stable = Instant::now()
-            .duration_since(self.selection_changed_at)
+        let selection_stable = Instant::now().duration_since(self.selection_changed_at)
             >= Duration::from_millis(SELECTION_EXPAND_DWELL_MS);
         let selected_should_expand = selection_stable
             && !tag_editor_open
-            && self
-                .items
-                .get(self.selected_index)
-                .is_some_and(|item| {
-                    !(item.item_type == ClipboardItemType::Password && self.is_secret_masked(item.id))
-                        && preview_would_truncate(&item.content)
-                });
+            && self.items.get(self.selected_index).is_some_and(|item| {
+                !(item.item_type == ClipboardItemType::Password && self.is_secret_masked(item.id))
+                    && preview_would_truncate(&item.content)
+            });
         let target_height = if selected_should_expand {
             LAUNCHER_EXPANDED_HEIGHT
         } else {
@@ -953,7 +1009,8 @@ impl Render for LauncherView {
             self.window_height_from = self.window_height;
             self.window_height_target = target_height;
             self.window_height_started_at = Instant::now();
-            self.window_height_duration = Duration::from_millis(WINDOW_HEIGHT_ANIMATION_DURATION_MS);
+            self.window_height_duration =
+                Duration::from_millis(WINDOW_HEIGHT_ANIMATION_DURATION_MS);
         }
         let expansion_range = (LAUNCHER_EXPANDED_HEIGHT - LAUNCHER_HEIGHT).max(1.0);
         let expansion_progress =
@@ -999,7 +1056,8 @@ impl Render for LauncherView {
                 }
                 let is_masked_secret =
                     item.item_type == ClipboardItemType::Password && self.is_secret_masked(item.id);
-                let is_selected_expanded = selected_should_expand && is_selected && !is_masked_secret;
+                let is_selected_expanded =
+                    selected_should_expand && is_selected && !is_masked_secret;
                 let item_preview = if is_masked_secret {
                     masked_secret_preview(&item.content)
                 } else if is_selected_expanded {
@@ -1125,30 +1183,28 @@ impl Render for LauncherView {
                             .child("OPTION+SPACE"),
                     ),
             )
-            .child(
-                if query_is_selected {
-                    div().w_full().child(
-                        div()
-                            .px_1()
-                            .rounded_md()
-                            .bg(scale_alpha(
-                                palette.selected_bg,
-                                if palette.dark { 0.95 } else { 0.75 },
-                            ))
-                            .text_lg()
-                            .font_weight(FontWeight::NORMAL)
-                            .text_color(palette.row_text)
-                            .child(query_display),
-                    )
-                } else {
+            .child(if query_is_selected {
+                div().w_full().child(
                     div()
-                        .w_full()
+                        .px_1()
+                        .rounded_md()
+                        .bg(scale_alpha(
+                            palette.selected_bg,
+                            if palette.dark { 0.95 } else { 0.75 },
+                        ))
                         .text_lg()
                         .font_weight(FontWeight::NORMAL)
-                        .text_color(query_color)
-                            .child(query_display)
-                },
-            );
+                        .text_color(palette.row_text)
+                        .child(query_display),
+                )
+            } else {
+                div()
+                    .w_full()
+                    .text_lg()
+                    .font_weight(FontWeight::NORMAL)
+                    .text_color(query_color)
+                    .child(query_display)
+            });
 
         if let Some(item_id) = self.tag_editor_target_id {
             let input_display = if self.tag_editor_input.is_empty() {
@@ -1175,7 +1231,10 @@ impl Render for LauncherView {
                 div()
                     .w_full()
                     .p_2()
-                    .bg(scale_alpha(palette.row_hover_bg, if palette.dark { 0.95 } else { 0.9 }))
+                    .bg(scale_alpha(
+                        palette.row_hover_bg,
+                        if palette.dark { 0.95 } else { 0.9 },
+                    ))
                     .border_1()
                     .border_color(palette.selected_border)
                     .rounded_lg()
@@ -1251,7 +1310,7 @@ impl Render for LauncherView {
                             div()
                                 .text_xs()
                                 .text_color(palette.muted_text)
-                                .child("⌘T add tags • ⌘⇧T remove tags • ⌘D delete • Esc close • ⌘Q quit • ⌘H hide help"),
+                                .child("⌥J/⌥K/⌥L/⌥; navigate • ⌘⇧S mark secret • ⌘T add tags • ⌘⇧T remove tags • ⌘D delete • Esc close • ⌘Q quit • ⌘H hide help"),
                         )
                 } else {
                     div()
@@ -1596,7 +1655,10 @@ fn tag_chip_color(label: &str, dark: bool) -> gpui::Hsla {
 #[cfg(target_os = "macos")]
 fn masked_secret_preview(content: &str) -> String {
     let width = content.chars().count().clamp(8, 32);
-    format!("{}  (hidden secret, press Enter or ⌘R to reveal)", "•".repeat(width))
+    format!(
+        "{}  (hidden secret, press Enter or ⌘R to reveal)",
+        "•".repeat(width)
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -2670,7 +2732,13 @@ fn setup_status_item(cx: &mut App) {
         syntax_parent.setSubmenu_(syntax_menu);
         menu.addItem_(syntax_parent);
 
-        let secret_parent = menu_item("Secret Copy Auto-Clear", "", handler, selector("menuAction:"), -1);
+        let secret_parent = menu_item(
+            "Secret Copy Auto-Clear",
+            "",
+            handler,
+            selector("menuAction:"),
+            -1,
+        );
         let secret_menu = NSMenu::new(nil);
         let secret_on = menu_item(
             "Enabled (30s)",
@@ -2999,7 +3067,10 @@ fn spawn_launcher_transition_loop(cx: &mut App) {
                         let transition_active = view.transition_running();
 
                         if !transition_active {
-                            if appearance_changed || resized || reveal_changed || reveal_tick_changed
+                            if appearance_changed
+                                || resized
+                                || reveal_changed
+                                || reveal_tick_changed
                             {
                                 cx.notify();
                             }
@@ -3137,7 +3208,9 @@ fn spawn_clipboard_watcher(cx: &mut App) {
                             .upsert_clipboard_item_with_hint(&snapshot.text, true)
                             .unwrap_or(false)
                     } else {
-                        storage.upsert_clipboard_item(&snapshot.text).unwrap_or(false)
+                        storage
+                            .upsert_clipboard_item(&snapshot.text)
+                            .unwrap_or(false)
                     };
                     if inserted {
                         let _ = cx.update(|cx| {

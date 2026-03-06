@@ -125,7 +125,13 @@ impl ClipboardStorage {
                     "UPDATE clipboard_items
                      SET item_type = ?1, content = ?2, is_encrypted = 1, tags = ?3, created_at = ?4
                      WHERE id = ?5",
-                    params![forced_type.as_str(), encrypted_content, forced_tags, created_at, existing_id],
+                    params![
+                        forced_type.as_str(),
+                        encrypted_content,
+                        forced_tags,
+                        created_at,
+                        existing_id
+                    ],
                 )?;
                 tx.commit()?;
                 return Ok(true);
@@ -204,7 +210,8 @@ impl ClipboardStorage {
                 created_at,
             };
 
-            if effective_query.is_empty() || record_matches_query(&record, &effective_query, tag_only)
+            if effective_query.is_empty()
+                || record_matches_query(&record, &effective_query, tag_only)
             {
                 output.push(record);
                 if output.len() >= limit {
@@ -220,6 +227,76 @@ impl ClipboardStorage {
         let conn = self.open()?;
         let deleted = conn.execute("DELETE FROM clipboard_items WHERE id = ?1", params![id])?;
         Ok(deleted > 0)
+    }
+
+    pub fn mark_item_as_secret(&self, id: i64) -> Result<bool> {
+        let mut conn = self.open()?;
+        let tx = conn.transaction()?;
+
+        let existing: Option<(String, i64, String, String)> = tx
+            .query_row(
+                "SELECT content, is_encrypted, item_type, tags FROM clipboard_items WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+
+        let Some((stored_content, is_encrypted, existing_item_type, existing_tags_json)) = existing
+        else {
+            tx.rollback()?;
+            return Ok(false);
+        };
+
+        let plaintext = if is_encrypted == 1 {
+            self.crypto.decrypt(&stored_content)?
+        } else {
+            stored_content
+        };
+
+        let (forced_type, forced_tags) = classify_clipboard_text_with_hint(&plaintext, true);
+        let existing_tags: Vec<String> =
+            serde_json::from_str(&existing_tags_json).unwrap_or_default();
+
+        let mut merged = forced_tags;
+        let mut seen: HashSet<String> = merged.iter().map(|tag| tag.to_ascii_lowercase()).collect();
+
+        for tag in existing_tags {
+            let lower = tag.to_ascii_lowercase();
+            if matches!(
+                lower.as_str(),
+                "text" | "code" | "command" | "type:text" | "type:code" | "type:command"
+            ) {
+                continue;
+            }
+            if seen.insert(lower) {
+                merged.push(tag);
+            }
+        }
+
+        merged.sort_unstable_by_key(|tag| tag.to_ascii_lowercase());
+        let merged_tags_json = serde_json::to_string(&merged)?;
+
+        let should_update = existing_item_type != forced_type.as_str() || is_encrypted != 1;
+        if !should_update && existing_tags_json == merged_tags_json {
+            tx.rollback()?;
+            return Ok(false);
+        }
+
+        let encrypted_content = self.crypto.encrypt(&plaintext)?;
+        tx.execute(
+            "UPDATE clipboard_items
+             SET item_type = ?1, content = ?2, is_encrypted = 1, tags = ?3
+             WHERE id = ?4",
+            params![
+                forced_type.as_str(),
+                encrypted_content,
+                merged_tags_json,
+                id,
+            ],
+        )?;
+
+        tx.commit()?;
+        Ok(true)
     }
 
     pub fn add_custom_tags(&self, id: i64, raw_tags: &[String]) -> Result<bool> {
@@ -241,7 +318,8 @@ impl ClipboardStorage {
         };
 
         let mut tags: Vec<String> = serde_json::from_str(&existing_tags_json).unwrap_or_default();
-        let mut existing: HashSet<String> = tags.iter().map(|tag| tag.to_ascii_lowercase()).collect();
+        let mut existing: HashSet<String> =
+            tags.iter().map(|tag| tag.to_ascii_lowercase()).collect();
 
         let mut changed = false;
         for raw in raw_tags {
@@ -408,7 +486,10 @@ fn classify_clipboard_text(text: &str) -> (ClipboardItemType, Vec<String>) {
     classify_clipboard_text_with_hint(text, false)
 }
 
-fn classify_clipboard_text_with_hint(text: &str, force_secret: bool) -> (ClipboardItemType, Vec<String>) {
+fn classify_clipboard_text_with_hint(
+    text: &str,
+    force_secret: bool,
+) -> (ClipboardItemType, Vec<String>) {
     let mut tags = Vec::new();
 
     let item_type = if looks_like_password(text) {
@@ -462,8 +543,7 @@ fn classify_clipboard_text_with_hint(text: &str, force_secret: bool) -> (Clipboa
     if force_secret {
         enriched.retain(|tag| {
             let lower = tag.to_ascii_lowercase();
-            !matches!(lower.as_str(), "text" | "code" | "command")
-                && !lower.starts_with("type:")
+            !matches!(lower.as_str(), "text" | "code" | "command") && !lower.starts_with("type:")
         });
         enriched.insert("password".to_owned());
         enriched.insert("type:password".to_owned());
@@ -848,32 +928,20 @@ fn record_matches_query(record: &ClipboardRecord, query: &str, tag_only: bool) -
 }
 
 fn record_matches_tag(record: &ClipboardRecord, query: &str) -> bool {
-    if record.item_type.as_str().contains(query) {
+    let normalized = query.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
         return true;
     }
 
-    if record.item_type == ClipboardItemType::Password && query_matches_secret_intent(query) {
+    if record.item_type == ClipboardItemType::Password && query_matches_secret_intent(&normalized) {
         return true;
     }
 
-    if record
-        .tags
-        .iter()
-        .any(|tag| tag.to_lowercase().contains(query))
-    {
-        return true;
-    }
-
-    if let Some(language) = detect_language_tag(record.item_type, &record.content) {
-        if language.contains(query) {
-            return true;
-        }
-        if format!("lang:{language}").contains(query) {
-            return true;
-        }
-    }
-
-    false
+    searchable_tag_terms(record).into_iter().any(|candidate| {
+        candidate.contains(&normalized)
+            || (normalized.len() >= 3 && normalized.contains(&candidate) && candidate.len() >= 2)
+            || fuzzy_token_match(&normalized, &candidate)
+    })
 }
 
 fn query_matches_secret_intent(query: &str) -> bool {
@@ -883,12 +951,153 @@ fn query_matches_secret_intent(query: &str) -> bool {
     }
 
     const SECRET_ALIASES: [&str; 8] = [
-        "pass", "password", "secret", "token", "credential", "api_key", "apikey", "pwd",
+        "pass",
+        "password",
+        "secret",
+        "token",
+        "credential",
+        "api_key",
+        "apikey",
+        "pwd",
     ];
 
     SECRET_ALIASES
         .iter()
         .any(|alias| alias.starts_with(normalized) || normalized.starts_with(alias))
+}
+
+fn searchable_tag_terms(record: &ClipboardRecord) -> HashSet<String> {
+    let mut terms = HashSet::new();
+    insert_item_type_aliases(record.item_type, &mut terms);
+
+    for raw in &record.tags {
+        insert_tag_variants(raw, &mut terms);
+    }
+
+    if let Some(language) = detect_language_tag(record.item_type, &record.content) {
+        terms.insert(format!("lang:{language}"));
+        insert_language_aliases(language, &mut terms);
+    }
+
+    if terms.contains("multiline") {
+        terms.insert("multi".to_owned());
+    }
+    if terms.contains("singleline") {
+        terms.insert("single".to_owned());
+    }
+    if terms.contains("sensitive") || terms.contains("secret") || terms.contains("pass") {
+        terms.insert("secret".to_owned());
+        terms.insert("pass".to_owned());
+        terms.insert("password".to_owned());
+    }
+    if terms.contains("command") || terms.contains("shell") {
+        terms.insert("cmd".to_owned());
+    }
+    if terms.contains("yaml") {
+        terms.insert("yml".to_owned());
+    }
+    if terms.contains("markdown") {
+        terms.insert("md".to_owned());
+    }
+    if terms.contains("typescript") {
+        terms.insert("ts".to_owned());
+    }
+    if terms.contains("javascript") {
+        terms.insert("js".to_owned());
+    }
+    if terms.contains("python") {
+        terms.insert("py".to_owned());
+    }
+    if terms.contains("cpp") {
+        terms.insert("c++".to_owned());
+        terms.insert("cxx".to_owned());
+    }
+
+    terms
+}
+
+fn insert_tag_variants(raw: &str, terms: &mut HashSet<String>) {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return;
+    }
+
+    terms.insert(normalized.clone());
+    for token in tokenize_search_terms(&normalized) {
+        terms.insert(token.to_owned());
+    }
+
+    if let Some(stripped) = normalized.strip_prefix("type:")
+        && !stripped.is_empty()
+    {
+        insert_item_type_aliases(ClipboardItemType::from_str(stripped), terms);
+    }
+    if let Some(stripped) = normalized.strip_prefix("lang:")
+        && !stripped.is_empty()
+    {
+        insert_language_aliases(stripped, terms);
+    }
+}
+
+fn insert_item_type_aliases(item_type: ClipboardItemType, terms: &mut HashSet<String>) {
+    terms.insert(item_type.as_str().to_owned());
+    terms.insert(item_type.label().to_ascii_lowercase());
+
+    match item_type {
+        ClipboardItemType::Text => {
+            terms.insert("plain".to_owned());
+        }
+        ClipboardItemType::Code => {}
+        ClipboardItemType::Command => {
+            terms.insert("shell".to_owned());
+            terms.insert("terminal".to_owned());
+        }
+        ClipboardItemType::Password => {
+            terms.insert("secret".to_owned());
+        }
+    }
+}
+
+fn insert_language_aliases(language: &str, terms: &mut HashSet<String>) {
+    let lower = language.to_ascii_lowercase();
+    terms.insert(lower.clone());
+
+    match lower.as_str() {
+        "bash" => {
+            terms.insert("sh".to_owned());
+            terms.insert("zsh".to_owned());
+            terms.insert("shell".to_owned());
+        }
+        "rust" => {
+            terms.insert("rs".to_owned());
+        }
+        "python" => {
+            terms.insert("py".to_owned());
+        }
+        "typescript" => {
+            terms.insert("ts".to_owned());
+            terms.insert("tsx".to_owned());
+        }
+        "javascript" => {
+            terms.insert("js".to_owned());
+            terms.insert("node".to_owned());
+            terms.insert("nodejs".to_owned());
+        }
+        "go" => {
+            terms.insert("golang".to_owned());
+        }
+        "cpp" => {
+            terms.insert("c++".to_owned());
+            terms.insert("cxx".to_owned());
+        }
+        "yaml" => {
+            terms.insert("yml".to_owned());
+        }
+        "markdown" => {
+            terms.insert("md".to_owned());
+        }
+        _ => {}
+    }
 }
 
 fn normalize_custom_tag(raw: &str) -> Option<String> {
