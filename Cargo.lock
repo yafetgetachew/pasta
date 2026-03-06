@@ -3286,6 +3286,7 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "base64",
+ "block",
  "chrono",
  "cocoa",
  "dirs 5.0.1",

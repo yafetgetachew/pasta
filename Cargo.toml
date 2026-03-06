@@ -18,5 +18,6 @@ serde_json = "1.0.145"
 sha2 = "0.10.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block = "0.1.6"
 cocoa = "0.26.0"
 objc = "0.2.7"
