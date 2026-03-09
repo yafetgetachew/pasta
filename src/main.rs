@@ -3013,9 +3013,9 @@ fn create_launcher_window(cx: &mut App) -> Option<WindowHandle<LauncherView>> {
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: None,
-            focus: false,
+            focus: true,
             show: false,
-            kind: WindowKind::PopUp,
+            kind: WindowKind::Normal,
             window_background: WindowBackgroundAppearance::Blurred,
             is_movable: false,
             is_resizable: false,
