@@ -125,10 +125,7 @@ impl ClipboardStorage {
 
         // Fallback storage is intentionally isolated from the primary DB because
         // keychain access may be unavailable in this mode.
-        let db_path = data_dir.join(format!(
-            "clipboard-fallback-{}.db",
-            std::process::id()
-        ));
+        let db_path = data_dir.join(format!("clipboard-fallback-{}.db", std::process::id()));
         let storage = Self {
             db_path,
             crypto: CryptoBox::ephemeral(),
@@ -641,7 +638,9 @@ impl ClipboardStorage {
             index.order_desc_ids.push(id);
         }
         index.by_id.insert(id, indexed);
-        index.order_desc_ids.sort_unstable_by(|left, right| right.cmp(left));
+        index
+            .order_desc_ids
+            .sort_unstable_by(|left, right| right.cmp(left));
     }
 
     fn remove_index_record(&self, id: i64) {
@@ -752,13 +751,14 @@ fn classify_clipboard_text_with_hint(
     force_secret: bool,
 ) -> (ClipboardItemType, Vec<String>) {
     let mut tags = Vec::new();
+    let looks_base64 = looks_like_base64_blob(text);
 
-    let item_type = if looks_like_password(text) {
+    let item_type = if !looks_base64 && looks_like_password(text) {
         tags.push("sensitive".to_owned());
         tags.push("secret".to_owned());
         tags.push("pass".to_owned());
         ClipboardItemType::Password
-    } else if looks_like_high_entropy_secret(text) {
+    } else if !looks_base64 && looks_like_high_entropy_secret(text) {
         tags.push("sensitive".to_owned());
         tags.push("secret".to_owned());
         tags.push("pass".to_owned());
@@ -786,6 +786,9 @@ fn classify_clipboard_text_with_hint(
     }
     if text.chars().count() > 240 {
         enriched.insert("long".to_owned());
+    }
+    if looks_base64 {
+        enriched.insert("base64".to_owned());
     }
     if looks_like_url(text) {
         enriched.insert("url".to_owned());
@@ -852,6 +855,21 @@ fn looks_like_code(text: &str) -> bool {
     }
 
     false
+}
+
+fn looks_like_base64_blob(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.len() < 16 || trimmed.contains(char::is_whitespace) || trimmed.len() % 4 != 0 {
+        return false;
+    }
+
+    if !trimmed.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'-' | b'_')
+    }) {
+        return false;
+    }
+
+    BASE64.decode(trimmed.as_bytes()).is_ok()
 }
 
 fn looks_like_password(text: &str) -> bool {
@@ -1727,6 +1745,22 @@ mod tests {
         assert!(
             alias_score > unrelated_score,
             "expected alias score ({alias_score}) to exceed unrelated score ({unrelated_score})"
+        );
+    }
+
+    #[test]
+    fn base64_content_is_tagged_and_not_auto_secret() {
+        let encoded = BASE64.encode("kubectl get pods -A");
+        let (item_type, tags) = classify_clipboard_text(&encoded);
+
+        assert_ne!(
+            item_type,
+            ClipboardItemType::Password,
+            "base64 text should not auto-classify as secret"
+        );
+        assert!(
+            tags.iter().any(|tag| tag.eq_ignore_ascii_case("base64")),
+            "base64 text should include the base64 tag"
         );
     }
 }

@@ -7,8 +7,10 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="Pasta Launcher"
+APP_NAME="Pasta"
+LEGACY_APP_NAME="Pasta Launcher"
 BUNDLE_NAME="${APP_NAME}.app"
+LEGACY_BUNDLE_NAME="${LEGACY_APP_NAME}.app"
 BIN_NAME="pasta-launcher"
 BUNDLE_ID="com.pasta.launcher"
 APP_VERSION="${APP_VERSION:-0.1.0}"
@@ -72,6 +74,14 @@ cat > "${PLIST_PATH}" <<PLIST
 PLIST
 
 DEST_APP="${INSTALL_DIR}/${BUNDLE_NAME}"
+LEGACY_DEST_APP="${INSTALL_DIR}/${LEGACY_BUNDLE_NAME}"
+
+if [[ -d "${LEGACY_DEST_APP}" ]]; then
+  LEGACY_BACKUP_APP="${LEGACY_DEST_APP}.backup.$(date +%Y%m%d%H%M%S)"
+  echo "Legacy app name detected, backing up to: ${LEGACY_BACKUP_APP}"
+  mv "${LEGACY_DEST_APP}" "${LEGACY_BACKUP_APP}"
+fi
+
 if [[ -d "${DEST_APP}" ]]; then
   BACKUP_APP="${DEST_APP}.backup.$(date +%Y%m%d%H%M%S)"
   echo "Existing app detected, backing up to: ${BACKUP_APP}"

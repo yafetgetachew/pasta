@@ -1,4 +1,4 @@
-# Pasta Launcher
+# Pasta
 
 A macOS Spotlight-style clipboard launcher built with Rust and GPUI.
 
@@ -14,7 +14,7 @@ cargo run
 ./scripts/install-macos-app.sh
 ```
 
-This creates `Pasta Launcher.app` and installs it into `/Applications` when writable, otherwise `~/Applications`.
+This creates `Pasta.app` and installs it into `/Applications` when writable, otherwise `~/Applications`.
 
 ## Hotkey
 

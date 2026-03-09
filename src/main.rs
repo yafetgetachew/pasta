@@ -16,7 +16,11 @@ use std::{
 };
 
 #[cfg(target_os = "macos")]
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
+#[cfg(target_os = "macos")]
 use block::ConcreteBlock;
+#[cfg(target_os = "macos")]
+use chrono::{DateTime, Utc};
 #[cfg(target_os = "macos")]
 use cocoa::{
     appkit::{
@@ -49,6 +53,8 @@ use objc::{
     runtime::{Class, Object, Sel},
     sel, sel_impl,
 };
+#[cfg(target_os = "macos")]
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 #[cfg(target_os = "macos")]
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
@@ -96,6 +102,8 @@ const MAX_VISIBLE_TAG_CHIPS: usize = 4;
 const RESULTS_HEIGHT_NORMAL: f32 = 446.0;
 #[cfg(target_os = "macos")]
 const RESULTS_HEIGHT_EXPANDED: f32 = 636.0;
+#[cfg(target_os = "macos")]
+const NS_WINDOW_COLLECTION_BEHAVIOR_MOVE_TO_ACTIVE_SPACE: usize = 1 << 1;
 
 #[cfg(target_os = "macos")]
 #[derive(Clone)]
@@ -243,6 +251,50 @@ enum TagEditorMode {
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransformAction {
+    ShellQuote,
+    JsonEncode,
+    JsonDecode,
+    UrlEncode,
+    UrlDecode,
+    Base64Encode,
+    Base64Decode,
+    PublicCertPemInfo,
+}
+
+#[cfg(target_os = "macos")]
+fn transform_action_for_shortcut(
+    key: &str,
+    modifiers: &gpui::Modifiers,
+) -> Option<TransformAction> {
+    let normalized_key = key.to_ascii_lowercase();
+    let is_uppercase_single_char = key.len() == 1 && key.chars().all(|ch| ch.is_ascii_uppercase());
+    let decode_requested = modifiers.shift || is_uppercase_single_char;
+
+    match normalized_key.as_str() {
+        "s" => Some(TransformAction::ShellQuote),
+        "j" => Some(if decode_requested {
+            TransformAction::JsonDecode
+        } else {
+            TransformAction::JsonEncode
+        }),
+        "u" => Some(if decode_requested {
+            TransformAction::UrlDecode
+        } else {
+            TransformAction::UrlEncode
+        }),
+        "b" => Some(if decode_requested {
+            TransformAction::Base64Decode
+        } else {
+            TransformAction::Base64Encode
+        }),
+        "p" => Some(TransformAction::PublicCertPemInfo),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
 struct SearchRequest {
     request_id: u64,
     query: String,
@@ -323,6 +375,7 @@ struct LauncherView {
     tag_editor_target_id: Option<i64>,
     tag_editor_input: String,
     tag_editor_mode: TagEditorMode,
+    transform_menu_open: bool,
     window_height: f32,
     applied_window_height: f32,
     window_height_from: f32,
@@ -373,6 +426,7 @@ impl LauncherView {
             tag_editor_target_id: None,
             tag_editor_input: String::new(),
             tag_editor_mode: TagEditorMode::Add,
+            transform_menu_open: false,
             window_height: LAUNCHER_HEIGHT,
             applied_window_height: LAUNCHER_HEIGHT,
             window_height_from: LAUNCHER_HEIGHT,
@@ -402,6 +456,7 @@ impl LauncherView {
         self.tag_editor_target_id = None;
         self.tag_editor_input.clear();
         self.tag_editor_mode = TagEditorMode::Add;
+        self.transform_menu_open = false;
         self.window_height = LAUNCHER_HEIGHT;
         self.applied_window_height = LAUNCHER_HEIGHT;
         self.window_height_from = LAUNCHER_HEIGHT;
@@ -981,6 +1036,99 @@ impl LauncherView {
         }
     }
 
+    fn toggle_transform_menu(&mut self, cx: &mut Context<Self>) {
+        if self.items.get(self.selected_index).is_none() {
+            show_macos_notification("Pasta", "No item selected to transform.");
+            return;
+        }
+        self.transform_menu_open = !self.transform_menu_open;
+        if self.transform_menu_open {
+            self.show_command_help = false;
+        }
+        cx.notify();
+    }
+
+    fn handle_transform_keystroke(&mut self, event: &KeystrokeEvent, cx: &mut Context<Self>) {
+        let key = event.keystroke.key.as_str();
+        let modifiers = &event.keystroke.modifiers;
+        let has_disallowed_modifiers =
+            modifiers.control || modifiers.alt || modifiers.platform || modifiers.function;
+
+        if key == "escape" || key == "esc" || (key == "tab" && !has_disallowed_modifiers) {
+            self.transform_menu_open = false;
+            cx.notify();
+            return;
+        }
+
+        if has_disallowed_modifiers {
+            return;
+        }
+
+        let action = transform_action_for_shortcut(key, modifiers);
+
+        if let Some(action) = action {
+            self.apply_transform_action(action, cx);
+        }
+    }
+
+    fn apply_transform_action(&mut self, action: TransformAction, cx: &mut Context<Self>) {
+        let Some(item) = self.items.get(self.selected_index).cloned() else {
+            self.transform_menu_open = false;
+            cx.notify();
+            return;
+        };
+
+        if item.item_type == ClipboardItemType::Password && !self.can_copy_secret_now(item.id) {
+            show_macos_notification("Pasta", "Reveal secret first (Enter or Cmd+R).");
+            return;
+        }
+
+        let outcome = match action {
+            TransformAction::ShellQuote => Ok((
+                shell_quote_escape(&item.content),
+                "Shell-quoted to clipboard.",
+            )),
+            TransformAction::JsonEncode => json_encode_transform(&item.content),
+            TransformAction::JsonDecode => json_decode_transform(&item.content),
+            TransformAction::UrlEncode => url_encode_transform(&item.content),
+            TransformAction::UrlDecode => url_decode_transform(&item.content),
+            TransformAction::Base64Encode => base64_encode_transform(&item.content),
+            TransformAction::Base64Decode => base64_decode_transform(&item.content),
+            TransformAction::PublicCertPemInfo => public_cert_pem_info_transform(&item.content),
+        };
+
+        let (transformed, status_message) = match outcome {
+            Ok(result) => result,
+            Err(err) => {
+                show_macos_notification("Pasta", &format!("Transform failed: {err}"));
+                return;
+            }
+        };
+
+        self.mark_self_clipboard_write(&transformed, cx);
+        cx.write_to_clipboard(ClipboardItem::new_string(transformed.clone()));
+
+        let mut notification = status_message.to_owned();
+        if let Err(err) = self.storage.upsert_clipboard_item(&transformed) {
+            eprintln!("warning: failed to store transformed clipboard item: {err}");
+            notification.push_str(" Stored in clipboard only.");
+        }
+
+        self.query.clear();
+        self.query_select_all = false;
+        self.query_refresh_due_at = None;
+        self.transform_menu_open = false;
+        self.selected_index = 0;
+        self.selection_changed_at = Instant::now();
+        self.refresh_items();
+        if !self.items.is_empty() {
+            self.results_scroll.scroll_to_item(0);
+        }
+
+        show_macos_notification("Pasta", &notification);
+        cx.notify();
+    }
+
     fn handle_keystroke(&mut self, event: &KeystrokeEvent, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let modifiers = &event.keystroke.modifiers;
@@ -993,6 +1141,11 @@ impl LauncherView {
 
         if self.tag_editor_target_id.is_some() {
             self.handle_tag_editor_keystroke(event, cx);
+            return;
+        }
+
+        if self.transform_menu_open {
+            self.handle_transform_keystroke(event, cx);
             return;
         }
 
@@ -1028,6 +1181,10 @@ impl LauncherView {
             }
             "down" | "arrowdown" => {
                 self.move_selection(1, cx);
+                return;
+            }
+            "tab" if no_modifiers => {
+                self.toggle_transform_menu(cx);
                 return;
             }
             "enter" | "return" => {
@@ -1156,10 +1313,12 @@ impl Render for LauncherView {
         };
         let query_is_selected = self.query_select_all && !self.query.is_empty();
         let tag_editor_open = self.tag_editor_target_id.is_some();
+        let transform_menu_open = self.transform_menu_open;
         let selection_stable = Instant::now().duration_since(self.selection_changed_at)
             >= Duration::from_millis(SELECTION_EXPAND_DWELL_MS);
         let selected_should_expand = selection_stable
             && !tag_editor_open
+            && !transform_menu_open
             && self.items.get(self.selected_index).is_some_and(|item| {
                 !(item.item_type == ClipboardItemType::Password && self.is_secret_masked(item.id))
                     && preview_would_truncate(&item.content)
@@ -1246,7 +1405,7 @@ impl Render for LauncherView {
                     } else {
                         rgba(0x00000000)
                     });
-                if !tag_editor_open {
+                if !tag_editor_open && !transform_menu_open {
                     row = row
                         .hover({
                             let row_hover = palette.row_hover_bg;
@@ -1338,7 +1497,7 @@ impl Render for LauncherView {
                         div()
                             .text_xs()
                             .text_color(palette.title_text)
-                            .child("PASTA CLIPBOARD"),
+                            .child("PASTA"),
                     )
                     .child(
                         div()
@@ -1440,6 +1599,97 @@ impl Render for LauncherView {
             );
         }
 
+        if self.transform_menu_open {
+            let mut transform_buttons = div()
+                .w_full()
+                .mt_1()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_start()
+                .gap_1();
+            for (ix, (label, action)) in [
+                ("s  Shell quote", TransformAction::ShellQuote),
+                ("j  JSON encode", TransformAction::JsonEncode),
+                ("J  JSON decode", TransformAction::JsonDecode),
+                ("u  URL encode", TransformAction::UrlEncode),
+                ("U  URL decode", TransformAction::UrlDecode),
+                ("b  Base64 encode", TransformAction::Base64Encode),
+                ("B  Base64 decode", TransformAction::Base64Decode),
+                ("p  Cert info", TransformAction::PublicCertPemInfo),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let button_bg =
+                    scale_alpha(palette.row_hover_bg, if palette.dark { 0.95 } else { 0.88 });
+                let button_border = scale_alpha(palette.window_border, 0.9);
+                let button_hover =
+                    scale_alpha(palette.selected_bg, if palette.dark { 0.95 } else { 0.9 });
+                transform_buttons = transform_buttons.child(
+                    div()
+                        .id(("transform-action", ix as u64))
+                        .flex_none()
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .px_1()
+                        .py(px(2.0))
+                        .rounded_md()
+                        .bg(button_bg)
+                        .border_1()
+                        .border_color(button_border)
+                        .text_xs()
+                        .text_color(palette.row_text)
+                        .hover(move |style| style.bg(button_hover))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.apply_transform_action(action, cx);
+                        }))
+                        .child(label),
+                );
+            }
+
+            content = content.child(
+                div()
+                    .w_full()
+                    .p_2()
+                    .bg(scale_alpha(
+                        palette.row_hover_bg,
+                        if palette.dark { 0.95 } else { 0.9 },
+                    ))
+                    .border_1()
+                    .border_color(palette.selected_border)
+                    .rounded_lg()
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(palette.title_text)
+                                    .child("Transforms"),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette.muted_text)
+                                    .child("Type shortcut or click"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .text_xs()
+                            .text_color(palette.muted_text)
+                            .child("Tab/Esc cancel"),
+                    )
+                    .child(transform_buttons),
+            );
+        }
+
         content
             .child(div().w_full().h(px(1.0)).bg(palette.list_divider))
             .child(results)
@@ -1468,7 +1718,7 @@ impl Render for LauncherView {
                             div()
                                 .text_xs()
                                 .text_color(palette.muted_text)
-                                .child("Search • /tag tag-only • Enter copy • ⌘R reveal+copy secret"),
+                                .child("Search • /tag tag-only • Enter copy • Tab transforms • ⌘R reveal+copy secret"),
                         )
                         .child(
                             div()
@@ -1540,9 +1790,9 @@ fn palette_for(appearance: WindowAppearance, surface_alpha: f32) -> Palette {
             list_divider: rgba(0x33415517),
             row_text: rgba(0x020617eb),
             row_meta_text: rgba(0x475569ab),
-            row_hover_bg: rgba(0x1d4ed80e),
-            selected_bg: rgba(0x3b82f61e),
-            selected_border: rgba(0x3b82f64a),
+            row_hover_bg: rgba(0x1d4ed818),
+            selected_bg: rgba(0x2563eb3d),
+            selected_border: rgba(0x1d4ed88f),
         }
     };
 
@@ -1553,6 +1803,11 @@ fn palette_for(appearance: WindowAppearance, surface_alpha: f32) -> Palette {
     palette.row_hover_bg = scale_alpha(palette.row_hover_bg, alpha_scale);
     palette.selected_bg = scale_alpha(palette.selected_bg, alpha_scale);
     palette.selected_border = scale_alpha(palette.selected_border, alpha_scale);
+    if !palette.dark {
+        // Keep selected rows visible even when the user lowers panel transparency.
+        palette.selected_bg.a = palette.selected_bg.a.max(0.16);
+        palette.selected_border.a = palette.selected_border.a.max(0.42);
+    }
 
     palette
 }
@@ -2668,6 +2923,335 @@ fn format_timestamp(timestamp: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
+fn shell_quote_escape(input: &str) -> String {
+    format!("'{}'", input.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(target_os = "macos")]
+fn json_encode_transform(input: &str) -> Result<(String, &'static str), String> {
+    let encoded =
+        serde_json::to_string(input).map_err(|err| format!("json encode error: {err}"))?;
+    Ok((encoded, "JSON-escaped to clipboard."))
+}
+
+#[cfg(target_os = "macos")]
+fn json_decode_transform(input: &str) -> Result<(String, &'static str), String> {
+    let trimmed = input.trim();
+    if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+        let decoded = serde_json::from_str::<String>(trimmed)
+            .map_err(|err| format!("json decode error: {err}"))?;
+        return Ok((decoded, "JSON-unescaped to clipboard."));
+    }
+
+    let decoded = decode_json_escaped_string(trimmed)?;
+    Ok((decoded, "JSON-unescaped to clipboard."))
+}
+
+#[cfg(target_os = "macos")]
+fn decode_json_escaped_string(input: &str) -> Result<String, String> {
+    if input.is_empty() {
+        return Err("empty string".to_owned());
+    }
+
+    if !has_json_escape_markers(input) {
+        return Err("input does not look JSON-escaped".to_owned());
+    }
+
+    if input.starts_with('"') && input.ends_with('"') && input.len() >= 2 {
+        return serde_json::from_str::<String>(input).map_err(|err| err.to_string());
+    }
+
+    let wrapped = format!("\"{input}\"");
+    serde_json::from_str::<String>(&wrapped).map_err(|err| err.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn has_json_escape_markers(input: &str) -> bool {
+    input.contains("\\n")
+        || input.contains("\\t")
+        || input.contains("\\\"")
+        || input.contains("\\\\")
+        || input.contains("\\u")
+}
+
+#[cfg(target_os = "macos")]
+fn url_encode_transform(input: &str) -> Result<(String, &'static str), String> {
+    Ok((url_percent_encode(input), "URL-encoded to clipboard."))
+}
+
+#[cfg(target_os = "macos")]
+fn url_decode_transform(input: &str) -> Result<(String, &'static str), String> {
+    let decoded = url_percent_decode(input)?;
+    Ok((decoded, "URL-decoded to clipboard."))
+}
+
+#[cfg(target_os = "macos")]
+fn url_percent_encode(input: &str) -> String {
+    let mut output = String::with_capacity(input.len() * 2);
+    for byte in input.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            output.push(byte as char);
+        } else {
+            output.push('%');
+            output.push_str(&format!("{byte:02X}"));
+        }
+    }
+    output
+}
+
+#[cfg(target_os = "macos")]
+fn url_percent_decode(input: &str) -> Result<String, String> {
+    let bytes = input.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0_usize;
+    let decode_plus_as_space = input.contains('=') || input.contains('&') || input.contains('?');
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' => {
+                if index + 2 >= bytes.len() {
+                    return Err("malformed % escape".to_owned());
+                }
+                let Some(high) = hex_nibble(bytes[index + 1]) else {
+                    return Err("invalid hex escape".to_owned());
+                };
+                let Some(low) = hex_nibble(bytes[index + 2]) else {
+                    return Err("invalid hex escape".to_owned());
+                };
+                output.push((high << 4) | low);
+                index += 3;
+            }
+            b'+' => {
+                if decode_plus_as_space {
+                    output.push(b' ');
+                } else {
+                    output.push(b'+');
+                }
+                index += 1;
+            }
+            value => {
+                output.push(value);
+                index += 1;
+            }
+        }
+    }
+
+    String::from_utf8(output).map_err(|_| "decoded URL is not utf-8".to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some((value - b'a') + 10),
+        b'A'..=b'F' => Some((value - b'A') + 10),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn base64_encode_transform(input: &str) -> Result<(String, &'static str), String> {
+    Ok((
+        BASE64_STANDARD.encode(input.as_bytes()),
+        "Base64-encoded to clipboard.",
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn base64_decode_transform(input: &str) -> Result<(String, &'static str), String> {
+    let compact: String = input.chars().filter(|ch| !ch.is_whitespace()).collect();
+    let decoded_bytes = BASE64_STANDARD
+        .decode(compact.as_bytes())
+        .map_err(|err| format!("base64 decode error: {err}"))?;
+    let decoded = String::from_utf8(decoded_bytes)
+        .map_err(|_| "decoded base64 is binary (non UTF-8)".to_owned())?;
+    Ok((decoded, "Base64-decoded to clipboard."))
+}
+
+#[cfg(target_os = "macos")]
+fn looks_like_base64(value: &str) -> bool {
+    if value.len() < 8 || value.len() % 4 != 0 {
+        return false;
+    }
+
+    value.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'-' | b'_')
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn public_cert_pem_info_transform(input: &str) -> Result<(String, &'static str), String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("clipboard item is empty".to_owned());
+    }
+
+    if let Some(pem) = extract_first_pem_certificate(trimmed) {
+        let raw = run_openssl_x509_details(pem.as_bytes(), false)?;
+        return Ok((
+            summarize_certificate_details(&raw),
+            "Certificate info copied to clipboard.",
+        ));
+    }
+
+    let compact: String = trimmed.chars().filter(|ch| !ch.is_whitespace()).collect();
+    if looks_like_base64(&compact) {
+        let der = BASE64_STANDARD
+            .decode(compact.as_bytes())
+            .map_err(|err| format!("certificate parse failed: {err}"))?;
+        let raw = run_openssl_x509_details(&der, true)?;
+        return Ok((
+            summarize_certificate_details(&raw),
+            "Certificate info copied to clipboard.",
+        ));
+    }
+
+    Err("no PEM certificate found".to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn extract_first_pem_certificate(input: &str) -> Option<String> {
+    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+    const END: &str = "-----END CERTIFICATE-----";
+
+    let start = input.find(BEGIN)?;
+    let rest = &input[start..];
+    let end_offset = rest.find(END)?;
+    let end = start + end_offset + END.len();
+    Some(input[start..end].to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn run_openssl_x509_details(input: &[u8], der_input: bool) -> Result<String, String> {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let mut command = Command::new("openssl");
+    command.arg("x509");
+    if der_input {
+        command.args(["-inform", "DER"]);
+    }
+    command.args([
+        "-noout", "-subject", "-issuer", "-dates", "-serial", "-nameopt", "RFC2253",
+    ]);
+    command.stdin(Stdio::piped());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("openssl unavailable: {err}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(input)
+            .map_err(|err| format!("failed writing cert to openssl: {err}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|err| format!("openssl failed: {err}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        if stderr.is_empty() {
+            return Err("openssl could not parse certificate".to_owned());
+        }
+        return Err(stderr);
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn summarize_certificate_details(details: &str) -> String {
+    let mut subject = String::new();
+    let mut issuer = String::new();
+    let mut serial = String::new();
+    let mut not_before = String::new();
+    let mut not_after = String::new();
+
+    for line in details.lines() {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("subject=") {
+            subject = value.trim().to_owned();
+        } else if let Some(value) = trimmed.strip_prefix("issuer=") {
+            issuer = value.trim().to_owned();
+        } else if let Some(value) = trimmed.strip_prefix("serial=") {
+            serial = value.trim().to_owned();
+        } else if let Some(value) = trimmed.strip_prefix("notBefore=") {
+            not_before = value.trim().to_owned();
+        } else if let Some(value) = trimmed.strip_prefix("notAfter=") {
+            not_after = value.trim().to_owned();
+        }
+    }
+
+    let organization = dn_attr_value(&subject, "O").unwrap_or_else(|| "unknown".to_owned());
+    let common_name = dn_attr_value(&subject, "CN").unwrap_or_else(|| "unknown".to_owned());
+    let issuer_name = dn_attr_value(&issuer, "CN")
+        .or_else(|| dn_attr_value(&issuer, "O"))
+        .unwrap_or_else(|| "unknown".to_owned());
+
+    let days_left = parse_openssl_datetime(&not_after)
+        .map(|not_after_dt| (not_after_dt - Utc::now()).num_days())
+        .map(|days| days.to_string())
+        .unwrap_or_else(|| "unknown".to_owned());
+
+    [
+        "CERT INFO".to_owned(),
+        format!("Org: {organization}"),
+        format!("CN: {common_name}"),
+        format!("Issuer: {issuer_name}"),
+        format!(
+            "Not Before: {}",
+            if not_before.is_empty() {
+                "unknown"
+            } else {
+                not_before.as_str()
+            }
+        ),
+        format!(
+            "Not After: {}",
+            if not_after.is_empty() {
+                "unknown"
+            } else {
+                not_after.as_str()
+            }
+        ),
+        format!("Days Left: {days_left}"),
+        format!(
+            "Serial: {}",
+            if serial.is_empty() {
+                "unknown"
+            } else {
+                serial.as_str()
+            }
+        ),
+    ]
+    .join("\n")
+}
+
+#[cfg(target_os = "macos")]
+fn dn_attr_value(dn: &str, key: &str) -> Option<String> {
+    for part in dn.split(',') {
+        let (name, value) = part.split_once('=')?;
+        if name.trim().eq_ignore_ascii_case(key) {
+            return Some(value.trim().to_owned());
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn parse_openssl_datetime(value: &str) -> Option<DateTime<Utc>> {
+    if value.trim().is_empty() {
+        return None;
+    }
+
+    DateTime::parse_from_str(value.trim(), "%b %e %H:%M:%S %Y %Z")
+        .ok()
+        .map(|datetime| datetime.with_timezone(&Utc))
+}
+
+#[cfg(target_os = "macos")]
 struct HotkeyRegistration {
     _manager: GlobalHotKeyManager,
     hotkey_id: u32,
@@ -3004,6 +3588,36 @@ fn launcher_window_bounds(cx: &mut App) -> (Bounds<gpui::Pixels>, Option<gpui::D
 }
 
 #[cfg(target_os = "macos")]
+fn set_window_move_to_active_space(window: &Window) {
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+
+    unsafe {
+        let ns_view: id = handle.ns_view.as_ptr().cast();
+        if ns_view == nil {
+            return;
+        }
+
+        let ns_window: id = msg_send![ns_view, window];
+        if ns_window == nil {
+            return;
+        }
+
+        let behavior: usize = msg_send![ns_window, collectionBehavior];
+        let updated = behavior | NS_WINDOW_COLLECTION_BEHAVIOR_MOVE_TO_ACTIVE_SPACE;
+        if updated == behavior {
+            return;
+        }
+
+        let _: () = msg_send![ns_window, setCollectionBehavior: updated];
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn create_launcher_window(cx: &mut App) -> Option<WindowHandle<LauncherView>> {
     let (bounds, display_id) = launcher_window_bounds(cx);
     let storage = cx.global::<StorageState>().storage.clone();
@@ -3026,6 +3640,7 @@ fn create_launcher_window(cx: &mut App) -> Option<WindowHandle<LauncherView>> {
         move |window, cx| {
             let storage = storage.clone();
             let style = style.clone();
+            set_window_move_to_active_space(window);
             window.on_window_should_close(cx, |_, cx| {
                 cx.hide();
                 false
@@ -3409,6 +4024,7 @@ fn show_launcher(cx: &mut App) {
             view.syntax_highlighting = style.syntax_highlighting;
             view.reset_for_show();
             window.resize(size(px(LAUNCHER_WIDTH), px(LAUNCHER_HEIGHT)));
+            set_window_move_to_active_space(window);
             view.begin_open_transition();
             cx.notify();
             window.activate_window();
@@ -3423,6 +4039,7 @@ fn show_launcher(cx: &mut App) {
                 view.syntax_highlighting = style.syntax_highlighting;
                 view.reset_for_show();
                 window.resize(size(px(LAUNCHER_WIDTH), px(LAUNCHER_HEIGHT)));
+                set_window_move_to_active_space(window);
                 view.begin_open_transition();
                 cx.notify();
                 window.activate_window();
@@ -3796,6 +4413,65 @@ fn xml_escape(input: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+#[cfg(all(target_os = "macos", test))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uppercase_shortcuts_route_to_decode_actions() {
+        let no_modifiers = gpui::Modifiers::none();
+        assert_eq!(
+            transform_action_for_shortcut("J", &no_modifiers),
+            Some(TransformAction::JsonDecode)
+        );
+        assert_eq!(
+            transform_action_for_shortcut("U", &no_modifiers),
+            Some(TransformAction::UrlDecode)
+        );
+        assert_eq!(
+            transform_action_for_shortcut("B", &no_modifiers),
+            Some(TransformAction::Base64Decode)
+        );
+    }
+
+    #[test]
+    fn shift_shortcuts_route_to_decode_actions() {
+        let shift_modifiers = gpui::Modifiers {
+            shift: true,
+            ..gpui::Modifiers::none()
+        };
+        assert_eq!(
+            transform_action_for_shortcut("j", &shift_modifiers),
+            Some(TransformAction::JsonDecode)
+        );
+        assert_eq!(
+            transform_action_for_shortcut("u", &shift_modifiers),
+            Some(TransformAction::UrlDecode)
+        );
+        assert_eq!(
+            transform_action_for_shortcut("b", &shift_modifiers),
+            Some(TransformAction::Base64Decode)
+        );
+    }
+
+    #[test]
+    fn decode_transforms_round_trip_encoded_text() {
+        let original = "kubectl get pods -n kube-system";
+
+        let (json_encoded, _) = json_encode_transform(original).expect("json encode");
+        let (json_decoded, _) = json_decode_transform(&json_encoded).expect("json decode");
+        assert_eq!(json_decoded, original);
+
+        let (url_encoded, _) = url_encode_transform(original).expect("url encode");
+        let (url_decoded, _) = url_decode_transform(&url_encoded).expect("url decode");
+        assert_eq!(url_decoded, original);
+
+        let (base64_encoded, _) = base64_encode_transform(original).expect("base64 encode");
+        let (base64_decoded, _) = base64_decode_transform(&base64_encoded).expect("base64 decode");
+        assert_eq!(base64_decoded, original);
+    }
 }
 
 #[cfg(target_os = "macos")]
