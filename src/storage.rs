@@ -1,4 +1,9 @@
-use std::{collections::HashSet, fs, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use aes_gcm::{
     Aes256Gcm, Nonce,
@@ -13,6 +18,10 @@ use sha2::{Digest, Sha256};
 
 const KEYCHAIN_SERVICE: &str = "com.pasta.launcher";
 const KEYCHAIN_ACCOUNT: &str = "clipboard_encryption_key_v1";
+const SEMANTIC_VECTOR_DIM: usize = 192;
+const SEMANTIC_MIN_MATCH_SCORE: f32 = 0.36;
+const SEMANTIC_MIN_QUERY_CHARS: usize = 3;
+const SEMANTIC_EMBEDDING_CACHE_MAX: usize = 12_000;
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum ClipboardItemType {
@@ -60,10 +69,31 @@ pub struct ClipboardRecord {
     pub created_at: String,
 }
 
+#[derive(Debug)]
+struct ScoredRecord {
+    record: ClipboardRecord,
+    semantic_score: f32,
+    lexical_score: f32,
+}
+
+#[derive(Clone)]
+struct IndexedRecord {
+    record: ClipboardRecord,
+    content_hash: String,
+}
+
+#[derive(Default)]
+struct MemorySearchIndex {
+    order_desc_ids: Vec<i64>,
+    by_id: HashMap<i64, IndexedRecord>,
+}
+
 #[derive(Clone)]
 pub struct ClipboardStorage {
     db_path: PathBuf,
     crypto: CryptoBox,
+    semantic_embedding_cache: Arc<Mutex<HashMap<String, Vec<f32>>>>,
+    memory_index: Arc<Mutex<MemorySearchIndex>>,
 }
 
 impl ClipboardStorage {
@@ -78,8 +108,35 @@ impl ClipboardStorage {
         let storage = Self {
             db_path,
             crypto: CryptoBox::load_or_create()?,
+            semantic_embedding_cache: Arc::new(Mutex::new(HashMap::new())),
+            memory_index: Arc::new(Mutex::new(MemorySearchIndex::default())),
         };
         storage.init_schema()?;
+        storage.rebuild_memory_index()?;
+        Ok(storage)
+    }
+
+    pub fn bootstrap_fallback(app_dir_name: &str) -> Result<Self> {
+        let data_dir = dirs::cache_dir()
+            .or_else(dirs::home_dir)
+            .context("unable to determine fallback data directory")?
+            .join(app_dir_name);
+        fs::create_dir_all(&data_dir).context("unable to create fallback data directory")?;
+
+        // Fallback storage is intentionally isolated from the primary DB because
+        // keychain access may be unavailable in this mode.
+        let db_path = data_dir.join(format!(
+            "clipboard-fallback-{}.db",
+            std::process::id()
+        ));
+        let storage = Self {
+            db_path,
+            crypto: CryptoBox::ephemeral(),
+            semantic_embedding_cache: Arc::new(Mutex::new(HashMap::new())),
+            memory_index: Arc::new(Mutex::new(MemorySearchIndex::default())),
+        };
+        storage.init_schema()?;
+        storage.rebuild_memory_index()?;
         Ok(storage)
     }
 
@@ -134,6 +191,7 @@ impl ClipboardStorage {
                     ],
                 )?;
                 tx.commit()?;
+                self.sync_index_record_from_db(existing_id)?;
                 return Ok(true);
             }
 
@@ -162,7 +220,9 @@ impl ClipboardStorage {
                 created_at,
             ],
         )?;
+        let inserted_id = tx.last_insert_rowid();
         tx.commit()?;
+        self.sync_index_record_from_db(inserted_id)?;
         Ok(true)
     }
 
@@ -174,50 +234,106 @@ impl ClipboardStorage {
         } else {
             normalized
         };
-        let conn = self.open()?;
-
-        let mut stmt = conn.prepare(
-            "SELECT id, item_type, content, is_encrypted, tags, created_at
-             FROM clipboard_items
-             ORDER BY id DESC
-             LIMIT 400",
-        )?;
-
-        let mut rows = stmt.query([])?;
+        let use_semantic_search = !tag_only
+            && effective_query.chars().count() >= SEMANTIC_MIN_QUERY_CHARS
+            && !effective_query.is_empty();
+        let query_terms = if effective_query.is_empty() {
+            Vec::new()
+        } else {
+            semantic_tokenize(&effective_query)
+        };
+        let query_embedding =
+            use_semantic_search.then(|| semantic_embedding(&effective_query, &query_terms));
+        let index = self
+            .memory_index
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut output = Vec::new();
+        let mut ranked = Vec::new();
+        let mut lexical_hits = 0_usize;
 
-        while let Some(row) = rows.next()? {
-            let item_type = ClipboardItemType::from_str(row.get::<_, String>(1)?.as_str());
-            let mut content: String = row.get(2)?;
-            let is_encrypted: i64 = row.get(3)?;
-            let tags_json: String = row.get(4)?;
-            let created_at: String = row.get(5)?;
-            let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
-
-            if is_encrypted == 1 {
-                if let Ok(decrypted) = self.crypto.decrypt(&content) {
-                    content = decrypted;
-                } else {
-                    continue;
-                }
-            }
-
-            let record = ClipboardRecord {
-                id: row.get(0)?,
-                item_type,
-                content,
-                tags,
-                created_at,
+        for id in &index.order_desc_ids {
+            let Some(indexed) = index.by_id.get(id) else {
+                continue;
             };
+            let record = &indexed.record;
 
-            if effective_query.is_empty()
-                || record_matches_query(&record, &effective_query, tag_only)
-            {
-                output.push(record);
+            if effective_query.is_empty() {
+                output.push(record.clone());
                 if output.len() >= limit {
                     break;
                 }
+                continue;
             }
+
+            let lexical_match = record_matches_query(record, &effective_query, tag_only);
+            if !use_semantic_search {
+                if lexical_match {
+                    output.push(record.clone());
+                    if output.len() >= limit {
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            if lexical_match {
+                lexical_hits += 1;
+                let lexical_score = lexical_match_score(record, &effective_query, &query_terms);
+                ranked.push(ScoredRecord {
+                    record: record.clone(),
+                    semantic_score: 0.0,
+                    lexical_score,
+                });
+                continue;
+            }
+
+            // Once we have enough lexical hits to fill the visible result set, semantic-only
+            // candidates can no longer beat lexical-ranked rows.
+            if lexical_hits >= limit {
+                continue;
+            }
+
+            // Never surface secrets as semantic-only matches.
+            if record.item_type == ClipboardItemType::Password {
+                continue;
+            }
+
+            let Some(query_embedding) = query_embedding.as_ref() else {
+                continue;
+            };
+            let fallback_cache_key;
+            let cache_key = if indexed.content_hash.is_empty() {
+                fallback_cache_key = format!("id:{}", record.id);
+                fallback_cache_key.as_str()
+            } else {
+                indexed.content_hash.as_str()
+            };
+            let record_embedding =
+                self.cached_semantic_embedding(cache_key, &record.content, &record.tags);
+            let semantic_score = cosine_similarity(query_embedding, &record_embedding);
+
+            if semantic_score >= SEMANTIC_MIN_MATCH_SCORE {
+                ranked.push(ScoredRecord {
+                    record: record.clone(),
+                    semantic_score,
+                    lexical_score: 0.0,
+                });
+            }
+        }
+
+        if use_semantic_search {
+            ranked.sort_by(|left, right| {
+                combined_search_score(right)
+                    .total_cmp(&combined_search_score(left))
+                    .then_with(|| right.record.id.cmp(&left.record.id))
+            });
+
+            output = ranked
+                .into_iter()
+                .take(limit)
+                .map(|item| item.record)
+                .collect();
         }
 
         Ok(output)
@@ -226,6 +342,9 @@ impl ClipboardStorage {
     pub fn delete_item(&self, id: i64) -> Result<bool> {
         let conn = self.open()?;
         let deleted = conn.execute("DELETE FROM clipboard_items WHERE id = ?1", params![id])?;
+        if deleted > 0 {
+            self.remove_index_record(id);
+        }
         Ok(deleted > 0)
     }
 
@@ -296,6 +415,7 @@ impl ClipboardStorage {
         )?;
 
         tx.commit()?;
+        self.sync_index_record_from_db(id)?;
         Ok(true)
     }
 
@@ -344,6 +464,7 @@ impl ClipboardStorage {
             "UPDATE clipboard_items SET tags = ?1 WHERE id = ?2",
             params![tags_json, id],
         )?;
+        self.sync_index_record_from_db(id)?;
         Ok(true)
     }
 
@@ -396,6 +517,7 @@ impl ClipboardStorage {
             "UPDATE clipboard_items SET tags = ?1 WHERE id = ?2",
             params![tags_json, id],
         )?;
+        self.sync_index_record_from_db(id)?;
         Ok(true)
     }
 
@@ -419,6 +541,139 @@ impl ClipboardStorage {
             CREATE INDEX IF NOT EXISTS idx_clipboard_hash ON clipboard_items(content_hash);",
         )?;
         Ok(())
+    }
+
+    fn rebuild_memory_index(&self) -> Result<()> {
+        let conn = self.open()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, item_type, content, is_encrypted, tags, created_at, content_hash
+             FROM clipboard_items
+             ORDER BY id DESC",
+        )?;
+        let mut rows = stmt.query([])?;
+
+        let mut rebuilt = MemorySearchIndex::default();
+        while let Some(row) = rows.next()? {
+            let Some(indexed) = self.indexed_record_from_row(row)? else {
+                continue;
+            };
+            let id = indexed.record.id;
+            rebuilt.order_desc_ids.push(id);
+            rebuilt.by_id.insert(id, indexed);
+        }
+
+        let mut index = self
+            .memory_index
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *index = rebuilt;
+        Ok(())
+    }
+
+    fn sync_index_record_from_db(&self, id: i64) -> Result<()> {
+        let conn = self.open()?;
+        let indexed = self.load_indexed_record_by_id(&conn, id)?;
+        if let Some(indexed) = indexed {
+            self.upsert_index_record(indexed);
+        } else {
+            self.remove_index_record(id);
+        }
+        Ok(())
+    }
+
+    fn load_indexed_record_by_id(
+        &self,
+        conn: &Connection,
+        id: i64,
+    ) -> Result<Option<IndexedRecord>> {
+        let result: Option<Option<IndexedRecord>> = conn
+            .query_row(
+                "SELECT id, item_type, content, is_encrypted, tags, created_at, content_hash
+                 FROM clipboard_items
+                 WHERE id = ?1",
+                params![id],
+                |row| self.indexed_record_from_row(row),
+            )
+            .optional()?;
+        Ok(result.flatten())
+    }
+
+    fn indexed_record_from_row(
+        &self,
+        row: &rusqlite::Row<'_>,
+    ) -> rusqlite::Result<Option<IndexedRecord>> {
+        let id: i64 = row.get(0)?;
+        let item_type = ClipboardItemType::from_str(row.get::<_, String>(1)?.as_str());
+        let mut content: String = row.get(2)?;
+        let is_encrypted: i64 = row.get(3)?;
+        let tags_json: String = row.get(4)?;
+        let created_at: String = row.get(5)?;
+        let content_hash: String = row.get(6)?;
+
+        if is_encrypted == 1 {
+            let Ok(decrypted) = self.crypto.decrypt(&content) else {
+                return Ok(None);
+            };
+            content = decrypted;
+        }
+
+        let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+        Ok(Some(IndexedRecord {
+            record: ClipboardRecord {
+                id,
+                item_type,
+                content,
+                tags,
+                created_at,
+            },
+            content_hash,
+        }))
+    }
+
+    fn upsert_index_record(&self, indexed: IndexedRecord) {
+        let id = indexed.record.id;
+        let mut index = self
+            .memory_index
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if !index.by_id.contains_key(&id) {
+            index.order_desc_ids.push(id);
+        }
+        index.by_id.insert(id, indexed);
+        index.order_desc_ids.sort_unstable_by(|left, right| right.cmp(left));
+    }
+
+    fn remove_index_record(&self, id: i64) {
+        let mut index = self
+            .memory_index
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if index.by_id.remove(&id).is_some() {
+            index.order_desc_ids.retain(|existing| *existing != id);
+        }
+    }
+
+    fn cached_semantic_embedding(
+        &self,
+        cache_key: &str,
+        content: &str,
+        seed_terms: &[String],
+    ) -> Vec<f32> {
+        if let Ok(cache) = self.semantic_embedding_cache.lock()
+            && let Some(existing) = cache.get(cache_key)
+        {
+            return existing.clone();
+        }
+
+        let embedding = semantic_embedding(content, seed_terms);
+        if let Ok(mut cache) = self.semantic_embedding_cache.lock() {
+            if cache.len() >= SEMANTIC_EMBEDDING_CACHE_MAX {
+                cache.clear();
+            }
+            cache.insert(cache_key.to_owned(), embedding.clone());
+        }
+        embedding
     }
 }
 
@@ -479,6 +734,12 @@ impl CryptoBox {
             .decrypt(Nonce::from_slice(nonce_bytes), cipher_bytes)
             .map_err(|_| anyhow!("unable to decrypt clipboard content"))?;
         String::from_utf8(plaintext).context("decrypted payload is not utf-8")
+    }
+
+    fn ephemeral() -> Self {
+        let mut key = [0_u8; 32];
+        OsRng.fill_bytes(&mut key);
+        Self { key }
     }
 }
 
@@ -890,7 +1151,241 @@ fn content_hash(content: &str) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn record_matches_query(record: &ClipboardRecord, query: &str, tag_only: bool) -> bool {
+fn combined_search_score(item: &ScoredRecord) -> f32 {
+    if item.lexical_score > 0.0 {
+        2.0 + (item.lexical_score * 1.35) + (item.semantic_score * 0.45)
+    } else {
+        item.semantic_score
+    }
+}
+
+fn lexical_match_score(record: &ClipboardRecord, query: &str, query_terms: &[String]) -> f32 {
+    let content = record.content.to_ascii_lowercase();
+    let tags: Vec<String> = record
+        .tags
+        .iter()
+        .map(|tag| tag.to_ascii_lowercase())
+        .collect();
+    let mut score = 0.0_f32;
+
+    if content == query {
+        score += 2.4;
+    }
+    if content.starts_with(query) {
+        score += 1.5;
+    }
+    if content.contains(query) {
+        score += 1.0;
+    }
+    if tags.iter().any(|tag| tag == query) {
+        score += 1.3;
+    }
+    if tags.iter().any(|tag| tag.contains(query)) {
+        score += 0.8;
+    }
+    if record.item_type.as_str() == query {
+        score += 1.0;
+    }
+
+    if !query_terms.is_empty() {
+        let mut matched_terms = 0_usize;
+        for term in query_terms {
+            if term.len() < 2 {
+                continue;
+            }
+
+            if content.contains(term) || tags.iter().any(|tag| tag.contains(term)) {
+                matched_terms += 1;
+            }
+        }
+        score += matched_terms as f32 / query_terms.len() as f32;
+    }
+
+    score
+}
+
+fn semantic_embedding(content: &str, seed_terms: &[String]) -> Vec<f32> {
+    let normalized = content.trim().to_ascii_lowercase();
+    let mut terms = semantic_tokenize(&normalized);
+    for term in seed_terms {
+        terms.extend(semantic_tokenize(term));
+    }
+
+    if terms.is_empty() {
+        return vec![0.0; SEMANTIC_VECTOR_DIM];
+    }
+
+    let mut vector = vec![0.0_f32; SEMANTIC_VECTOR_DIM];
+    let mut canonical_terms = Vec::with_capacity(terms.len());
+
+    for term in terms {
+        if term.len() < 2 {
+            continue;
+        }
+
+        let canonical = canonical_semantic_term(&term).to_owned();
+        hash_feature_into_vector(&mut vector, "w:", &canonical, 1.0);
+        if let Some(stem) = light_stem(&canonical)
+            && stem != canonical
+        {
+            hash_feature_into_vector(&mut vector, "s:", &stem, 0.65);
+        }
+        canonical_terms.push(canonical);
+    }
+
+    for pair in canonical_terms.windows(2) {
+        let feature = format!("{}_{}", pair[0], pair[1]);
+        hash_feature_into_vector(&mut vector, "b:", &feature, 0.45);
+    }
+
+    for trigram in semantic_char_ngrams(&normalized) {
+        hash_feature_into_vector(&mut vector, "c:", &trigram, 0.22);
+    }
+
+    let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for value in &mut vector {
+            *value /= norm;
+        }
+    }
+
+    vector
+}
+
+fn semantic_tokenize(value: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '/') {
+            current.push(ch.to_ascii_lowercase());
+            continue;
+        }
+
+        if !current.is_empty() {
+            push_semantic_token(&current, &mut tokens);
+            current.clear();
+        }
+    }
+
+    if !current.is_empty() {
+        push_semantic_token(&current, &mut tokens);
+    }
+
+    tokens
+}
+
+fn push_semantic_token(token: &str, output: &mut Vec<String>) {
+    if token.len() >= 2 {
+        output.push(token.to_owned());
+    }
+
+    for part in token.split([':', '/', '-', '_', '.']) {
+        if part.len() >= 2 {
+            output.push(part.to_owned());
+        }
+    }
+}
+
+fn canonical_semantic_term(term: &str) -> &str {
+    match term {
+        "pass" | "passwd" | "password" | "pwd" | "secret" | "token" | "apikey" | "api_key"
+        | "credential" | "credentials" => "secret",
+        "cmd" | "command" | "shell" | "terminal" | "bash" | "zsh" => "command",
+        "link" | "url" | "uri" | "http" | "https" | "website" | "web" => "url",
+        "snippet" | "snippets" | "clipboard" | "clip" | "copy" | "paste" => "snippet",
+        "javascript" | "nodejs" | "node" | "js" => "javascript",
+        "typescript" | "ts" | "tsx" => "typescript",
+        "python" | "py" => "python",
+        "golang" | "go" => "go",
+        "postgres" | "postgresql" | "psql" => "sql",
+        "env" | "dotenv" | "environment" => "env",
+        "k8s" | "kubernetes" => "kubernetes",
+        _ => term,
+    }
+}
+
+fn light_stem(term: &str) -> Option<String> {
+    const SUFFIXES: [&str; 16] = [
+        "ations", "ation", "ments", "ment", "ingly", "edly", "tion", "ions", "ing", "ers", "ies",
+        "ied", "ed", "ly", "es", "s",
+    ];
+
+    for suffix in SUFFIXES {
+        if term.len() <= suffix.len() + 3 || !term.ends_with(suffix) {
+            continue;
+        }
+
+        let mut stem = term.to_owned();
+        stem.truncate(term.len() - suffix.len());
+        if suffix == "ies" {
+            stem.push('y');
+        }
+        return Some(stem);
+    }
+
+    None
+}
+
+fn semantic_char_ngrams(value: &str) -> Vec<String> {
+    let chars: Vec<char> = value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .take(256)
+        .collect();
+
+    if chars.len() < 3 {
+        return Vec::new();
+    }
+
+    chars
+        .windows(3)
+        .map(|window| window.iter().collect())
+        .collect()
+}
+
+fn hash_feature_into_vector(vector: &mut [f32], prefix: &str, feature: &str, weight: f32) {
+    if feature.is_empty() || vector.is_empty() {
+        return;
+    }
+
+    let hash = stable_feature_hash(prefix, feature);
+    let index = (hash as usize) % vector.len();
+    let sign = if hash & (1_u64 << 63) == 0 { 1.0 } else { -1.0 };
+    vector[index] += sign * weight;
+}
+
+fn stable_feature_hash(prefix: &str, value: &str) -> u64 {
+    const FNV_OFFSET: u64 = 14_695_981_039_346_656_037;
+    const FNV_PRIME: u64 = 1_099_511_628_211;
+
+    let mut hash = FNV_OFFSET;
+    for byte in prefix.as_bytes().iter().chain(value.as_bytes()) {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
+    if left.len() != right.len() || left.is_empty() {
+        return 0.0;
+    }
+
+    let mut dot = 0.0_f32;
+    let mut left_norm = 0.0_f32;
+    let mut right_norm = 0.0_f32;
+    for (lhs, rhs) in left.iter().zip(right.iter()) {
+        dot += lhs * rhs;
+        left_norm += lhs * lhs;
+        right_norm += rhs * rhs;
+    }
+
+    let norm = (left_norm.sqrt() * right_norm.sqrt()).max(1e-6);
+    (dot / norm).clamp(-1.0, 1.0)
+}
+
+pub(crate) fn record_matches_query(record: &ClipboardRecord, query: &str, tag_only: bool) -> bool {
     if tag_only {
         let tag_terms: Vec<&str> = query
             .split_whitespace()
@@ -1193,4 +1688,45 @@ fn levenshtein_with_limit(a: &str, b: &str, limit: usize) -> bool {
     }
 
     prev[short.len()] <= limit
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn semantic_similarity_prefers_related_content() {
+        let query = semantic_embedding("remove docker container", &[]);
+        let related = semantic_embedding(
+            "docker rm -f my_service_container",
+            &[String::from("command")],
+        );
+        let unrelated = semantic_embedding("book flights for vacation", &[String::from("text")]);
+
+        let related_score = cosine_similarity(&query, &related);
+        let unrelated_score = cosine_similarity(&query, &unrelated);
+
+        assert!(
+            related_score > unrelated_score,
+            "expected related score ({related_score}) to exceed unrelated score ({unrelated_score})"
+        );
+    }
+
+    #[test]
+    fn semantic_aliases_bridge_secret_terms() {
+        let query = semantic_embedding("password reset guide", &[]);
+        let alias_match = semantic_embedding(
+            "rotate API token and credentials",
+            &[String::from("secret")],
+        );
+        let unrelated = semantic_embedding("frontend animation timing", &[String::from("css")]);
+
+        let alias_score = cosine_similarity(&query, &alias_match);
+        let unrelated_score = cosine_similarity(&query, &unrelated);
+
+        assert!(
+            alias_score > unrelated_score,
+            "expected alias score ({alias_score}) to exceed unrelated score ({unrelated_score})"
+        );
+    }
 }

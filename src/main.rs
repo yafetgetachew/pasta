@@ -10,6 +10,7 @@ use std::{
     ffi::CStr,
     fs,
     ops::Range,
+    path::PathBuf,
     sync::{Arc, OnceLock, mpsc},
     time::{Duration, Instant},
 };
@@ -49,9 +50,11 @@ use objc::{
     sel, sel_impl,
 };
 #[cfg(target_os = "macos")]
+use serde::{Deserialize, Serialize};
+#[cfg(target_os = "macos")]
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "macos")]
-use storage::{ClipboardItemType, ClipboardRecord, ClipboardStorage};
+use storage::{ClipboardItemType, ClipboardRecord, ClipboardStorage, record_matches_query};
 
 #[cfg(target_os = "macos")]
 #[link(name = "LocalAuthentication", kind = "framework")]
@@ -84,6 +87,8 @@ const WINDOW_HEIGHT_ANIMATION_SNAP: f32 = 0.5;
 #[cfg(target_os = "macos")]
 const WINDOW_HEIGHT_RESIZE_STEP: f32 = 1.0;
 #[cfg(target_os = "macos")]
+const QUERY_REFRESH_DEBOUNCE_MS: u64 = 35;
+#[cfg(target_os = "macos")]
 const SELECTION_EXPAND_DWELL_MS: u64 = 140;
 #[cfg(target_os = "macos")]
 const MAX_VISIBLE_TAG_CHIPS: usize = 4;
@@ -112,6 +117,15 @@ struct UiStyleState {
 
 #[cfg(target_os = "macos")]
 impl Global for UiStyleState {}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedUiStyleState {
+    family: String,
+    surface_alpha: f32,
+    syntax_highlighting: bool,
+    secret_auto_clear: bool,
+}
 
 #[cfg(target_os = "macos")]
 const MENU_TAG_SHOW: isize = 1;
@@ -229,13 +243,70 @@ enum TagEditorMode {
 }
 
 #[cfg(target_os = "macos")]
+struct SearchRequest {
+    request_id: u64,
+    query: String,
+}
+
+#[cfg(target_os = "macos")]
+struct SearchResponse {
+    request_id: u64,
+    items: Vec<ClipboardRecord>,
+}
+
+#[cfg(target_os = "macos")]
+fn start_search_worker(
+    storage: Arc<ClipboardStorage>,
+) -> (mpsc::Sender<SearchRequest>, mpsc::Receiver<SearchResponse>) {
+    let (request_tx, request_rx) = mpsc::channel::<SearchRequest>();
+    let (result_tx, result_rx) = mpsc::channel::<SearchResponse>();
+
+    let spawn_result = std::thread::Builder::new()
+        .name("pasta-search-worker".to_owned())
+        .spawn(move || {
+            while let Ok(mut request) = request_rx.recv() {
+                while let Ok(newer) = request_rx.try_recv() {
+                    request = newer;
+                }
+
+                let items = storage
+                    .search_items(&request.query, 48)
+                    .unwrap_or_else(|err| {
+                        eprintln!("warning: search worker failed to query clipboard items: {err}");
+                        Vec::new()
+                    });
+
+                if result_tx
+                    .send(SearchResponse {
+                        request_id: request.request_id,
+                        items,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+    if let Err(err) = spawn_result {
+        eprintln!("warning: failed to start search worker thread: {err}");
+    }
+
+    (request_tx, result_rx)
+}
+
+#[cfg(target_os = "macos")]
 struct LauncherView {
     storage: Arc<ClipboardStorage>,
     font_family: SharedString,
     surface_alpha: f32,
     syntax_highlighting: bool,
     results_scroll: ScrollHandle,
+    search_request_tx: mpsc::Sender<SearchRequest>,
+    search_result_rx: mpsc::Receiver<SearchResponse>,
+    next_search_request_id: u64,
+    latest_search_request_id: u64,
     query: String,
+    query_refresh_due_at: Option<Instant>,
     query_select_all: bool,
     items: Vec<ClipboardRecord>,
     selected_index: usize,
@@ -273,13 +344,19 @@ impl LauncherView {
         surface_alpha: f32,
         syntax_highlighting: bool,
     ) -> Self {
+        let (search_request_tx, search_result_rx) = start_search_worker(storage.clone());
         let mut view = Self {
             storage,
             font_family,
             surface_alpha,
             syntax_highlighting,
             results_scroll: ScrollHandle::new(),
+            search_request_tx,
+            search_result_rx,
+            next_search_request_id: 0,
+            latest_search_request_id: 0,
             query: String::new(),
+            query_refresh_due_at: None,
             query_select_all: false,
             items: Vec::new(),
             selected_index: 0,
@@ -308,15 +385,17 @@ impl LauncherView {
             show_command_help: false,
             last_window_appearance: None,
         };
-        view.refresh_items();
+        view.request_search();
         view
     }
 
     fn reset_for_show(&mut self) {
         self.query.clear();
+        self.query_refresh_due_at = None;
         self.query_select_all = false;
         self.selected_index = 0;
         self.selection_changed_at = Instant::now();
+        self.items.clear();
         self.revealed_secret_id = None;
         self.reveal_until = None;
         self.last_reveal_second_bucket = None;
@@ -334,10 +413,7 @@ impl LauncherView {
         self.suppress_auto_hide_until = None;
         self.show_command_help = false;
         self.last_window_appearance = None;
-        self.refresh_items();
-        if !self.items.is_empty() {
-            self.results_scroll.scroll_to_top_of_item(0);
-        }
+        self.request_search();
     }
 
     fn sync_window_appearance(&mut self, window: &Window) -> bool {
@@ -567,6 +643,86 @@ impl LauncherView {
         }
     }
 
+    fn request_search(&mut self) {
+        self.next_search_request_id = self.next_search_request_id.wrapping_add(1);
+        let request_id = self.next_search_request_id;
+        self.latest_search_request_id = request_id;
+
+        if self
+            .search_request_tx
+            .send(SearchRequest {
+                request_id,
+                query: self.query.clone(),
+            })
+            .is_err()
+        {
+            // Fallback for environments where the worker thread is unavailable.
+            self.refresh_items();
+        }
+    }
+
+    fn drain_search_results(&mut self) -> bool {
+        let mut changed = false;
+        while let Ok(response) = self.search_result_rx.try_recv() {
+            if response.request_id < self.latest_search_request_id {
+                continue;
+            }
+
+            self.items = response.items;
+            if self.selected_index >= self.items.len() {
+                self.selected_index = 0;
+            }
+            changed = true;
+        }
+        changed
+    }
+
+    fn schedule_query_refresh(&mut self) {
+        self.query_refresh_due_at =
+            Some(Instant::now() + Duration::from_millis(QUERY_REFRESH_DEBOUNCE_MS));
+    }
+
+    fn flush_pending_query_refresh(&mut self) -> bool {
+        if self.query_refresh_due_at.take().is_none() {
+            return false;
+        }
+        self.request_search();
+        true
+    }
+
+    fn tick_query_refresh(&mut self) -> bool {
+        let Some(due_at) = self.query_refresh_due_at else {
+            return false;
+        };
+        if Instant::now() < due_at {
+            return false;
+        }
+        self.flush_pending_query_refresh()
+    }
+
+    fn filter_visible_items_for_query(&mut self, query: &str) {
+        let normalized = query.trim().to_lowercase();
+        if normalized.is_empty() {
+            return;
+        }
+
+        let tag_only = normalized.starts_with('/');
+        let effective_query = if tag_only {
+            normalized.trim_start_matches('/').trim().to_owned()
+        } else {
+            normalized
+        };
+        if effective_query.is_empty() {
+            return;
+        }
+
+        self.items
+            .retain(|record| record_matches_query(record, &effective_query, tag_only));
+        if self.selected_index >= self.items.len() {
+            self.selected_index = 0;
+        }
+    }
+
     fn move_selection(&mut self, direction: i32, cx: &mut Context<Self>) {
         if self.items.is_empty() {
             self.selected_index = 0;
@@ -685,14 +841,16 @@ impl LauncherView {
     }
 
     fn update_query(&mut self, query: String, cx: &mut Context<Self>) {
+        let previous_query = self.query.clone();
         self.query = query;
         self.query_select_all = false;
         self.selected_index = 0;
         self.selection_changed_at = Instant::now();
-        self.refresh_items();
-        if !self.items.is_empty() {
-            self.results_scroll.scroll_to_top_of_item(0);
+        if !previous_query.is_empty() && self.query.starts_with(&previous_query) {
+            let query = self.query.clone();
+            self.filter_visible_items_for_query(&query);
         }
+        self.schedule_query_refresh();
         cx.notify();
     }
 
@@ -831,10 +989,16 @@ impl LauncherView {
             modifiers.platform && !modifiers.control && !modifiers.alt && !modifiers.function;
         let option_navigation =
             modifiers.alt && !modifiers.platform && !modifiers.control && !modifiers.function;
+        let typed_char = typed_character(event);
 
         if self.tag_editor_target_id.is_some() {
             self.handle_tag_editor_keystroke(event, cx);
             return;
+        }
+
+        let is_query_edit_key = (key == "backspace" && no_modifiers) || typed_char.is_some();
+        if !is_query_edit_key && self.query_refresh_due_at.is_some() {
+            self.flush_pending_query_refresh();
         }
 
         if option_navigation {
@@ -931,7 +1095,7 @@ impl LauncherView {
                 && !modifiers.alt
                 && !modifiers.function =>
             {
-                self.begin_close_transition(LauncherExitIntent::Quit);
+                self.begin_close_transition(LauncherExitIntent::Hide);
                 cx.notify();
                 return;
             }
@@ -964,7 +1128,7 @@ impl LauncherView {
             _ => {}
         }
 
-        if let Some(character) = typed_character(event) {
+        if let Some(character) = typed_char {
             if self.query_select_all {
                 self.update_query(character.to_string(), cx);
             } else {
@@ -1310,7 +1474,7 @@ impl Render for LauncherView {
                             div()
                                 .text_xs()
                                 .text_color(palette.muted_text)
-                                .child("⌥J/⌥K/⌥L/⌥; navigate • ⌘⇧S mark secret • ⌘T add tags • ⌘⇧T remove tags • ⌘D delete • Esc close • ⌘Q quit • ⌘H hide help"),
+                                .child("⌥J/⌥K/⌥L/⌥; navigate • ⌘⇧S mark secret • ⌘T add tags • ⌘⇧T remove tags • ⌘D delete • Esc close • ⌘Q close • ⌘H hide help"),
                         )
                 } else {
                     div()
@@ -2572,18 +2736,25 @@ fn configure_background_mode() {
 }
 
 #[cfg(target_os = "macos")]
-fn menu_action_handler_class() -> *const Class {
-    static CLASS: OnceLock<usize> = OnceLock::new();
-    *CLASS.get_or_init(|| unsafe {
+fn menu_action_handler_class() -> Option<*const Class> {
+    static CLASS: OnceLock<Option<usize>> = OnceLock::new();
+    let class = CLASS.get_or_init(|| unsafe {
+        if let Some(existing) = Class::get("PastaMenuActionHandler") {
+            return Some((existing as *const Class) as usize);
+        }
+
         let superclass = class!(NSObject);
-        let mut decl = ClassDecl::new("PastaMenuActionHandler", superclass)
-            .expect("failed to create PastaMenuActionHandler class");
+        let Some(mut decl) = ClassDecl::new("PastaMenuActionHandler", superclass) else {
+            eprintln!("warning: failed to create PastaMenuActionHandler class");
+            return None;
+        };
         decl.add_method(
             sel!(menuAction:),
             menu_action as extern "C" fn(&Object, Sel, id),
         );
-        (decl.register() as *const Class) as usize
-    }) as *const Class
+        Some((decl.register() as *const Class) as usize)
+    });
+    class.as_ref().map(|class| *class as *const Class)
 }
 
 #[cfg(target_os = "macos")]
@@ -2669,8 +2840,17 @@ fn setup_status_item(cx: &mut App) {
         let status_item = status_bar.statusItemWithLength_(NSVariableStatusItemLength);
         let button = status_item.button();
         let menu = NSMenu::new(nil);
-        let handler_class = menu_action_handler_class();
+        let Some(handler_class) = menu_action_handler_class() else {
+            eprintln!(
+                "warning: status menu unavailable (unable to register Objective-C action handler)"
+            );
+            return;
+        };
         let handler: id = msg_send![handler_class, new];
+        if handler == nil {
+            eprintln!("warning: status menu unavailable (unable to create menu action handler)");
+            return;
+        }
 
         let show_item = menu_item(
             "Show Pasta",
@@ -2763,7 +2943,7 @@ fn setup_status_item(cx: &mut App) {
 
         let close_item = menu_item(
             "Close Pasta",
-            "q",
+            "",
             handler,
             selector("menuAction:"),
             MENU_TAG_QUIT,
@@ -2787,11 +2967,18 @@ fn setup_status_item(cx: &mut App) {
 
 #[cfg(target_os = "macos")]
 fn setup_hotkey(cx: &mut App) {
-    let manager = GlobalHotKeyManager::new().expect("failed to create global hotkey manager");
+    let manager = match GlobalHotKeyManager::new() {
+        Ok(manager) => manager,
+        Err(err) => {
+            eprintln!("warning: failed to create global hotkey manager: {err}");
+            return;
+        }
+    };
     let hotkey = HotKey::new(Some(Modifiers::ALT), Code::Space);
-    manager
-        .register(hotkey)
-        .expect("failed to register Option+Space hotkey");
+    if let Err(err) = manager.register(hotkey) {
+        eprintln!("warning: failed to register Option+Space hotkey: {err}");
+        return;
+    }
 
     cx.set_global(HotkeyRegistration {
         _manager: manager,
@@ -2817,12 +3004,12 @@ fn launcher_window_bounds(cx: &mut App) -> (Bounds<gpui::Pixels>, Option<gpui::D
 }
 
 #[cfg(target_os = "macos")]
-fn create_launcher_window(cx: &mut App) -> WindowHandle<LauncherView> {
+fn create_launcher_window(cx: &mut App) -> Option<WindowHandle<LauncherView>> {
     let (bounds, display_id) = launcher_window_bounds(cx);
     let storage = cx.global::<StorageState>().storage.clone();
     let style = cx.global::<UiStyleState>().clone();
 
-    cx.open_window(
+    match cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: None,
@@ -2879,8 +3066,99 @@ fn create_launcher_window(cx: &mut App) -> WindowHandle<LauncherView> {
                 view
             })
         },
-    )
-    .expect("failed to open launcher window")
+    ) {
+        Ok(window) => Some(window),
+        Err(err) => {
+            eprintln!("warning: failed to open launcher window: {err}");
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn ui_style_state_path() -> Option<PathBuf> {
+    let base = dirs::config_dir()
+        .or_else(dirs::data_local_dir)
+        .or_else(dirs::home_dir)?;
+    let directory = base.join("PastaClipboard");
+    if let Err(err) = fs::create_dir_all(&directory) {
+        eprintln!("warning: unable to create config directory '{directory:?}': {err}");
+        return None;
+    }
+    Some(directory.join("ui-style.json"))
+}
+
+#[cfg(target_os = "macos")]
+fn default_ui_style_state(default_family: SharedString) -> UiStyleState {
+    UiStyleState {
+        family: default_family,
+        surface_alpha: 0.72,
+        syntax_highlighting: true,
+        secret_auto_clear: true,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn load_ui_style_state(default_family: SharedString) -> UiStyleState {
+    let mut style = default_ui_style_state(default_family);
+    let Some(path) = ui_style_state_path() else {
+        return style;
+    };
+
+    let data = match fs::read_to_string(&path) {
+        Ok(data) => data,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return style,
+        Err(err) => {
+            eprintln!("warning: unable to read style settings from '{path:?}': {err}");
+            return style;
+        }
+    };
+
+    let persisted: PersistedUiStyleState = match serde_json::from_str(&data) {
+        Ok(persisted) => persisted,
+        Err(err) => {
+            eprintln!("warning: unable to parse style settings from '{path:?}': {err}");
+            return style;
+        }
+    };
+
+    let family = persisted.family.trim();
+    if !family.is_empty() {
+        style.family = family.to_owned().into();
+    }
+    style.surface_alpha = persisted.surface_alpha.clamp(0.45, 1.0);
+    style.syntax_highlighting = persisted.syntax_highlighting;
+    style.secret_auto_clear = persisted.secret_auto_clear;
+    style
+}
+
+#[cfg(target_os = "macos")]
+fn save_ui_style_state(style: &UiStyleState) {
+    let Some(path) = ui_style_state_path() else {
+        return;
+    };
+
+    let serialized = match serde_json::to_string_pretty(&PersistedUiStyleState {
+        family: style.family.to_string(),
+        surface_alpha: style.surface_alpha.clamp(0.45, 1.0),
+        syntax_highlighting: style.syntax_highlighting,
+        secret_auto_clear: style.secret_auto_clear,
+    }) {
+        Ok(serialized) => serialized,
+        Err(err) => {
+            eprintln!("warning: unable to serialize style settings: {err}");
+            return;
+        }
+    };
+
+    if let Err(err) = fs::write(&path, serialized) {
+        eprintln!("warning: unable to write style settings to '{path:?}': {err}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn persist_ui_style_state(cx: &App) {
+    save_ui_style_state(cx.global::<UiStyleState>());
 }
 
 #[cfg(target_os = "macos")]
@@ -2901,14 +3179,9 @@ fn load_embedded_ui_font(cx: &mut App) {
         eprintln!("warning: unable to load embedded Meslo font: {err}");
     }
 
-    let family = resolve_font_family(cx, FontChoice::MesloLg).unwrap_or_else(|| "Menlo".into());
-
-    cx.set_global(UiStyleState {
-        family,
-        surface_alpha: 0.72,
-        syntax_highlighting: true,
-        secret_auto_clear: true,
-    });
+    let default_family =
+        resolve_font_family(cx, FontChoice::MesloLg).unwrap_or_else(|| "Menlo".into());
+    cx.set_global(load_ui_style_state(default_family));
 }
 
 #[cfg(target_os = "macos")]
@@ -2994,15 +3267,14 @@ fn handle_menu_command(command: MenuCommand, cx: &mut App) {
             }
 
             if should_terminate_now {
-                unsafe {
-                    let _: () = msg_send![NSApp(), terminate: nil];
-                }
+                cx.quit();
             }
         }
         MenuCommand::SetFont(choice) => {
             if let Some(family) = resolve_font_family(cx, choice) {
                 cx.global_mut::<UiStyleState>().family = family;
                 apply_style_to_open_window(cx);
+                persist_ui_style_state(cx);
             } else {
                 let fallback = choice
                     .candidates()
@@ -3011,6 +3283,7 @@ fn handle_menu_command(command: MenuCommand, cx: &mut App) {
                     .unwrap_or_else(|| choice.label());
                 cx.global_mut::<UiStyleState>().family = fallback.into();
                 apply_style_to_open_window(cx);
+                persist_ui_style_state(cx);
                 eprintln!(
                     "warning: requested font '{}' not resolved via text system; using fallback '{}'",
                     choice.label(),
@@ -3021,13 +3294,16 @@ fn handle_menu_command(command: MenuCommand, cx: &mut App) {
         MenuCommand::SetTransparency(alpha) => {
             cx.global_mut::<UiStyleState>().surface_alpha = alpha.clamp(0.45, 1.0);
             apply_style_to_open_window(cx);
+            persist_ui_style_state(cx);
         }
         MenuCommand::SetSyntaxHighlighting(enabled) => {
             cx.global_mut::<UiStyleState>().syntax_highlighting = enabled;
             apply_style_to_open_window(cx);
+            persist_ui_style_state(cx);
         }
         MenuCommand::SetSecretAutoClear(enabled) => {
             cx.global_mut::<UiStyleState>().secret_auto_clear = enabled;
+            persist_ui_style_state(cx);
         }
     }
 }
@@ -3060,10 +3336,12 @@ fn spawn_launcher_transition_loop(cx: &mut App) {
                     .and_then(|state| state.window)
                 {
                     let _ = window.update(cx, |view, window, cx| {
+                        let search_results_changed = view.drain_search_results();
                         let appearance_changed = view.sync_window_appearance(window);
                         let resized = view.tick_window_height_animation(window);
                         let reveal_changed = view.clear_expired_secret_reveal();
                         let reveal_tick_changed = view.secret_countdown_tick_changed();
+                        let query_refreshed = view.tick_query_refresh();
                         let transition_active = view.transition_running();
 
                         if !transition_active {
@@ -3071,6 +3349,8 @@ fn spawn_launcher_transition_loop(cx: &mut App) {
                                 || resized
                                 || reveal_changed
                                 || reveal_tick_changed
+                                || search_results_changed
+                                || query_refreshed
                             {
                                 cx.notify();
                             }
@@ -3082,9 +3362,7 @@ fn spawn_launcher_transition_loop(cx: &mut App) {
 
                         match maybe_exit {
                             Some(LauncherExitIntent::Hide) => cx.hide(),
-                            Some(LauncherExitIntent::Quit) => unsafe {
-                                let _: () = msg_send![NSApp(), terminate: nil];
-                            },
+                            Some(LauncherExitIntent::Quit) => cx.quit(),
                             None => {}
                         }
                     });
@@ -3108,7 +3386,9 @@ fn show_launcher(cx: &mut App) {
         .try_global::<LauncherState>()
         .and_then(|state| state.window);
     if window.is_none() {
-        let created = create_launcher_window(cx);
+        let Some(created) = create_launcher_window(cx) else {
+            return;
+        };
         cx.global_mut::<LauncherState>().window = Some(created);
         window = Some(created);
     }
@@ -3135,18 +3415,19 @@ fn show_launcher(cx: &mut App) {
         })
         .is_err()
     {
-        let created = create_launcher_window(cx);
-        cx.global_mut::<LauncherState>().window = Some(created);
-        let _ = created.update(cx, |view, window, cx| {
-            view.font_family = style.family.clone();
-            view.surface_alpha = style.surface_alpha;
-            view.syntax_highlighting = style.syntax_highlighting;
-            view.reset_for_show();
-            window.resize(size(px(LAUNCHER_WIDTH), px(LAUNCHER_HEIGHT)));
-            view.begin_open_transition();
-            cx.notify();
-            window.activate_window();
-        });
+        if let Some(created) = create_launcher_window(cx) {
+            cx.global_mut::<LauncherState>().window = Some(created);
+            let _ = created.update(cx, |view, window, cx| {
+                view.font_family = style.family.clone();
+                view.surface_alpha = style.surface_alpha;
+                view.syntax_highlighting = style.syntax_highlighting;
+                view.reset_for_show();
+                window.resize(size(px(LAUNCHER_WIDTH), px(LAUNCHER_HEIGHT)));
+                view.begin_open_transition();
+                cx.notify();
+                window.activate_window();
+            });
+        }
     }
 }
 
@@ -3525,10 +3806,31 @@ fn main() {
         let (menu_tx, menu_rx) = mpsc::channel::<MenuCommand>();
         let _ = MENU_COMMAND_TX.set(menu_tx);
 
-        let storage = Arc::new(
-            ClipboardStorage::bootstrap("PastaClipboard")
-                .expect("failed to initialize clipboard storage"),
-        );
+        let storage = match ClipboardStorage::bootstrap("PastaClipboard") {
+            Ok(storage) => Arc::new(storage),
+            Err(primary_err) => {
+                eprintln!(
+                    "warning: failed to initialize persistent clipboard storage: {primary_err}"
+                );
+                match ClipboardStorage::bootstrap_fallback("PastaClipboard") {
+                    Ok(storage) => {
+                        eprintln!("warning: using fallback clipboard storage for this session");
+                        show_macos_notification(
+                            "Pasta",
+                            "Storage fallback mode is active for this session.",
+                        );
+                        Arc::new(storage)
+                    }
+                    Err(fallback_err) => {
+                        eprintln!(
+                            "error: failed to initialize clipboard storage fallback: {fallback_err}"
+                        );
+                        cx.quit();
+                        return;
+                    }
+                }
+            }
+        };
         if let Some(initial_snapshot) = read_clipboard_snapshot()
             && !initial_snapshot.is_transient
         {
@@ -3545,9 +3847,7 @@ fn main() {
         load_embedded_ui_font(cx);
 
         let window = create_launcher_window(cx);
-        cx.set_global(LauncherState {
-            window: Some(window),
-        });
+        cx.set_global(LauncherState { window });
         cx.set_global(AutoClearState::default());
         cx.set_global(SelfClipboardWriteState::default());
         configure_background_mode();
