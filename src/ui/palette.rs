@@ -212,6 +212,12 @@ pub(crate) fn tag_chip_color(label: &str, dark: bool) -> gpui::Hsla {
         }
         return rgb(0x15803d).into();
     }
+    if label.starts_with("P:") {
+        if dark {
+            return rgb(0x67e8f9).into();
+        }
+        return rgb(0x0e7490).into();
+    }
 
     match label {
         "LOCKED" => {
@@ -240,6 +246,13 @@ pub(crate) fn tag_chip_color(label: &str, dark: bool) -> gpui::Hsla {
         "CSS" => language_color(LanguageTag::Css, dark),
         "MD" => language_color(LanguageTag::Markdown, dark),
         "TOML" => language_color(LanguageTag::Toml, dark),
+        "PARAM" => {
+            if dark {
+                rgb(0x93c5fd).into()
+            } else {
+                rgb(0x1d4ed8).into()
+            }
+        }
         "ENV" => {
             if dark {
                 rgb(0xa78bfa).into()

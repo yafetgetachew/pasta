@@ -1,4 +1,6 @@
 #[cfg(target_os = "macos")]
+use super::actions::parameter_clickable_ranges;
+#[cfg(target_os = "macos")]
 use crate::*;
 
 #[cfg(target_os = "macos")]
@@ -17,11 +19,15 @@ impl Render for LauncherView {
         };
         let query_is_selected = self.query_select_all && !self.query.is_empty();
         let tag_editor_open = self.tag_editor_target_id.is_some();
+        let parameter_editor_open = self.parameter_editor_target_id.is_some();
+        let parameter_fill_open = self.parameter_fill_target_id.is_some();
         let transform_menu_open = self.transform_menu_open;
         let selection_stable = Instant::now().duration_since(self.selection_changed_at)
             >= Duration::from_millis(SELECTION_EXPAND_DWELL_MS);
         let selected_should_expand = selection_stable
             && !tag_editor_open
+            && !parameter_editor_open
+            && !parameter_fill_open
             && !transform_menu_open
             && self.items.get(self.selected_index).is_some_and(|item| {
                 !(item.item_type == ClipboardItemType::Password && self.is_secret_masked(item.id))
@@ -74,6 +80,12 @@ impl Render for LauncherView {
                 let detected_language = detect_language(item.item_type, &item.content);
                 let mut item_tags =
                     visible_tag_chips(item.item_type, detected_language, &item.tags);
+                if !item.parameters.is_empty() {
+                    item_tags.insert(0, "PARAM".to_owned());
+                    for parameter in item.parameters.iter().take(2) {
+                        item_tags.push(format!("P:{}", parameter.name.to_ascii_uppercase()));
+                    }
+                }
                 if item.item_type == ClipboardItemType::Password {
                     if let Some(seconds) = self.secret_seconds_left(item.id) {
                         item_tags.insert(0, format!("OPEN {seconds}s"));
@@ -109,7 +121,11 @@ impl Render for LauncherView {
                     } else {
                         rgba(0x00000000)
                     });
-                if !tag_editor_open && !transform_menu_open {
+                if !tag_editor_open
+                    && !parameter_editor_open
+                    && !parameter_fill_open
+                    && !transform_menu_open
+                {
                     row = row
                         .hover({
                             let row_hover = palette.row_hover_bg;
@@ -303,6 +319,349 @@ impl Render for LauncherView {
             );
         }
 
+        if let Some(item_id) = self.parameter_editor_target_id {
+            if self.parameter_editor_stage == ParameterEditorStage::SelectValue {
+                let item_content = self
+                    .items
+                    .iter()
+                    .find(|entry| entry.id == item_id)
+                    .map(|entry| entry.content.clone())
+                    .unwrap_or_default();
+                let mut token_picker = div().w_full().mt_1().flex().flex_row().flex_wrap().gap_1();
+                for (range_ix, range) in parameter_clickable_ranges(&item_content)
+                    .into_iter()
+                    .take(120)
+                    .enumerate()
+                {
+                    let Some(token) = item_content.get(range.clone()) else {
+                        continue;
+                    };
+                    if token.is_empty() {
+                        continue;
+                    }
+                    let token = token.to_owned();
+                    let is_selected = self
+                        .parameter_editor_selected_targets
+                        .iter()
+                        .any(|existing| existing == &token);
+                    let chip_bg = if is_selected {
+                        scale_alpha(palette.selected_bg, if palette.dark { 0.9 } else { 0.6 })
+                    } else {
+                        scale_alpha(palette.row_hover_bg, 0.92)
+                    };
+                    let chip_border = if is_selected {
+                        scale_alpha(palette.selected_border, 0.95)
+                    } else {
+                        scale_alpha(palette.window_border, 0.85)
+                    };
+
+                    token_picker = token_picker.child(
+                        div()
+                            .id(("parameter-token", range_ix as u64))
+                            .text_xs()
+                            .text_color(if is_selected {
+                                if palette.dark {
+                                    rgb(0xbfdbfe)
+                                } else {
+                                    rgb(0x1d4ed8)
+                                }
+                            } else {
+                                palette.row_text
+                            })
+                            .bg(chip_bg)
+                            .border_1()
+                            .border_color(chip_border)
+                            .rounded_md()
+                            .px_1()
+                            .py(px(1.0))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                                let additive = event.modifiers().platform;
+                                this.select_parameter_clickable_range(range_ix, additive, cx);
+                            }))
+                            .child(token),
+                    );
+                }
+
+                content = content.child(
+                    div()
+                        .w_full()
+                        .p_2()
+                        .bg(scale_alpha(
+                            palette.row_hover_bg,
+                            if palette.dark { 0.95 } else { 0.9 },
+                        ))
+                        .border_1()
+                        .border_color(palette.selected_border)
+                        .rounded_lg()
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(palette.title_text)
+                                        .child(format!("Parametrize Snippet • Snippet #{item_id}")),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted_text)
+                                        .child("Select token buttons, then P/Enter"),
+                                ),
+                        )
+                        .child(token_picker)
+                        .child(
+                            div()
+                                .w_full()
+                                .mt_1()
+                                .text_xs()
+                                .text_color(palette.muted_text)
+                                .child(if self.parameter_editor_selected_targets.is_empty() {
+                                    "Click a token • ⌘+click to multi-select • Tab/P/Enter next • Esc cancel"
+                                } else {
+                                    "⌘+click toggles additional tokens • Tab/P/Enter next • Esc cancel"
+                                }),
+                        ),
+                );
+            } else {
+                let mut name_rows = div().w_full().mt_1().flex().flex_col().gap_1();
+                if self.parameter_editor_selected_targets.is_empty() {
+                    name_rows = name_rows.child(
+                        div()
+                            .text_xs()
+                            .text_color(palette.muted_text)
+                            .child("No targets selected."),
+                    );
+                } else {
+                    for (ix, target) in self.parameter_editor_selected_targets.iter().enumerate() {
+                        let value = self
+                            .parameter_editor_name_inputs
+                            .get(ix)
+                            .cloned()
+                            .unwrap_or_default();
+                        let is_focus = ix == self.parameter_editor_name_focus_index;
+                        let value_display = if value.is_empty() {
+                            "e.g. reg_id".to_owned()
+                        } else {
+                            value
+                        };
+                        let value_color = if value_display == "e.g. reg_id" {
+                            palette.query_placeholder
+                        } else {
+                            palette.query_active
+                        };
+
+                        name_rows = name_rows.child(
+                            div()
+                                .id(("parameter-name-field", ix as u64))
+                                .w_full()
+                                .p_1()
+                                .rounded_md()
+                                .bg(if is_focus {
+                                    scale_alpha(
+                                        palette.selected_bg,
+                                        if palette.dark { 0.75 } else { 0.45 },
+                                    )
+                                } else {
+                                    scale_alpha(
+                                        palette.row_hover_bg,
+                                        if palette.dark { 0.92 } else { 0.88 },
+                                    )
+                                })
+                                .border_1()
+                                .border_color(if is_focus {
+                                    palette.selected_border
+                                } else {
+                                    scale_alpha(palette.window_border, 0.88)
+                                })
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.focus_parameter_name_index(ix, cx);
+                                }))
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .text_xs()
+                                        .text_color(palette.muted_text)
+                                        .child(target.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .mt_1()
+                                        .text_sm()
+                                        .text_color(value_color)
+                                        .child(value_display),
+                                ),
+                        );
+                    }
+                }
+
+                content = content.child(
+                    div()
+                        .w_full()
+                        .p_2()
+                        .bg(scale_alpha(
+                            palette.row_hover_bg,
+                            if palette.dark { 0.95 } else { 0.9 },
+                        ))
+                        .border_1()
+                        .border_color(palette.selected_border)
+                        .rounded_lg()
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(palette.title_text)
+                                        .child(format!("Parameter Name • Snippet #{item_id}")),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted_text)
+                                        .child("Enter save • Esc cancel"),
+                                ),
+                        )
+                        .child(name_rows)
+                        .child(
+                            div()
+                                .w_full()
+                                .mt_1()
+                                .text_xs()
+                                .text_color(palette.muted_text)
+                                .child("Stage 2/2 • Tab/↑↓ switch field • Use letters, numbers, underscores • ⌘V paste"),
+                        ),
+                );
+            }
+        }
+
+        if let Some(item_id) = self.parameter_fill_target_id {
+            let parameters = self
+                .items
+                .iter()
+                .find(|entry| entry.id == item_id)
+                .map(|entry| entry.parameters.clone())
+                .unwrap_or_default();
+            let mut fill_rows = div().w_full().mt_1().flex().flex_col().gap_1();
+            for (ix, parameter) in parameters.iter().enumerate() {
+                let value = self
+                    .parameter_fill_values
+                    .get(ix)
+                    .cloned()
+                    .unwrap_or_default();
+                let is_focus = ix == self.parameter_fill_focus_index;
+                let value_display = if value.is_empty() {
+                    "Type value…".to_owned()
+                } else {
+                    value
+                };
+                let value_color = if value_display == "Type value…" {
+                    palette.query_placeholder
+                } else {
+                    palette.query_active
+                };
+
+                fill_rows = fill_rows.child(
+                    div()
+                        .id(("parameter-fill-field", ix as u64))
+                        .w_full()
+                        .p_1()
+                        .rounded_md()
+                        .bg(if is_focus {
+                            scale_alpha(palette.selected_bg, if palette.dark { 0.78 } else { 0.48 })
+                        } else {
+                            scale_alpha(
+                                palette.row_hover_bg,
+                                if palette.dark { 0.92 } else { 0.88 },
+                            )
+                        })
+                        .border_1()
+                        .border_color(if is_focus {
+                            palette.selected_border
+                        } else {
+                            scale_alpha(palette.window_border, 0.88)
+                        })
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.focus_parameter_fill_index(ix, cx);
+                        }))
+                        .child(
+                            div()
+                                .w_full()
+                                .text_xs()
+                                .text_color(palette.muted_text)
+                                .child(parameter.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .mt_1()
+                                .text_sm()
+                                .text_color(value_color)
+                                .child(value_display),
+                        ),
+                );
+            }
+            if parameters.is_empty() {
+                fill_rows = fill_rows.child(
+                    div()
+                        .text_xs()
+                        .text_color(palette.muted_text)
+                        .child("No parameters found."),
+                );
+            }
+
+            content = content.child(
+                div()
+                    .w_full()
+                    .p_2()
+                    .bg(scale_alpha(
+                        palette.row_hover_bg,
+                        if palette.dark { 0.95 } else { 0.9 },
+                    ))
+                    .border_1()
+                    .border_color(palette.selected_border)
+                    .rounded_lg()
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(palette.title_text)
+                                    .child(format!("Fill Parameters • Snippet #{item_id}")),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette.muted_text)
+                                    .child("Enter copy • Esc cancel"),
+                            ),
+                    )
+                    .child(fill_rows)
+                    .child(
+                        div()
+                            .w_full()
+                            .mt_1()
+                            .text_xs()
+                            .text_color(palette.muted_text)
+                            .child("Tab/↑↓ switch field • ⌘V paste • leave all fields empty to copy original"),
+                    ),
+            );
+        }
+
         if self.transform_menu_open {
             let mut transform_buttons = div()
                 .w_full()
@@ -422,13 +781,13 @@ impl Render for LauncherView {
                             div()
                                 .text_xs()
                                 .text_color(palette.muted_text)
-                                .child("Search • /tag tag-only • Enter copy • Tab transforms • ⌘R reveal+copy secret"),
+                                .child("Search • /tag tag-only • Enter copy • Tab transforms • ⌘R reveal+copy secret • ⌘P parametrize"),
                         )
                         .child(
                             div()
                                 .text_xs()
                                 .text_color(palette.muted_text)
-                                .child("⌘J/⌘K/⌘L/⌘; navigate • ⌘⇧S mark secret • ⌘T add tags • ⌘⇧T remove tags • ⌘D delete • Esc close • ⌘Q close • ⌘H hide help"),
+                                .child("⌘J/⌘K/⌘L/⌘; navigate • click token chips to parametrize • ⌘⇧S mark secret • ⌘T add tags • ⌘⇧T remove tags • ⌘D delete • Esc close • ⌘Q close • ⌘H hide help"),
                         )
                 } else {
                     div()

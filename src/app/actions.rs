@@ -2,6 +2,11 @@
 use super::state::{SearchRequest, start_search_worker};
 #[cfg(target_os = "macos")]
 use crate::*;
+#[cfg(target_os = "macos")]
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+};
 
 impl LauncherView {
     pub(crate) fn new(
@@ -39,6 +44,16 @@ impl LauncherView {
             tag_editor_target_id: None,
             tag_editor_input: String::new(),
             tag_editor_mode: TagEditorMode::Add,
+            parameter_editor_target_id: None,
+            parameter_editor_name_input: String::new(),
+            parameter_editor_stage: ParameterEditorStage::SelectValue,
+            parameter_editor_selected_targets: Vec::new(),
+            parameter_editor_name_inputs: Vec::new(),
+            parameter_editor_name_focus_index: 0,
+            parameter_fill_target_id: None,
+            parameter_fill_input: String::new(),
+            parameter_fill_values: Vec::new(),
+            parameter_fill_focus_index: 0,
             transform_menu_open: false,
             window_height: LAUNCHER_HEIGHT,
             applied_window_height: LAUNCHER_HEIGHT,
@@ -69,6 +84,16 @@ impl LauncherView {
         self.tag_editor_target_id = None;
         self.tag_editor_input.clear();
         self.tag_editor_mode = TagEditorMode::Add;
+        self.parameter_editor_target_id = None;
+        self.parameter_editor_name_input.clear();
+        self.parameter_editor_stage = ParameterEditorStage::SelectValue;
+        self.parameter_editor_selected_targets.clear();
+        self.parameter_editor_name_inputs.clear();
+        self.parameter_editor_name_focus_index = 0;
+        self.parameter_fill_target_id = None;
+        self.parameter_fill_input.clear();
+        self.parameter_fill_values.clear();
+        self.parameter_fill_focus_index = 0;
         self.transform_menu_open = false;
         self.window_height = LAUNCHER_HEIGHT;
         self.applied_window_height = LAUNCHER_HEIGHT;
@@ -423,6 +448,11 @@ impl LauncherView {
             return;
         }
 
+        if !item.parameters.is_empty() {
+            self.open_parameter_fill_prompt(item.id, &item.parameters, cx);
+            return;
+        }
+
         self.mark_self_clipboard_write(&item.content, cx);
         cx.write_to_clipboard(ClipboardItem::new_string(item.content.clone()));
         if item.item_type == ClipboardItemType::Password {
@@ -612,6 +642,582 @@ impl LauncherView {
         cx.notify();
     }
 
+    pub(crate) fn start_parameter_editor_for_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.items.get(self.selected_index).cloned() else {
+            return;
+        };
+        if item.item_type == ClipboardItemType::Password {
+            show_macos_notification("Pasta", "Secrets cannot be parametrized.");
+            return;
+        }
+
+        self.parameter_editor_target_id = Some(item.id);
+        self.parameter_editor_selected_targets.clear();
+        self.parameter_editor_name_inputs.clear();
+        self.parameter_editor_name_focus_index = 0;
+        self.parameter_editor_name_input.clear();
+        self.parameter_editor_stage = ParameterEditorStage::SelectValue;
+        self.parameter_fill_target_id = None;
+        self.parameter_fill_input.clear();
+        self.parameter_fill_values.clear();
+        self.parameter_fill_focus_index = 0;
+        self.transform_menu_open = false;
+        self.tag_editor_target_id = None;
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_parameter_editor(&mut self, cx: &mut Context<Self>) {
+        self.parameter_editor_target_id = None;
+        self.parameter_editor_selected_targets.clear();
+        self.parameter_editor_name_inputs.clear();
+        self.parameter_editor_name_focus_index = 0;
+        self.parameter_editor_name_input.clear();
+        self.parameter_editor_stage = ParameterEditorStage::SelectValue;
+        cx.notify();
+    }
+
+    fn sync_parameter_editor_name_shadow(&mut self) {
+        self.parameter_editor_name_input = self
+            .parameter_editor_name_inputs
+            .get(self.parameter_editor_name_focus_index)
+            .cloned()
+            .unwrap_or_default();
+    }
+
+    fn sync_parameter_editor_name_inputs(&mut self) {
+        let mut existing = HashMap::new();
+        for (target, name) in self
+            .parameter_editor_selected_targets
+            .iter()
+            .cloned()
+            .zip(self.parameter_editor_name_inputs.iter().cloned())
+        {
+            existing.insert(target, name);
+        }
+
+        self.parameter_editor_name_inputs = self
+            .parameter_editor_selected_targets
+            .iter()
+            .map(|target| existing.remove(target).unwrap_or_default())
+            .collect();
+
+        if self.parameter_editor_name_focus_index >= self.parameter_editor_name_inputs.len() {
+            self.parameter_editor_name_focus_index =
+                self.parameter_editor_name_inputs.len().saturating_sub(1);
+        }
+        self.sync_parameter_editor_name_shadow();
+    }
+
+    fn set_parameter_target(&mut self, target: &str) {
+        let normalized = target.trim();
+        if normalized.is_empty() {
+            return;
+        }
+        self.parameter_editor_selected_targets = vec![normalized.to_owned()];
+        self.parameter_editor_name_focus_index = 0;
+        self.sync_parameter_editor_name_inputs();
+    }
+
+    fn toggle_parameter_target(&mut self, target: &str) {
+        let normalized = target.trim();
+        if normalized.is_empty() {
+            return;
+        }
+        if let Some(ix) = self
+            .parameter_editor_selected_targets
+            .iter()
+            .position(|existing| existing == normalized)
+        {
+            self.parameter_editor_selected_targets.remove(ix);
+        } else {
+            self.parameter_editor_selected_targets
+                .push(normalized.to_owned());
+        }
+        self.parameter_editor_name_focus_index = self
+            .parameter_editor_selected_targets
+            .len()
+            .saturating_sub(1);
+        self.sync_parameter_editor_name_inputs();
+    }
+
+    fn ensure_parameter_editor_target_added(&self) -> bool {
+        !self.parameter_editor_selected_targets.is_empty()
+    }
+
+    fn focus_next_parameter_name_input(&mut self) {
+        if self.parameter_editor_name_inputs.is_empty() {
+            self.parameter_editor_name_focus_index = 0;
+        } else {
+            self.parameter_editor_name_focus_index = (self.parameter_editor_name_focus_index + 1)
+                % self.parameter_editor_name_inputs.len();
+        }
+        self.sync_parameter_editor_name_shadow();
+    }
+
+    fn focus_previous_parameter_name_input(&mut self) {
+        if self.parameter_editor_name_inputs.is_empty() {
+            self.parameter_editor_name_focus_index = 0;
+        } else if self.parameter_editor_name_focus_index == 0 {
+            self.parameter_editor_name_focus_index =
+                self.parameter_editor_name_inputs.len().saturating_sub(1);
+        } else {
+            self.parameter_editor_name_focus_index -= 1;
+        }
+        self.sync_parameter_editor_name_shadow();
+    }
+
+    pub(crate) fn focus_parameter_name_index(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.parameter_editor_name_inputs.is_empty() {
+            return;
+        }
+        self.parameter_editor_name_focus_index =
+            index.min(self.parameter_editor_name_inputs.len() - 1);
+        self.sync_parameter_editor_name_shadow();
+        cx.notify();
+    }
+
+    fn active_parameter_name_input_mut(&mut self) -> Option<&mut String> {
+        if self.parameter_editor_name_inputs.is_empty() {
+            return None;
+        }
+        let max_ix = self.parameter_editor_name_inputs.len().saturating_sub(1);
+        if self.parameter_editor_name_focus_index > max_ix {
+            self.parameter_editor_name_focus_index = max_ix;
+        }
+        self.parameter_editor_name_inputs
+            .get_mut(self.parameter_editor_name_focus_index)
+    }
+
+    pub(crate) fn commit_parameter_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(item_id) = self.parameter_editor_target_id else {
+            return;
+        };
+        if self.parameter_editor_selected_targets.is_empty() {
+            show_macos_notification("Pasta", "Select one or more token buttons first.");
+            return;
+        }
+
+        if self.parameter_editor_name_inputs.len() != self.parameter_editor_selected_targets.len() {
+            self.sync_parameter_editor_name_inputs();
+        }
+
+        if self.parameter_editor_name_inputs.len() != self.parameter_editor_selected_targets.len() {
+            show_macos_notification("Pasta", "Parameter naming state is invalid.");
+            return;
+        }
+
+        let mut seen_names = HashSet::new();
+        for (ix, name) in self.parameter_editor_name_inputs.iter().enumerate() {
+            let trimmed = name.trim();
+            if !is_valid_parameter_name(trimmed) {
+                self.parameter_editor_name_focus_index = ix;
+                self.sync_parameter_editor_name_shadow();
+                show_macos_notification(
+                    "Pasta",
+                    "Each parameter name must start with a letter/underscore and use letters, numbers, or underscores.",
+                );
+                cx.notify();
+                return;
+            }
+            if !seen_names.insert(trimmed.to_ascii_lowercase()) {
+                self.parameter_editor_name_focus_index = ix;
+                self.sync_parameter_editor_name_shadow();
+                show_macos_notification("Pasta", "Parameter names must be unique.");
+                cx.notify();
+                return;
+            }
+        }
+
+        let mut changed = false;
+        for (name, target) in self
+            .parameter_editor_name_inputs
+            .iter()
+            .zip(self.parameter_editor_selected_targets.iter())
+        {
+            match self
+                .storage
+                .upsert_item_parameter(item_id, name.trim(), target.trim())
+            {
+                Ok(updated) => changed |= updated,
+                Err(err) => {
+                    eprintln!("warning: failed to save parameter: {err}");
+                    show_macos_notification("Pasta", "Failed to save parameter.");
+                    return;
+                }
+            }
+        }
+
+        if changed {
+            let previous_index = self.selected_index;
+            self.refresh_items();
+            if let Some(ix) = self.items.iter().position(|entry| entry.id == item_id) {
+                self.selected_index = ix;
+            } else if !self.items.is_empty() {
+                self.selected_index = previous_index.min(self.items.len().saturating_sub(1));
+            } else {
+                self.selected_index = 0;
+            }
+            if !self.items.is_empty() {
+                self.results_scroll.scroll_to_item(self.selected_index);
+            }
+            self.selection_changed_at = Instant::now();
+            self.parameter_editor_target_id = None;
+            self.parameter_editor_selected_targets.clear();
+            self.parameter_editor_name_inputs.clear();
+            self.parameter_editor_name_focus_index = 0;
+            self.parameter_editor_name_input.clear();
+            self.parameter_editor_stage = ParameterEditorStage::SelectValue;
+            show_macos_notification("Pasta", "Parameters saved.");
+            cx.notify();
+        } else {
+            show_macos_notification("Pasta", "No parameter changes were applied.");
+        }
+    }
+
+    pub(crate) fn select_parameter_clickable_range(
+        &mut self,
+        range_index: usize,
+        additive: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(item_id) = self.parameter_editor_target_id else {
+            return;
+        };
+        let Some(content) = self
+            .items
+            .iter()
+            .find(|entry| entry.id == item_id)
+            .map(|entry| entry.content.clone())
+        else {
+            return;
+        };
+        let ranges = parameter_clickable_ranges(&content);
+        let Some(range) = ranges.get(range_index) else {
+            return;
+        };
+        let Some(target) = content.get(range.clone()) else {
+            return;
+        };
+
+        if additive {
+            self.toggle_parameter_target(target);
+        } else {
+            self.set_parameter_target(target);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn handle_parameter_editor_keystroke(
+        &mut self,
+        event: &KeystrokeEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        let modifiers = &event.keystroke.modifiers;
+        let no_modifiers = !modifiers.modified();
+        let platform_only =
+            modifiers.platform && !modifiers.control && !modifiers.alt && !modifiers.function;
+        let shift_only = modifiers.shift && !modifiers.platform && !modifiers.control;
+        if self.parameter_editor_target_id.is_none() {
+            return;
+        }
+
+        if self.parameter_editor_stage == ParameterEditorStage::EnterName {
+            if self.parameter_editor_name_inputs.is_empty() {
+                self.sync_parameter_editor_name_inputs();
+            }
+            match key {
+                "escape" | "esc" => {
+                    self.cancel_parameter_editor(cx);
+                    return;
+                }
+                "tab" if no_modifiers => {
+                    self.focus_next_parameter_name_input();
+                    cx.notify();
+                    return;
+                }
+                "tab" if shift_only => {
+                    self.focus_previous_parameter_name_input();
+                    cx.notify();
+                    return;
+                }
+                "enter" | "return" => {
+                    self.commit_parameter_editor(cx);
+                    return;
+                }
+                "backspace" if no_modifiers => {
+                    if let Some(active) = self.active_parameter_name_input_mut() {
+                        active.pop();
+                        self.sync_parameter_editor_name_shadow();
+                    }
+                    cx.notify();
+                    return;
+                }
+                "v" if platform_only => {
+                    if let Some(text) = read_clipboard_text()
+                        && let Some(active) = self.active_parameter_name_input_mut()
+                    {
+                        active.push_str(text.trim());
+                        self.sync_parameter_editor_name_shadow();
+                        cx.notify();
+                    }
+                    return;
+                }
+                "up" | "arrowup" => {
+                    self.focus_previous_parameter_name_input();
+                    cx.notify();
+                    return;
+                }
+                "down" | "arrowdown" => {
+                    self.focus_next_parameter_name_input();
+                    cx.notify();
+                    return;
+                }
+                _ => {}
+            }
+
+            if let Some(character) = typed_character(event)
+                && let Some(active) = self.active_parameter_name_input_mut()
+            {
+                active.push(character);
+                self.sync_parameter_editor_name_shadow();
+                cx.notify();
+            }
+            return;
+        }
+
+        match key {
+            "escape" | "esc" => {
+                self.cancel_parameter_editor(cx);
+            }
+            "tab" if no_modifiers || shift_only => {
+                if !self.ensure_parameter_editor_target_added() {
+                    show_macos_notification("Pasta", "Select one or more token buttons first.");
+                    return;
+                }
+                self.parameter_editor_stage = ParameterEditorStage::EnterName;
+                self.sync_parameter_editor_name_inputs();
+                cx.notify();
+            }
+            "enter" | "return" => {
+                if !self.ensure_parameter_editor_target_added() {
+                    show_macos_notification("Pasta", "Select one or more token buttons first.");
+                    return;
+                }
+                self.parameter_editor_stage = ParameterEditorStage::EnterName;
+                self.sync_parameter_editor_name_inputs();
+                cx.notify();
+            }
+            "p" if no_modifiers => {
+                if !self.ensure_parameter_editor_target_added() {
+                    show_macos_notification("Pasta", "Select one or more token buttons first.");
+                    return;
+                }
+                self.parameter_editor_stage = ParameterEditorStage::EnterName;
+                self.sync_parameter_editor_name_inputs();
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn open_parameter_fill_prompt(
+        &mut self,
+        item_id: i64,
+        parameters: &[ClipboardParameter],
+        cx: &mut Context<Self>,
+    ) {
+        self.parameter_fill_target_id = Some(item_id);
+        self.parameter_fill_values = vec![String::new(); parameters.len()];
+        self.parameter_fill_focus_index = 0;
+        self.parameter_fill_input.clear();
+        self.parameter_editor_target_id = None;
+        self.parameter_editor_selected_targets.clear();
+        self.parameter_editor_name_inputs.clear();
+        self.parameter_editor_name_focus_index = 0;
+        self.parameter_editor_name_input.clear();
+        self.parameter_editor_stage = ParameterEditorStage::SelectValue;
+        self.transform_menu_open = false;
+        self.tag_editor_target_id = None;
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_parameter_fill_prompt(&mut self, cx: &mut Context<Self>) {
+        self.parameter_fill_target_id = None;
+        self.parameter_fill_input.clear();
+        self.parameter_fill_values.clear();
+        self.parameter_fill_focus_index = 0;
+        cx.notify();
+    }
+
+    pub(crate) fn focus_parameter_fill_index(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.parameter_fill_values.is_empty() {
+            return;
+        }
+        self.parameter_fill_focus_index = index.min(self.parameter_fill_values.len() - 1);
+        cx.notify();
+    }
+
+    pub(crate) fn commit_parameter_fill_prompt(&mut self, cx: &mut Context<Self>) {
+        let Some(item_id) = self.parameter_fill_target_id else {
+            return;
+        };
+        let Some(item) = self.items.iter().find(|entry| entry.id == item_id).cloned() else {
+            self.parameter_fill_target_id = None;
+            self.parameter_fill_input.clear();
+            self.parameter_fill_values.clear();
+            self.parameter_fill_focus_index = 0;
+            cx.notify();
+            return;
+        };
+
+        if self.parameter_fill_values.len() != item.parameters.len() {
+            self.parameter_fill_values = vec![String::new(); item.parameters.len()];
+            self.parameter_fill_focus_index = 0;
+        }
+
+        let trimmed_values: Vec<String> = self
+            .parameter_fill_values
+            .iter()
+            .map(|value| value.trim().to_owned())
+            .collect();
+        let all_blank = trimmed_values.iter().all(|value| value.is_empty());
+        let rendered = if all_blank {
+            item.content.clone()
+        } else {
+            if trimmed_values.iter().any(|value| value.is_empty()) {
+                show_macos_notification(
+                    "Pasta",
+                    "Fill all parameter fields, or leave all blank to copy original.",
+                );
+                return;
+            }
+
+            let assignments: HashMap<String, String> = item
+                .parameters
+                .iter()
+                .zip(trimmed_values.iter())
+                .map(|(parameter, value)| (parameter.name.clone(), value.clone()))
+                .collect();
+            match render_parameterized_content(&item.content, &item.parameters, &assignments) {
+                Ok(rendered) => rendered,
+                Err(err) => {
+                    show_macos_notification("Pasta", &format!("Parameter fill failed: {err}"));
+                    return;
+                }
+            }
+        };
+
+        self.mark_self_clipboard_write(&rendered, cx);
+        cx.write_to_clipboard(ClipboardItem::new_string(rendered));
+        self.parameter_fill_target_id = None;
+        self.parameter_fill_input.clear();
+        self.parameter_fill_values.clear();
+        self.parameter_fill_focus_index = 0;
+        show_macos_notification(
+            "Pasta",
+            if all_blank {
+                "Copied original snippet."
+            } else {
+                "Copied with parameters."
+            },
+        );
+        self.begin_close_transition(LauncherExitIntent::Hide);
+        cx.notify();
+    }
+
+    pub(crate) fn handle_parameter_fill_keystroke(
+        &mut self,
+        event: &KeystrokeEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        let modifiers = &event.keystroke.modifiers;
+        let no_modifiers = !modifiers.modified();
+        let platform_only =
+            modifiers.platform && !modifiers.control && !modifiers.alt && !modifiers.function;
+        let shift_only = modifiers.shift && !modifiers.platform && !modifiers.control;
+
+        if self.parameter_fill_values.is_empty() {
+            self.parameter_fill_values.push(String::new());
+            self.parameter_fill_focus_index = 0;
+        }
+
+        match key {
+            "escape" | "esc" => {
+                self.cancel_parameter_fill_prompt(cx);
+                return;
+            }
+            "tab" if no_modifiers => {
+                self.parameter_fill_focus_index =
+                    (self.parameter_fill_focus_index + 1) % self.parameter_fill_values.len();
+                cx.notify();
+                return;
+            }
+            "tab" if shift_only => {
+                if self.parameter_fill_focus_index == 0 {
+                    self.parameter_fill_focus_index = self.parameter_fill_values.len() - 1;
+                } else {
+                    self.parameter_fill_focus_index -= 1;
+                }
+                cx.notify();
+                return;
+            }
+            "up" | "arrowup" => {
+                if self.parameter_fill_focus_index == 0 {
+                    self.parameter_fill_focus_index = self.parameter_fill_values.len() - 1;
+                } else {
+                    self.parameter_fill_focus_index -= 1;
+                }
+                cx.notify();
+                return;
+            }
+            "down" | "arrowdown" => {
+                self.parameter_fill_focus_index =
+                    (self.parameter_fill_focus_index + 1) % self.parameter_fill_values.len();
+                cx.notify();
+                return;
+            }
+            "enter" | "return" => {
+                self.commit_parameter_fill_prompt(cx);
+                return;
+            }
+            "backspace" if no_modifiers => {
+                if let Some(active) = self
+                    .parameter_fill_values
+                    .get_mut(self.parameter_fill_focus_index)
+                {
+                    active.pop();
+                }
+                cx.notify();
+                return;
+            }
+            "v" if platform_only => {
+                if let Some(text) = read_clipboard_text() {
+                    if let Some(active) = self
+                        .parameter_fill_values
+                        .get_mut(self.parameter_fill_focus_index)
+                    {
+                        active.push_str(text.trim());
+                    }
+                    cx.notify();
+                }
+                return;
+            }
+            _ => {}
+        }
+
+        if let Some(character) = typed_character(event) {
+            if let Some(active) = self
+                .parameter_fill_values
+                .get_mut(self.parameter_fill_focus_index)
+            {
+                active.push(character);
+            }
+            cx.notify();
+        }
+    }
+
     pub(crate) fn handle_tag_editor_keystroke(
         &mut self,
         event: &KeystrokeEvent,
@@ -767,6 +1373,16 @@ impl LauncherView {
             && !modifiers.function;
         let typed_char = typed_character(event);
 
+        if self.parameter_fill_target_id.is_some() {
+            self.handle_parameter_fill_keystroke(event, cx);
+            return;
+        }
+
+        if self.parameter_editor_target_id.is_some() {
+            self.handle_parameter_editor_keystroke(event, cx);
+            return;
+        }
+
         if self.tag_editor_target_id.is_some() {
             self.handle_tag_editor_keystroke(event, cx);
             return;
@@ -875,6 +1491,15 @@ impl LauncherView {
                 self.add_custom_tags_to_selected(cx);
                 return;
             }
+            "p" if modifiers.platform
+                && !modifiers.shift
+                && !modifiers.control
+                && !modifiers.alt
+                && !modifiers.function =>
+            {
+                self.start_parameter_editor_for_selected(cx);
+                return;
+            }
             "q" if modifiers.platform
                 && !modifiers.control
                 && !modifiers.alt
@@ -975,4 +1600,44 @@ fn key_name_to_char(key: &str) -> Option<char> {
         "rightbracket" | "closebracket" | "bracketright" => Some(']'),
         _ => None,
     }
+}
+
+#[cfg(target_os = "macos")]
+fn is_parameter_word_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':')
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn parameter_clickable_ranges(content: &str) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut current_start: Option<usize> = None;
+    for (ix, ch) in content.char_indices() {
+        if is_parameter_word_char(ch) {
+            if current_start.is_none() {
+                current_start = Some(ix);
+            }
+        } else if let Some(start) = current_start.take()
+            && start < ix
+        {
+            ranges.push(start..ix);
+        }
+    }
+    if let Some(start) = current_start
+        && start < content.len()
+    {
+        ranges.push(start..content.len());
+    }
+    ranges
+}
+
+#[cfg(target_os = "macos")]
+fn is_valid_parameter_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }

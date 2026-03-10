@@ -14,6 +14,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
 use keyring::{Entry, Error as KeyringError};
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const KEYCHAIN_SERVICE: &str = "com.pasta.launcher";
@@ -60,12 +61,19 @@ impl ClipboardItemType {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClipboardParameter {
+    pub name: String,
+    pub target: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct ClipboardRecord {
     pub id: i64,
     pub item_type: ClipboardItemType,
     pub content: String,
     pub tags: Vec<String>,
+    pub parameters: Vec<ClipboardParameter>,
     pub created_at: String,
 }
 
@@ -206,13 +214,14 @@ impl ClipboardStorage {
         let created_at = Utc::now().to_rfc3339();
 
         tx.execute(
-            "INSERT INTO clipboard_items (item_type, content, is_encrypted, tags, content_hash, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO clipboard_items (item_type, content, is_encrypted, tags, parameters, content_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 item_type.as_str(),
                 stored_content,
                 is_encrypted,
                 tags_json,
+                "[]",
                 content_hash,
                 created_at,
             ],
@@ -518,6 +527,68 @@ impl ClipboardStorage {
         Ok(true)
     }
 
+    pub fn upsert_item_parameter(&self, id: i64, name: &str, target: &str) -> Result<bool> {
+        let normalized_name = name.trim();
+        let normalized_target = target.trim();
+        if normalized_name.is_empty() || normalized_target.is_empty() {
+            return Ok(false);
+        }
+
+        let conn = self.open()?;
+        let parameters_json: Option<String> = conn
+            .query_row(
+                "SELECT parameters FROM clipboard_items WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(parameters_json) = parameters_json else {
+            return Ok(false);
+        };
+
+        let mut parameters: Vec<ClipboardParameter> =
+            serde_json::from_str(&parameters_json).unwrap_or_default();
+        let mut changed = false;
+
+        if let Some(existing) = parameters
+            .iter_mut()
+            .find(|parameter| parameter.name.eq_ignore_ascii_case(normalized_name))
+        {
+            if existing.target != normalized_target || existing.name != normalized_name {
+                existing.name = normalized_name.to_owned();
+                existing.target = normalized_target.to_owned();
+                changed = true;
+            }
+        } else if let Some(existing) = parameters
+            .iter_mut()
+            .find(|parameter| parameter.target == normalized_target)
+        {
+            if existing.name != normalized_name {
+                existing.name = normalized_name.to_owned();
+                changed = true;
+            }
+        } else {
+            parameters.push(ClipboardParameter {
+                name: normalized_name.to_owned(),
+                target: normalized_target.to_owned(),
+            });
+            changed = true;
+        }
+
+        if !changed {
+            return Ok(false);
+        }
+
+        parameters.sort_unstable_by_key(|parameter| parameter.name.to_ascii_lowercase());
+        let parameters_json = serde_json::to_string(&parameters)?;
+        conn.execute(
+            "UPDATE clipboard_items SET parameters = ?1 WHERE id = ?2",
+            params![parameters_json, id],
+        )?;
+        self.sync_index_record_from_db(id)?;
+        Ok(true)
+    }
+
     fn open(&self) -> Result<Connection> {
         Connection::open(&self.db_path).context("unable to open sqlite database")
     }
@@ -531,11 +602,30 @@ impl ClipboardStorage {
                 content TEXT NOT NULL,
                 is_encrypted INTEGER NOT NULL DEFAULT 0,
                 tags TEXT NOT NULL,
+                parameters TEXT NOT NULL DEFAULT '[]',
                 content_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_clipboard_created_at ON clipboard_items(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_clipboard_hash ON clipboard_items(content_hash);",
+        )?;
+        self.ensure_parameters_column(&conn)?;
+        Ok(())
+    }
+
+    fn ensure_parameters_column(&self, conn: &Connection) -> Result<()> {
+        let mut stmt = conn.prepare("PRAGMA table_info(clipboard_items)")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let name: String = row.get(1)?;
+            if name == "parameters" {
+                return Ok(());
+            }
+        }
+
+        conn.execute(
+            "ALTER TABLE clipboard_items ADD COLUMN parameters TEXT NOT NULL DEFAULT '[]'",
+            [],
         )?;
         Ok(())
     }
@@ -543,7 +633,7 @@ impl ClipboardStorage {
     fn rebuild_memory_index(&self) -> Result<()> {
         let conn = self.open()?;
         let mut stmt = conn.prepare(
-            "SELECT id, item_type, content, is_encrypted, tags, created_at, content_hash
+            "SELECT id, item_type, content, is_encrypted, tags, parameters, created_at, content_hash
              FROM clipboard_items
              ORDER BY id DESC",
         )?;
@@ -585,7 +675,7 @@ impl ClipboardStorage {
     ) -> Result<Option<IndexedRecord>> {
         let result: Option<Option<IndexedRecord>> = conn
             .query_row(
-                "SELECT id, item_type, content, is_encrypted, tags, created_at, content_hash
+                "SELECT id, item_type, content, is_encrypted, tags, parameters, created_at, content_hash
                  FROM clipboard_items
                  WHERE id = ?1",
                 params![id],
@@ -604,8 +694,9 @@ impl ClipboardStorage {
         let mut content: String = row.get(2)?;
         let is_encrypted: i64 = row.get(3)?;
         let tags_json: String = row.get(4)?;
-        let created_at: String = row.get(5)?;
-        let content_hash: String = row.get(6)?;
+        let parameters_json: String = row.get(5)?;
+        let created_at: String = row.get(6)?;
+        let content_hash: String = row.get(7)?;
 
         if is_encrypted == 1 {
             let Ok(decrypted) = self.crypto.decrypt(&content) else {
@@ -615,12 +706,15 @@ impl ClipboardStorage {
         }
 
         let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+        let parameters: Vec<ClipboardParameter> =
+            serde_json::from_str(&parameters_json).unwrap_or_default();
         Ok(Some(IndexedRecord {
             record: ClipboardRecord {
                 id,
                 item_type,
                 content,
                 tags,
+                parameters,
                 created_at,
             },
             content_hash,
@@ -1440,6 +1534,56 @@ pub(crate) fn record_matches_query(record: &ClipboardRecord, query: &str, tag_on
         .all(|term| term_matches_record(record, term, &content, &content_terms))
 }
 
+pub fn render_parameterized_content(
+    content: &str,
+    parameters: &[ClipboardParameter],
+    assignments: &HashMap<String, String>,
+) -> Result<String> {
+    if parameters.is_empty() {
+        return Ok(content.to_owned());
+    }
+
+    let mut normalized_assignments = HashMap::new();
+    for (key, value) in assignments {
+        let normalized_key = key.trim().to_ascii_lowercase();
+        if normalized_key.is_empty() {
+            continue;
+        }
+        normalized_assignments.insert(normalized_key, value.trim().to_owned());
+    }
+
+    let mut ordered = parameters.to_vec();
+    ordered.sort_unstable_by(|left, right| right.target.len().cmp(&left.target.len()));
+
+    let mut output = content.to_owned();
+    let mut replacements = Vec::new();
+    for (idx, parameter) in ordered.iter().enumerate() {
+        if parameter.target.is_empty() {
+            continue;
+        }
+
+        let key = parameter.name.trim().to_ascii_lowercase();
+        let replacement = normalized_assignments
+            .get(&key)
+            .ok_or_else(|| anyhow!("missing value for parameter '{}'", parameter.name))?;
+        if replacement.is_empty() {
+            return Err(anyhow!("value for parameter '{}' is empty", parameter.name));
+        }
+        let mut placeholder = format!("\u{001F}PASTA_PARAM_{idx}\u{001E}");
+        while output.contains(&placeholder) {
+            placeholder.push('_');
+        }
+        output = output.replace(&parameter.target, &placeholder);
+        replacements.push((placeholder, replacement.to_owned()));
+    }
+
+    for (placeholder, replacement) in replacements {
+        output = output.replace(&placeholder, &replacement);
+    }
+
+    Ok(output)
+}
+
 fn record_matches_tag(record: &ClipboardRecord, query: &str) -> bool {
     let normalized = query.trim().to_ascii_lowercase();
     if normalized.is_empty() {
@@ -1762,5 +1906,66 @@ mod tests {
             tags.iter().any(|tag| tag.eq_ignore_ascii_case("base64")),
             "base64 text should include the base64 tag"
         );
+    }
+
+    #[test]
+    fn parameterized_content_replaces_named_targets() {
+        let content = "SELECT * FROM t WHERE reg_id = '1001' AND status = 'PENDING';";
+        let parameters = vec![
+            ClipboardParameter {
+                name: "reg_id".to_owned(),
+                target: "1001".to_owned(),
+            },
+            ClipboardParameter {
+                name: "status_code".to_owned(),
+                target: "PENDING".to_owned(),
+            },
+        ];
+
+        let assignments = HashMap::from([
+            ("reg_id".to_owned(), "2002".to_owned()),
+            ("status_code".to_owned(), "APPROVED".to_owned()),
+        ]);
+
+        let rendered = render_parameterized_content(content, &parameters, &assignments)
+            .expect("parameterized render should succeed");
+        assert!(rendered.contains("2002"));
+        assert!(rendered.contains("APPROVED"));
+    }
+
+    #[test]
+    fn parameterized_content_requires_all_values() {
+        let content = "reg_id=1001";
+        let parameters = vec![ClipboardParameter {
+            name: "reg_id".to_owned(),
+            target: "1001".to_owned(),
+        }];
+        let assignments = HashMap::new();
+
+        let result = render_parameterized_content(content, &parameters, &assignments);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parameterized_content_does_not_cascade_replacements() {
+        let content = "alpha beta";
+        let parameters = vec![
+            ClipboardParameter {
+                name: "first".to_owned(),
+                target: "alpha".to_owned(),
+            },
+            ClipboardParameter {
+                name: "second".to_owned(),
+                target: "beta".to_owned(),
+            },
+        ];
+        let assignments = HashMap::from([
+            ("first".to_owned(), "beta".to_owned()),
+            ("second".to_owned(), "gamma".to_owned()),
+        ]);
+
+        let rendered = render_parameterized_content(content, &parameters, &assignments)
+            .expect("parameterized render should succeed");
+        assert_eq!(rendered, "beta gamma");
     }
 }

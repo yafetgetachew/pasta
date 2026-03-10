@@ -33,9 +33,10 @@ use global_hotkey::{
 };
 #[cfg(target_os = "macos")]
 use gpui::{
-    App, Application, Bounds, ClipboardItem, Context, FontWeight, Global, KeystrokeEvent, Render,
-    ScrollHandle, SharedString, Window, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
-    WindowHandle, WindowKind, WindowOptions, div, point, prelude::*, px, rgb, rgba, size,
+    App, Application, Bounds, ClickEvent, ClipboardItem, Context, FontWeight, Global,
+    KeystrokeEvent, Render, ScrollHandle, SharedString, Window, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions, div, point,
+    prelude::*, px, rgb, rgba, size,
 };
 #[cfg(target_os = "macos")]
 use objc::rc::StrongPtr;
@@ -54,7 +55,10 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "macos")]
-use storage::{ClipboardItemType, ClipboardRecord, ClipboardStorage, record_matches_query};
+use storage::{
+    ClipboardItemType, ClipboardParameter, ClipboardRecord, ClipboardStorage, record_matches_query,
+    render_parameterized_content,
+};
 
 #[cfg(target_os = "macos")]
 #[link(name = "LocalAuthentication", kind = "framework")]
@@ -242,6 +246,13 @@ enum LauncherExitIntent {
 enum TagEditorMode {
     Add,
     Remove,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ParameterEditorStage {
+    SelectValue,
+    EnterName,
 }
 
 #[cfg(target_os = "macos")]
