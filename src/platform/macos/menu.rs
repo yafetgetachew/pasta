@@ -1,0 +1,240 @@
+#[cfg(target_os = "macos")]
+use crate::*;
+
+#[cfg(target_os = "macos")]
+pub(crate) fn configure_background_mode() {
+    unsafe {
+        let app = NSApp();
+        app.setActivationPolicy_(NSApplicationActivationPolicyAccessory);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn menu_action_handler_class() -> Option<*const Class> {
+    static CLASS: OnceLock<Option<usize>> = OnceLock::new();
+    let class = CLASS.get_or_init(|| unsafe {
+        if let Some(existing) = Class::get("PastaMenuActionHandler") {
+            return Some((existing as *const Class) as usize);
+        }
+
+        let superclass = class!(NSObject);
+        let Some(mut decl) = ClassDecl::new("PastaMenuActionHandler", superclass) else {
+            eprintln!("warning: failed to create PastaMenuActionHandler class");
+            return None;
+        };
+        decl.add_method(
+            sel!(menuAction:),
+            menu_action as extern "C" fn(&Object, Sel, id),
+        );
+        Some((decl.register() as *const Class) as usize)
+    });
+    class.as_ref().map(|class| *class as *const Class)
+}
+
+#[cfg(target_os = "macos")]
+extern "C" fn menu_action(_this: &Object, _cmd: Sel, sender: id) {
+    unsafe {
+        let tag: isize = msg_send![sender, tag];
+        let command = menu_command_from_tag(tag);
+        if let (Some(command), Some(tx)) = (command, MENU_COMMAND_TX.get()) {
+            let _ = tx.send(command);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn menu_command_from_tag(tag: isize) -> Option<MenuCommand> {
+    if tag == MENU_TAG_SHOW {
+        return Some(MenuCommand::ShowLauncher);
+    }
+    if tag == MENU_TAG_QUIT {
+        return Some(MenuCommand::QuitApp);
+    }
+
+    if (MENU_TAG_FONT_BASE..MENU_TAG_FONT_BASE + FontChoice::ALL.len() as isize).contains(&tag) {
+        let index = (tag - MENU_TAG_FONT_BASE) as usize;
+        return FontChoice::ALL
+            .get(index)
+            .copied()
+            .map(MenuCommand::SetFont);
+    }
+
+    if (MENU_TAG_ALPHA_BASE..MENU_TAG_ALPHA_BASE + TRANSPARENCY_LEVELS.len() as isize)
+        .contains(&tag)
+    {
+        let index = (tag - MENU_TAG_ALPHA_BASE) as usize;
+        return TRANSPARENCY_LEVELS
+            .get(index)
+            .copied()
+            .map(MenuCommand::SetTransparency);
+    }
+
+    if tag == MENU_TAG_SYNTAX_ON {
+        return Some(MenuCommand::SetSyntaxHighlighting(true));
+    }
+
+    if tag == MENU_TAG_SYNTAX_OFF {
+        return Some(MenuCommand::SetSyntaxHighlighting(false));
+    }
+
+    if tag == MENU_TAG_SECRET_CLEAR_ON {
+        return Some(MenuCommand::SetSecretAutoClear(true));
+    }
+
+    if tag == MENU_TAG_SECRET_CLEAR_OFF {
+        return Some(MenuCommand::SetSecretAutoClear(false));
+    }
+
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn menu_item(title: &str, key: &str, target: id, action: Sel, tag: isize) -> id {
+    unsafe {
+        let title = NSString::alloc(nil).init_str(title);
+        let key = NSString::alloc(nil).init_str(key);
+        let item = NSMenuItem::alloc(nil).initWithTitle_action_keyEquivalent_(title, action, key);
+        if target != nil {
+            NSMenuItem::setTarget_(item, target);
+        }
+        let _: () = msg_send![item, setTag: tag];
+        item
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn transparency_label(level: f32) -> String {
+    format!("{}%", (level * 100.0).round() as i32)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn setup_status_item(cx: &mut App) {
+    unsafe {
+        let status_bar = NSStatusBar::systemStatusBar(nil);
+        let status_item = status_bar.statusItemWithLength_(NSVariableStatusItemLength);
+        let button = status_item.button();
+        let menu = NSMenu::new(nil);
+        let Some(handler_class) = menu_action_handler_class() else {
+            eprintln!(
+                "warning: status menu unavailable (unable to register Objective-C action handler)"
+            );
+            return;
+        };
+        let handler: id = msg_send![handler_class, new];
+        if handler == nil {
+            eprintln!("warning: status menu unavailable (unable to create menu action handler)");
+            return;
+        }
+
+        let show_item = menu_item(
+            "Show Pasta",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_SHOW,
+        );
+        menu.addItem_(show_item);
+
+        menu.addItem_(NSMenuItem::separatorItem(nil));
+
+        let font_parent = menu_item("Font", "", handler, selector("menuAction:"), -1);
+        let font_menu = NSMenu::new(nil);
+        for (ix, choice) in FontChoice::ALL.into_iter().enumerate() {
+            let tag = MENU_TAG_FONT_BASE + ix as isize;
+            let item = menu_item(choice.label(), "", handler, selector("menuAction:"), tag);
+            font_menu.addItem_(item);
+        }
+        font_parent.setSubmenu_(font_menu);
+        menu.addItem_(font_parent);
+
+        let transparency_parent =
+            menu_item("Transparency", "", handler, selector("menuAction:"), -1);
+        let transparency_menu = NSMenu::new(nil);
+        for (ix, level) in TRANSPARENCY_LEVELS.into_iter().enumerate() {
+            let tag = MENU_TAG_ALPHA_BASE + ix as isize;
+            let label = transparency_label(level);
+            let item = menu_item(&label, "", handler, selector("menuAction:"), tag);
+            transparency_menu.addItem_(item);
+        }
+        transparency_parent.setSubmenu_(transparency_menu);
+        menu.addItem_(transparency_parent);
+
+        let syntax_parent = menu_item(
+            "Syntax Highlighting",
+            "",
+            handler,
+            selector("menuAction:"),
+            -1,
+        );
+        let syntax_menu = NSMenu::new(nil);
+        let syntax_on = menu_item(
+            "Enabled",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_SYNTAX_ON,
+        );
+        let syntax_off = menu_item(
+            "Disabled",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_SYNTAX_OFF,
+        );
+        syntax_menu.addItem_(syntax_on);
+        syntax_menu.addItem_(syntax_off);
+        syntax_parent.setSubmenu_(syntax_menu);
+        menu.addItem_(syntax_parent);
+
+        let secret_parent = menu_item(
+            "Secret Copy Auto-Clear",
+            "",
+            handler,
+            selector("menuAction:"),
+            -1,
+        );
+        let secret_menu = NSMenu::new(nil);
+        let secret_on = menu_item(
+            "Enabled (30s)",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_SECRET_CLEAR_ON,
+        );
+        let secret_off = menu_item(
+            "Disabled",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_SECRET_CLEAR_OFF,
+        );
+        secret_menu.addItem_(secret_on);
+        secret_menu.addItem_(secret_off);
+        secret_parent.setSubmenu_(secret_menu);
+        menu.addItem_(secret_parent);
+
+        menu.addItem_(NSMenuItem::separatorItem(nil));
+
+        let close_item = menu_item(
+            "Close Pasta",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_QUIT,
+        );
+
+        if button != nil {
+            let title = NSString::alloc(nil).init_str("P");
+            button.setTitle_(title);
+        }
+
+        menu.addItem_(close_item);
+        status_item.setMenu_(menu);
+
+        cx.set_global(StatusItemRegistration {
+            _status_item: StrongPtr::retain(status_item as id),
+            _menu: StrongPtr::retain(menu as id),
+            _handler: StrongPtr::retain(handler as id),
+        });
+    }
+}

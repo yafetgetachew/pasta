@@ -22,3 +22,4 @@ sha2 = "0.10.9"
 block = "0.1.6"
 cocoa = "0.26.0"
 objc = "0.2.7"
+syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
