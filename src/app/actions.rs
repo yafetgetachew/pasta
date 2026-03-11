@@ -41,6 +41,8 @@ impl LauncherView {
             revealed_secret_id: None,
             reveal_until: None,
             last_reveal_second_bucket: None,
+            info_editor_target_id: None,
+            info_editor_input: String::new(),
             tag_editor_target_id: None,
             tag_editor_input: String::new(),
             tag_editor_mode: TagEditorMode::Add,
@@ -81,6 +83,8 @@ impl LauncherView {
         self.revealed_secret_id = None;
         self.reveal_until = None;
         self.last_reveal_second_bucket = None;
+        self.info_editor_target_id = None;
+        self.info_editor_input.clear();
         self.tag_editor_target_id = None;
         self.tag_editor_input.clear();
         self.tag_editor_mode = TagEditorMode::Add;
@@ -552,10 +556,87 @@ impl LauncherView {
         cx.notify();
     }
 
+    pub(crate) fn start_info_editor_for_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.items.get(self.selected_index).cloned() else {
+            return;
+        };
+
+        self.info_editor_target_id = Some(item.id);
+        self.info_editor_input = item.description;
+        self.tag_editor_target_id = None;
+        self.tag_editor_input.clear();
+        self.tag_editor_mode = TagEditorMode::Add;
+        self.parameter_editor_target_id = None;
+        self.parameter_editor_selected_targets.clear();
+        self.parameter_editor_name_inputs.clear();
+        self.parameter_editor_name_focus_index = 0;
+        self.parameter_editor_name_input.clear();
+        self.parameter_editor_stage = ParameterEditorStage::SelectValue;
+        self.parameter_fill_target_id = None;
+        self.parameter_fill_input.clear();
+        self.parameter_fill_values.clear();
+        self.parameter_fill_focus_index = 0;
+        self.transform_menu_open = false;
+        cx.notify();
+    }
+
+    pub(crate) fn commit_info_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(item_id) = self.info_editor_target_id else {
+            return;
+        };
+        let normalized = self.info_editor_input.trim().to_owned();
+        match self.storage.upsert_item_description(item_id, &normalized) {
+            Ok(true) => {
+                let previous_index = self.selected_index;
+                self.refresh_items();
+                if let Some(ix) = self.items.iter().position(|entry| entry.id == item_id) {
+                    self.selected_index = ix;
+                } else if !self.items.is_empty() {
+                    self.selected_index = previous_index.min(self.items.len().saturating_sub(1));
+                } else {
+                    self.selected_index = 0;
+                }
+                if !self.items.is_empty() {
+                    self.results_scroll.scroll_to_item(self.selected_index);
+                }
+                self.selection_changed_at = Instant::now();
+                self.info_editor_target_id = None;
+                self.info_editor_input.clear();
+                show_macos_notification(
+                    "Pasta",
+                    if normalized.is_empty() {
+                        "Info cleared."
+                    } else {
+                        "Info saved."
+                    },
+                );
+                cx.notify();
+            }
+            Ok(false) => {
+                self.info_editor_target_id = None;
+                self.info_editor_input.clear();
+                show_macos_notification("Pasta", "Info unchanged.");
+                cx.notify();
+            }
+            Err(err) => {
+                eprintln!("warning: failed to update snippet info: {err}");
+                show_macos_notification("Pasta", "Failed to save info.");
+            }
+        }
+    }
+
+    pub(crate) fn cancel_info_editor(&mut self, cx: &mut Context<Self>) {
+        self.info_editor_target_id = None;
+        self.info_editor_input.clear();
+        cx.notify();
+    }
+
     pub(crate) fn add_custom_tags_to_selected(&mut self, cx: &mut Context<Self>) {
         let Some(item_id) = self.items.get(self.selected_index).map(|item| item.id) else {
             return;
         };
+        self.info_editor_target_id = None;
+        self.info_editor_input.clear();
         self.tag_editor_mode = TagEditorMode::Add;
         self.tag_editor_target_id = Some(item_id);
         self.tag_editor_input.clear();
@@ -566,6 +647,8 @@ impl LauncherView {
         let Some(item_id) = self.items.get(self.selected_index).map(|item| item.id) else {
             return;
         };
+        self.info_editor_target_id = None;
+        self.info_editor_input.clear();
         self.tag_editor_mode = TagEditorMode::Remove;
         self.tag_editor_target_id = Some(item_id);
         self.tag_editor_input.clear();
@@ -651,6 +734,8 @@ impl LauncherView {
             return;
         }
 
+        self.info_editor_target_id = None;
+        self.info_editor_input.clear();
         self.parameter_editor_target_id = Some(item.id);
         self.parameter_editor_selected_targets.clear();
         self.parameter_editor_name_inputs.clear();
@@ -1027,6 +1112,8 @@ impl LauncherView {
         parameters: &[ClipboardParameter],
         cx: &mut Context<Self>,
     ) {
+        self.info_editor_target_id = None;
+        self.info_editor_input.clear();
         self.parameter_fill_target_id = Some(item_id);
         self.parameter_fill_values = vec![String::new(); parameters.len()];
         self.parameter_fill_focus_index = 0;
@@ -1218,6 +1305,47 @@ impl LauncherView {
         }
     }
 
+    pub(crate) fn handle_info_editor_keystroke(
+        &mut self,
+        event: &KeystrokeEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        let modifiers = &event.keystroke.modifiers;
+        let no_modifiers = !modifiers.modified();
+        let platform_only =
+            modifiers.platform && !modifiers.control && !modifiers.alt && !modifiers.function;
+
+        match key {
+            "escape" | "esc" => {
+                self.cancel_info_editor(cx);
+                return;
+            }
+            "enter" | "return" => {
+                self.commit_info_editor(cx);
+                return;
+            }
+            "backspace" if no_modifiers => {
+                self.info_editor_input.pop();
+                cx.notify();
+                return;
+            }
+            "v" if platform_only => {
+                if let Some(text) = read_clipboard_text() {
+                    self.info_editor_input.push_str(&text);
+                    cx.notify();
+                }
+                return;
+            }
+            _ => {}
+        }
+
+        if let Some(character) = typed_character(event) {
+            self.info_editor_input.push(character);
+            cx.notify();
+        }
+    }
+
     pub(crate) fn handle_tag_editor_keystroke(
         &mut self,
         event: &KeystrokeEvent,
@@ -1373,6 +1501,11 @@ impl LauncherView {
             && !modifiers.function;
         let typed_char = typed_character(event);
 
+        if self.info_editor_target_id.is_some() {
+            self.handle_info_editor_keystroke(event, cx);
+            return;
+        }
+
         if self.parameter_fill_target_id.is_some() {
             self.handle_parameter_fill_keystroke(event, cx);
             return;
@@ -1498,6 +1631,15 @@ impl LauncherView {
                 && !modifiers.function =>
             {
                 self.start_parameter_editor_for_selected(cx);
+                return;
+            }
+            "i" if modifiers.platform
+                && !modifiers.shift
+                && !modifiers.control
+                && !modifiers.alt
+                && !modifiers.function =>
+            {
+                self.start_info_editor_for_selected(cx);
                 return;
             }
             "q" if modifiers.platform

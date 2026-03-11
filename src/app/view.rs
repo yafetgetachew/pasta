@@ -18,6 +18,7 @@ impl Render for LauncherView {
             palette.query_active
         };
         let query_is_selected = self.query_select_all && !self.query.is_empty();
+        let info_editor_open = self.info_editor_target_id.is_some();
         let tag_editor_open = self.tag_editor_target_id.is_some();
         let parameter_editor_open = self.parameter_editor_target_id.is_some();
         let parameter_fill_open = self.parameter_fill_target_id.is_some();
@@ -25,6 +26,7 @@ impl Render for LauncherView {
         let selection_stable = Instant::now().duration_since(self.selection_changed_at)
             >= Duration::from_millis(SELECTION_EXPAND_DWELL_MS);
         let selected_should_expand = selection_stable
+            && !info_editor_open
             && !tag_editor_open
             && !parameter_editor_open
             && !parameter_fill_open
@@ -80,6 +82,9 @@ impl Render for LauncherView {
                 let detected_language = detect_language(item.item_type, &item.content);
                 let mut item_tags =
                     visible_tag_chips(item.item_type, detected_language, &item.tags);
+                if !item.description.trim().is_empty() {
+                    item_tags.insert(0, "INFO".to_owned());
+                }
                 if !item.parameters.is_empty() {
                     item_tags.insert(0, "PARAM".to_owned());
                     for parameter in item.parameters.iter().take(2) {
@@ -121,7 +126,8 @@ impl Render for LauncherView {
                     } else {
                         rgba(0x00000000)
                     });
-                if !tag_editor_open
+                if !info_editor_open
+                    && !tag_editor_open
                     && !parameter_editor_open
                     && !parameter_fill_open
                     && !transform_menu_open
@@ -179,6 +185,18 @@ impl Render for LauncherView {
                     palette.dark,
                 )));
 
+                if is_selected && !item.description.trim().is_empty() {
+                    row = row.child(
+                        div()
+                            .w_full()
+                            .mt_1()
+                            .text_xs()
+                            .text_color(palette.row_meta_text)
+                            .line_clamp(2)
+                            .child(format!("ⓘ {}", item.description.trim())),
+                    );
+                }
+
                 if is_selected {
                     row = row.border_1().border_color(palette.selected_border);
                 }
@@ -223,7 +241,7 @@ impl Render for LauncherView {
                         div()
                             .text_xs()
                             .text_color(palette.muted_text)
-                            .child("OPTION+SPACE"),
+                            .child("⌥ + SPACE"),
                     ),
             )
             .child(if query_is_selected {
@@ -248,6 +266,69 @@ impl Render for LauncherView {
                     .text_color(query_color)
                     .child(query_display)
             });
+
+        if let Some(item_id) = self.info_editor_target_id {
+            let info_display = if self.info_editor_input.is_empty() {
+                "e.g. Removes stale Docker container and network".to_owned()
+            } else {
+                self.info_editor_input.clone()
+            };
+            let info_color = if self.info_editor_input.is_empty() {
+                palette.query_placeholder
+            } else {
+                palette.query_active
+            };
+
+            content = content.child(
+                div()
+                    .w_full()
+                    .p_2()
+                    .bg(scale_alpha(
+                        palette.row_hover_bg,
+                        if palette.dark { 0.95 } else { 0.9 },
+                    ))
+                    .border_1()
+                    .border_color(palette.selected_border)
+                    .rounded_lg()
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(palette.title_text)
+                                    .child(format!("Snippet Info • Snippet #{item_id}")),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette.muted_text)
+                                    .child("Enter save • Esc cancel"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .mt_1()
+                            .text_sm()
+                            .text_color(info_color)
+                            .child(info_display),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .mt_1()
+                            .text_xs()
+                            .text_color(palette.muted_text)
+                            .child(
+                                "Optional info for this snippet • ⌘V paste • Enter on empty clears",
+                            ),
+                    ),
+            );
+        }
 
         if let Some(item_id) = self.tag_editor_target_id {
             let input_display = if self.tag_editor_input.is_empty() {
@@ -781,7 +862,7 @@ impl Render for LauncherView {
                             div()
                                 .text_xs()
                                 .text_color(palette.muted_text)
-                                .child("Search • /tag tag-only • Enter copy • Tab transforms • ⌘R reveal+copy secret • ⌘P parametrize"),
+                                .child("Search • /tag tag-only • Enter copy • Tab transforms • ⌘R reveal+copy secret • ⌘I info • ⌘P parametrize"),
                         )
                         .child(
                             div()

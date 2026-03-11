@@ -72,6 +72,7 @@ pub struct ClipboardRecord {
     pub id: i64,
     pub item_type: ClipboardItemType,
     pub content: String,
+    pub description: String,
     pub tags: Vec<String>,
     pub parameters: Vec<ClipboardParameter>,
     pub created_at: String,
@@ -214,14 +215,15 @@ impl ClipboardStorage {
         let created_at = Utc::now().to_rfc3339();
 
         tx.execute(
-            "INSERT INTO clipboard_items (item_type, content, is_encrypted, tags, parameters, content_hash, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO clipboard_items (item_type, content, is_encrypted, tags, parameters, description, content_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 item_type.as_str(),
                 stored_content,
                 is_encrypted,
                 tags_json,
                 "[]",
+                "",
                 content_hash,
                 created_at,
             ],
@@ -589,6 +591,32 @@ impl ClipboardStorage {
         Ok(true)
     }
 
+    pub fn upsert_item_description(&self, id: i64, description: &str) -> Result<bool> {
+        let normalized = description.trim().to_owned();
+        let conn = self.open()?;
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT description FROM clipboard_items WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(existing) = existing else {
+            return Ok(false);
+        };
+
+        if existing == normalized {
+            return Ok(false);
+        }
+
+        conn.execute(
+            "UPDATE clipboard_items SET description = ?1 WHERE id = ?2",
+            params![normalized, id],
+        )?;
+        self.sync_index_record_from_db(id)?;
+        Ok(true)
+    }
+
     fn open(&self) -> Result<Connection> {
         Connection::open(&self.db_path).context("unable to open sqlite database")
     }
@@ -603,6 +631,7 @@ impl ClipboardStorage {
                 is_encrypted INTEGER NOT NULL DEFAULT 0,
                 tags TEXT NOT NULL,
                 parameters TEXT NOT NULL DEFAULT '[]',
+                description TEXT NOT NULL DEFAULT '',
                 content_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
@@ -610,6 +639,7 @@ impl ClipboardStorage {
             CREATE INDEX IF NOT EXISTS idx_clipboard_hash ON clipboard_items(content_hash);",
         )?;
         self.ensure_parameters_column(&conn)?;
+        self.ensure_description_column(&conn)?;
         Ok(())
     }
 
@@ -630,10 +660,27 @@ impl ClipboardStorage {
         Ok(())
     }
 
+    fn ensure_description_column(&self, conn: &Connection) -> Result<()> {
+        let mut stmt = conn.prepare("PRAGMA table_info(clipboard_items)")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let name: String = row.get(1)?;
+            if name == "description" {
+                return Ok(());
+            }
+        }
+
+        conn.execute(
+            "ALTER TABLE clipboard_items ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+        Ok(())
+    }
+
     fn rebuild_memory_index(&self) -> Result<()> {
         let conn = self.open()?;
         let mut stmt = conn.prepare(
-            "SELECT id, item_type, content, is_encrypted, tags, parameters, created_at, content_hash
+            "SELECT id, item_type, content, is_encrypted, tags, parameters, description, created_at, content_hash
              FROM clipboard_items
              ORDER BY id DESC",
         )?;
@@ -675,7 +722,7 @@ impl ClipboardStorage {
     ) -> Result<Option<IndexedRecord>> {
         let result: Option<Option<IndexedRecord>> = conn
             .query_row(
-                "SELECT id, item_type, content, is_encrypted, tags, parameters, created_at, content_hash
+                "SELECT id, item_type, content, is_encrypted, tags, parameters, description, created_at, content_hash
                  FROM clipboard_items
                  WHERE id = ?1",
                 params![id],
@@ -695,8 +742,9 @@ impl ClipboardStorage {
         let is_encrypted: i64 = row.get(3)?;
         let tags_json: String = row.get(4)?;
         let parameters_json: String = row.get(5)?;
-        let created_at: String = row.get(6)?;
-        let content_hash: String = row.get(7)?;
+        let description: String = row.get(6)?;
+        let created_at: String = row.get(7)?;
+        let content_hash: String = row.get(8)?;
 
         if is_encrypted == 1 {
             let Ok(decrypted) = self.crypto.decrypt(&content) else {
@@ -713,6 +761,7 @@ impl ClipboardStorage {
                 id,
                 item_type,
                 content,
+                description,
                 tags,
                 parameters,
                 created_at,
@@ -1273,6 +1322,7 @@ fn combined_search_score(item: &ScoredRecord) -> f32 {
 
 fn lexical_match_score(record: &ClipboardRecord, query: &str, query_terms: &[String]) -> f32 {
     let content = record.content.to_ascii_lowercase();
+    let description = record.description.to_ascii_lowercase();
     let tags: Vec<String> = record
         .tags
         .iter()
@@ -1288,6 +1338,9 @@ fn lexical_match_score(record: &ClipboardRecord, query: &str, query_terms: &[Str
     }
     if content.contains(query) {
         score += 1.0;
+    }
+    if !description.is_empty() && description.contains(query) {
+        score += 0.95;
     }
     if tags.iter().any(|tag| tag == query) {
         score += 1.3;
@@ -1306,7 +1359,10 @@ fn lexical_match_score(record: &ClipboardRecord, query: &str, query_terms: &[Str
                 continue;
             }
 
-            if content.contains(term) || tags.iter().any(|tag| tag.contains(term)) {
+            if content.contains(term)
+                || description.contains(term)
+                || tags.iter().any(|tag| tag.contains(term))
+            {
                 matched_terms += 1;
             }
         }
@@ -1515,7 +1571,11 @@ pub(crate) fn record_matches_query(record: &ClipboardRecord, query: &str, tag_on
     }
 
     let content = record.content.to_lowercase();
+    let description = record.description.to_lowercase();
     if content.contains(query) {
+        return true;
+    }
+    if !description.is_empty() && description.contains(query) {
         return true;
     }
 
@@ -1528,10 +1588,15 @@ pub(crate) fn record_matches_query(record: &ClipboardRecord, query: &str, tag_on
         return false;
     }
 
-    let content_terms = tokenize_search_terms(&content);
+    let searchable_text = if description.is_empty() {
+        content.clone()
+    } else {
+        format!("{content} {description}")
+    };
+    let content_terms = tokenize_search_terms(&searchable_text);
     query_terms
         .iter()
-        .all(|term| term_matches_record(record, term, &content, &content_terms))
+        .all(|term| term_matches_record(record, term, &searchable_text, &content_terms))
 }
 
 pub fn render_parameterized_content(
@@ -1967,5 +2032,20 @@ mod tests {
         let rendered = render_parameterized_content(content, &parameters, &assignments)
             .expect("parameterized render should succeed");
         assert_eq!(rendered, "beta gamma");
+    }
+
+    #[test]
+    fn record_match_includes_description_text() {
+        let record = ClipboardRecord {
+            id: 1,
+            item_type: ClipboardItemType::Command,
+            content: "docker rm -f old_container".to_owned(),
+            description: "Remove stale container for local dev reset".to_owned(),
+            tags: vec!["command".to_owned()],
+            parameters: Vec::new(),
+            created_at: "2026-03-11T00:00:00Z".to_owned(),
+        };
+
+        assert!(record_matches_query(&record, "stale container", false));
     }
 }

@@ -253,6 +253,13 @@ pub(crate) fn tag_chip_color(label: &str, dark: bool) -> gpui::Hsla {
                 rgb(0x1d4ed8).into()
             }
         }
+        "INFO" => {
+            if dark {
+                rgb(0x7dd3fc).into()
+            } else {
+                rgb(0x0369a1).into()
+            }
+        }
         "ENV" => {
             if dark {
                 rgb(0xa78bfa).into()

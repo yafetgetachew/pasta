@@ -78,6 +78,8 @@ pub(crate) struct LauncherView {
     pub(crate) revealed_secret_id: Option<i64>,
     pub(crate) reveal_until: Option<Instant>,
     pub(crate) last_reveal_second_bucket: Option<u64>,
+    pub(crate) info_editor_target_id: Option<i64>,
+    pub(crate) info_editor_input: String,
     pub(crate) tag_editor_target_id: Option<i64>,
     pub(crate) tag_editor_input: String,
     pub(crate) tag_editor_mode: TagEditorMode,
