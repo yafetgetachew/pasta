@@ -1142,104 +1142,50 @@ fn detect_language_tag(item_type: ClipboardItemType, text: &str) -> Option<&'sta
     if trimmed.is_empty() {
         return None;
     }
+    if let Some(fenced_language) = detect_language_from_fenced_block(trimmed) {
+        return Some(fenced_language);
+    }
+
     let lower = trimmed.to_ascii_lowercase();
 
-    if item_type == ClipboardItemType::Command || looks_like_shell(trimmed) {
-        return Some("bash");
-    }
-    if lower.contains("[package]") || lower.contains("cargo.toml") {
-        return Some("toml");
-    }
-    if lower.contains("```")
-        || lower
-            .lines()
-            .any(|line| line.trim_start().starts_with("# "))
+    if item_type == ClipboardItemType::Command
+        || looks_like_shell(trimmed)
+        || looks_like_shell_prompt_snippet(&lower)
     {
-        return Some("markdown");
+        return Some("bash");
     }
     if looks_like_json(trimmed) {
         return Some("json");
     }
+    if looks_like_toml(trimmed) {
+        return Some("toml");
+    }
     if looks_like_yaml(trimmed) {
         return Some("yaml");
     }
-    if lower.contains("<html") || lower.contains("</") || lower.contains("<div") {
+    if looks_like_html(&lower) {
         return Some("html");
     }
-    if lower.contains('{')
-        && lower.contains('}')
-        && (lower.contains(':') || lower.contains(';'))
-        && (lower.contains("color:") || lower.contains("display:") || lower.contains("margin:"))
-    {
+    if looks_like_xml(trimmed, &lower) {
+        return Some("xml");
+    }
+    if looks_like_css(&lower) {
         return Some("css");
     }
-    if contains_any(
-        &lower,
-        &[
-            "select ",
-            "insert into ",
-            "update ",
-            "delete from ",
-            "where ",
-        ],
-    ) && lower.contains(" from ")
-    {
+    if looks_like_sql(&lower) {
         return Some("sql");
     }
-    if contains_any(&lower, &["fn ", "impl ", "mut ", "let ", "::", "cargo "]) {
-        return Some("rust");
+    if looks_like_dockerfile(&lower) {
+        return Some("dockerfile");
     }
-    if contains_any(
-        &lower,
-        &[
-            "interface ",
-            "type ",
-            ": string",
-            ": number",
-            " as const",
-            "readonly ",
-            "import type ",
-        ],
-    ) {
-        return Some("typescript");
+    if looks_like_makefile(trimmed) {
+        return Some("makefile");
     }
-    if contains_any(
-        &lower,
-        &[
-            "function ",
-            "console.log",
-            "=>",
-            "module.exports",
-            "require(",
-        ],
-    ) {
-        return Some("javascript");
+    if looks_like_markdown(trimmed, &lower) {
+        return Some("markdown");
     }
-    if contains_any(
-        &lower,
-        &["def ", "import ", "from ", "print(", "__name__", "lambda "],
-    ) && trimmed.contains(':')
-    {
-        return Some("python");
-    }
-    if contains_any(&lower, &["package main", "func ", "fmt.", "go "]) {
-        return Some("go");
-    }
-    if contains_any(
-        &lower,
-        &[
-            "public class",
-            "public static void main",
-            "system.out.println",
-        ],
-    ) {
-        return Some("java");
-    }
-    if contains_any(&lower, &["#include", "std::", "int main(", "cout <<"]) {
-        return Some("cpp");
-    }
-    if looks_like_toml(trimmed) {
-        return Some("toml");
+    if let Some(language) = detect_programming_language(&lower) {
+        return Some(language);
     }
     if item_type == ClipboardItemType::Code {
         return Some("code");
@@ -1252,57 +1198,785 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
 }
 
+fn detect_language_from_fenced_block(text: &str) -> Option<&'static str> {
+    for line in text.lines().take(8) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let label = trimmed.strip_prefix("```")?;
+        let raw = label
+            .split(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';' | '{' | '}'))
+            .next()
+            .unwrap_or("")
+            .trim();
+        return normalize_fenced_language_alias(raw).or(Some("markdown"));
+    }
+
+    None
+}
+
+fn normalize_fenced_language_alias(raw: &str) -> Option<&'static str> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    match normalized.as_str() {
+        "bash" | "sh" | "zsh" | "shell" | "fish" | "console" => Some("bash"),
+        "rs" | "rust" => Some("rust"),
+        "zig" => Some("zig"),
+        "go" | "golang" => Some("go"),
+        "ts" | "tsx" | "typescript" => Some("typescript"),
+        "js" | "jsx" | "javascript" | "node" => Some("javascript"),
+        "py" | "python" => Some("python"),
+        "java" => Some("java"),
+        "kt" | "kts" | "kotlin" => Some("kotlin"),
+        "swift" => Some("swift"),
+        "cs" | "csharp" | "c#" | "dotnet" => Some("csharp"),
+        "cpp" | "cxx" | "cc" | "c++" => Some("cpp"),
+        "c" => Some("c"),
+        "php" => Some("php"),
+        "rb" | "ruby" => Some("ruby"),
+        "json" => Some("json"),
+        "yaml" | "yml" => Some("yaml"),
+        "toml" => Some("toml"),
+        "xml" => Some("xml"),
+        "html" => Some("html"),
+        "css" => Some("css"),
+        "sql" => Some("sql"),
+        "md" | "markdown" => Some("markdown"),
+        "dockerfile" => Some("dockerfile"),
+        "makefile" | "make" | "mk" => Some("makefile"),
+        _ => None,
+    }
+}
+
 fn looks_like_shell(text: &str) -> bool {
     text.starts_with("#!/bin/bash")
         || text.starts_with("#!/usr/bin/env bash")
         || text.starts_with("#!/bin/zsh")
         || text.starts_with("#!/usr/bin/env zsh")
+        || text.starts_with("#!/bin/sh")
+        || text.starts_with("#!/usr/bin/env sh")
+        || text.starts_with("#!/usr/bin/env fish")
+}
+
+fn looks_like_shell_prompt_snippet(lower: &str) -> bool {
+    let mut prompt_lines = 0_usize;
+    let mut command_lines = 0_usize;
+    let mut meaningful_lines = 0_usize;
+
+    for line in lower.lines().take(24) {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+        meaningful_lines += 1;
+
+        if trimmed.starts_with("$ ") || trimmed.starts_with("% ") {
+            prompt_lines += 1;
+            command_lines += 1;
+            continue;
+        }
+
+        if contains_any(
+            trimmed,
+            &[
+                "sudo ", "git ", "docker ", "kubectl ", "brew ", "npm ", "pnpm ", "yarn ",
+                "cargo ", "./", "chmod ", "chown ", "ssh ", "scp ",
+            ],
+        ) {
+            command_lines += 1;
+        }
+    }
+
+    (prompt_lines >= 1 && meaningful_lines <= 16) || command_lines >= 2
+}
+
+fn looks_like_markdown(trimmed: &str, lower: &str) -> bool {
+    if lower.contains("```") {
+        return true;
+    }
+
+    let mut heading_lines = 0_usize;
+    let mut list_lines = 0_usize;
+    let mut quote_lines = 0_usize;
+    let mut link_lines = 0_usize;
+
+    for line in trimmed.lines().take(140) {
+        let candidate = line.trim_start();
+        if candidate.is_empty() {
+            continue;
+        }
+
+        if candidate.starts_with("# ")
+            || candidate.starts_with("## ")
+            || candidate.starts_with("### ")
+            || candidate.starts_with("#### ")
+        {
+            heading_lines += 1;
+        }
+        if candidate.starts_with("- ")
+            || candidate.starts_with("* ")
+            || candidate.starts_with("+ ")
+            || starts_with_markdown_numbered_list(candidate)
+        {
+            list_lines += 1;
+        }
+        if candidate.starts_with("> ") {
+            quote_lines += 1;
+        }
+        if candidate.contains("](") && candidate.contains('[') {
+            link_lines += 1;
+        }
+    }
+
+    heading_lines >= 2
+        || (heading_lines >= 1 && (list_lines >= 1 || quote_lines >= 1 || link_lines >= 1))
+        || (list_lines >= 2 && (quote_lines >= 1 || link_lines >= 1))
+}
+
+fn starts_with_markdown_numbered_list(line: &str) -> bool {
+    let mut digit_count = 0_usize;
+    for (ix, ch) in line.char_indices() {
+        if ch.is_ascii_digit() {
+            digit_count += 1;
+            continue;
+        }
+        if ch == '.' && digit_count > 0 {
+            let remainder = line.get(ix + 1..).unwrap_or("").trim_start();
+            return !remainder.is_empty();
+        }
+        return false;
+    }
+    false
+}
+
+fn looks_like_html(lower: &str) -> bool {
+    lower.contains("<!doctype html")
+        || lower.contains("<html")
+        || (lower.contains("</")
+            && contains_any(
+                lower,
+                &[
+                    "<div", "<span", "<body", "<head", "<script", "<style", "<section",
+                ],
+            ))
+}
+
+fn looks_like_xml(trimmed: &str, lower: &str) -> bool {
+    if looks_like_html(lower) {
+        return false;
+    }
+    if lower.starts_with("<?xml") {
+        return true;
+    }
+    if !trimmed.starts_with('<') || !lower.contains("</") {
+        return false;
+    }
+
+    let mut paired_lines = 0_usize;
+    for line in trimmed.lines().take(120) {
+        let candidate = line.trim();
+        if candidate.starts_with('<')
+            && !candidate.starts_with("</")
+            && !candidate.starts_with("<!--")
+            && candidate.contains("</")
+        {
+            paired_lines += 1;
+        }
+    }
+
+    paired_lines >= 1
+}
+
+fn looks_like_css(lower: &str) -> bool {
+    if !(lower.contains('{') && lower.contains('}')) {
+        return false;
+    }
+
+    let property_hits = count_contains(
+        lower,
+        &[
+            "color:",
+            "background:",
+            "display:",
+            "margin:",
+            "padding:",
+            "border:",
+            "font-",
+            "width:",
+            "height:",
+            "position:",
+            "grid-",
+            "flex",
+        ],
+    );
+    let selector_like = contains_any(lower, &[".", "#", ":root", "@media", "body", "html"]);
+    property_hits >= 2 && selector_like
+}
+
+fn looks_like_sql(lower: &str) -> bool {
+    let statement_hits = count_contains(
+        lower,
+        &[
+            "select ",
+            "insert into ",
+            "update ",
+            "delete from ",
+            "create table ",
+            "alter table ",
+            "drop table ",
+            "with ",
+            "join ",
+        ],
+    );
+
+    let clause_hits = count_contains(
+        lower,
+        &[
+            " from ",
+            " where ",
+            " values ",
+            " set ",
+            " order by ",
+            " group by ",
+        ],
+    );
+
+    (statement_hits >= 1 && clause_hits >= 1) || (statement_hits >= 2 && lower.contains(';'))
+}
+
+fn looks_like_dockerfile(lower: &str) -> bool {
+    let mut directive_hits = 0_i32;
+    let mut content_lines = 0_i32;
+    let directives = [
+        "from ",
+        "run ",
+        "copy ",
+        "add ",
+        "cmd ",
+        "entrypoint ",
+        "workdir ",
+        "env ",
+        "arg ",
+        "expose ",
+        "user ",
+    ];
+
+    for line in lower.lines().take(80) {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        content_lines += 1;
+        if directives
+            .iter()
+            .any(|directive| trimmed.starts_with(directive))
+        {
+            directive_hits += 1;
+        }
+    }
+
+    directive_hits >= 2 && content_lines >= 2
+}
+
+fn looks_like_makefile(text: &str) -> bool {
+    if text.contains(".PHONY:") {
+        return true;
+    }
+
+    let mut target_lines = 0_usize;
+    let mut recipe_lines = 0_usize;
+    for line in text.lines().take(120) {
+        if line.starts_with('\t') {
+            recipe_lines += 1;
+            continue;
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.contains(':')
+            && !trimmed.contains('=')
+            && !trimmed.starts_with("http")
+            && !trimmed.starts_with("https")
+        {
+            target_lines += 1;
+        }
+    }
+
+    target_lines >= 1 && recipe_lines >= 1
+}
+
+fn count_contains(haystack: &str, needles: &[&str]) -> i32 {
+    needles
+        .iter()
+        .filter(|needle| haystack.contains(**needle))
+        .count() as i32
+}
+
+fn detect_programming_language(lower: &str) -> Option<&'static str> {
+    let mut scores = HashMap::new();
+
+    scores.insert(
+        "rust",
+        count_contains(
+            lower,
+            &[
+                "use std::",
+                "use crate::",
+                "println!(",
+                "eprintln!(",
+                "pub(crate)",
+                "#[derive(",
+                "impl ",
+                "trait ",
+                "enum ",
+                "match ",
+                "let mut ",
+                "result<",
+                "option<",
+            ],
+        ) + if lower.contains("fn main()") { 3 } else { 0 }
+            + if lower.contains("::") { 1 } else { 0 },
+    );
+
+    scores.insert(
+        "zig",
+        count_contains(
+            lower,
+            &[
+                "const std = @import(",
+                "@import(",
+                "pub fn main(",
+                "!void",
+                "std.debug.print",
+                "comptime",
+                "errdefer",
+                "[]const u8",
+            ],
+        ) + if lower.contains("const std = @import(\"std\")") {
+            3
+        } else {
+            0
+        },
+    );
+
+    scores.insert(
+        "go",
+        count_contains(
+            lower,
+            &[
+                "package main",
+                "func main(",
+                "fmt.println",
+                "fmt.printf",
+                "import (",
+                " := ",
+                "go func(",
+                "defer ",
+                "chan ",
+                "<-",
+            ],
+        ),
+    );
+
+    scores.insert(
+        "python",
+        count_contains(
+            lower,
+            &[
+                "def ",
+                "class ",
+                "import ",
+                "from ",
+                "print(",
+                "lambda ",
+                "elif ",
+                "__name__ == \"__main__\"",
+                "__name__ == '__main__'",
+            ],
+        ),
+    );
+
+    scores.insert(
+        "typescript",
+        count_contains(
+            lower,
+            &[
+                "interface ",
+                "import type ",
+                "export type ",
+                "readonly ",
+                " as const",
+                ": string",
+                ": number",
+                ": boolean",
+                "implements ",
+                "enum ",
+            ],
+        ),
+    );
+
+    scores.insert(
+        "javascript",
+        count_contains(
+            lower,
+            &[
+                "function ",
+                "console.log(",
+                "module.exports",
+                "require(",
+                "=>",
+                "const ",
+                "let ",
+                "var ",
+                "document.",
+                "window.",
+            ],
+        ),
+    );
+
+    scores.insert(
+        "java",
+        count_contains(
+            lower,
+            &[
+                "public class ",
+                "public static void main",
+                "system.out.println",
+                "import java.",
+                "package ",
+                "private static ",
+            ],
+        ),
+    );
+
+    scores.insert(
+        "kotlin",
+        count_contains(
+            lower,
+            &[
+                "fun main(",
+                "data class ",
+                "val ",
+                "var ",
+                "when (",
+                "companion object",
+                "println(",
+            ],
+        ),
+    );
+
+    scores.insert(
+        "swift",
+        count_contains(
+            lower,
+            &[
+                "import foundation",
+                "func ",
+                "guard let ",
+                "if let ",
+                "protocol ",
+                "print(",
+                "let ",
+                "var ",
+            ],
+        ),
+    );
+
+    scores.insert(
+        "csharp",
+        count_contains(
+            lower,
+            &[
+                "using system;",
+                "namespace ",
+                "console.writeline",
+                "static void main",
+                "string[] args",
+                "get; set;",
+                "async task",
+                "public class ",
+            ],
+        ),
+    );
+
+    scores.insert(
+        "cpp",
+        count_contains(
+            lower,
+            &[
+                "#include <iostream>",
+                "std::",
+                "cout <<",
+                "cin >>",
+                "namespace std",
+                "template<typename",
+                "int main(",
+            ],
+        ),
+    );
+
+    scores.insert(
+        "c",
+        count_contains(
+            lower,
+            &[
+                "#include <stdio.h>",
+                "#include <stdlib.h>",
+                "printf(",
+                "scanf(",
+                "malloc(",
+                "free(",
+                "int main(",
+            ],
+        ) - if lower.contains("std::") { 3 } else { 0 },
+    );
+
+    scores.insert(
+        "php",
+        count_contains(
+            lower,
+            &[
+                "<?php",
+                "$_post",
+                "$_get",
+                "echo ",
+                "function ",
+                "namespace ",
+                "->",
+            ],
+        ),
+    );
+
+    scores.insert(
+        "ruby",
+        count_contains(
+            lower,
+            &[
+                "def ",
+                "puts ",
+                "class ",
+                "module ",
+                "do |",
+                "end\n",
+                "require '",
+            ],
+        ),
+    );
+
+    let ts_score = *scores.get("typescript").unwrap_or(&0);
+    let js_score = *scores.get("javascript").unwrap_or(&0);
+    if ts_score > 0 && js_score > 0 && ts_score >= js_score {
+        scores.insert("javascript", js_score - 1);
+    }
+
+    let mut best_language = None;
+    let mut best_score = 0_i32;
+
+    for language in [
+        "zig",
+        "rust",
+        "go",
+        "typescript",
+        "javascript",
+        "python",
+        "java",
+        "kotlin",
+        "swift",
+        "csharp",
+        "cpp",
+        "c",
+        "php",
+        "ruby",
+    ] {
+        let score = *scores.get(language).unwrap_or(&0);
+        if score > best_score {
+            best_language = Some(language);
+            best_score = score;
+        }
+    }
+
+    (best_score >= 3).then_some(best_language?).or(None)
 }
 
 fn looks_like_json(text: &str) -> bool {
     if !(text.starts_with('{') || text.starts_with('[')) {
         return false;
     }
-    serde_json::from_str::<serde_json::Value>(text).is_ok()
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+
+    match value {
+        serde_json::Value::Object(map) => !map.is_empty(),
+        serde_json::Value::Array(items) => {
+            if items.is_empty() {
+                return false;
+            }
+
+            if items.iter().any(|entry| {
+                matches!(
+                    entry,
+                    serde_json::Value::Object(_) | serde_json::Value::Array(_)
+                )
+            }) {
+                return true;
+            }
+
+            text.contains('"') && text.contains(',')
+        }
+        _ => false,
+    }
 }
 
 fn looks_like_yaml(text: &str) -> bool {
-    let mut has_pairs = 0_usize;
-    for line in text.lines().take(80) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed == "---" || trimmed == "..." {
-            continue;
-        }
-        if trimmed.contains(':')
-            && !trimmed.contains('{')
-            && !trimmed.contains('}')
-            && !trimmed.contains(';')
-        {
-            has_pairs += 1;
-        }
+    let trimmed_text = text.trim();
+    if trimmed_text.is_empty() || looks_like_json(trimmed_text) || looks_like_toml(trimmed_text) {
+        return false;
     }
 
-    has_pairs >= 2
-}
+    let mut pair_lines = 0_usize;
+    let mut key_only_lines = 0_usize;
+    let mut list_lines = 0_usize;
+    let mut indented_lines = 0_usize;
+    let mut machine_key_lines = 0_usize;
+    let mut noisy_lines = 0_usize;
+    let mut has_doc_marker = false;
 
-fn looks_like_toml(text: &str) -> bool {
-    let mut has_section = false;
-    let mut has_assignment = false;
-
-    for line in text.lines().take(80) {
+    for line in text.lines().take(120) {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            has_section = true;
+
+        if trimmed == "---" || trimmed == "..." {
+            has_doc_marker = true;
+            continue;
         }
-        if trimmed.contains('=') {
-            has_assignment = true;
+
+        let indent = line.chars().take_while(|ch| *ch == ' ').count();
+        if indent >= 2 {
+            indented_lines += 1;
+        }
+
+        let body = if let Some(rest) = trimmed.strip_prefix("- ") {
+            list_lines += 1;
+            rest.trim_start()
+        } else {
+            trimmed
+        };
+        if body.is_empty() {
+            continue;
+        }
+
+        if body.ends_with(':') {
+            let key = body.trim_end_matches(':').trim();
+            if is_yaml_key_token(key) {
+                key_only_lines += 1;
+                if looks_machine_yaml_key(key) {
+                    machine_key_lines += 1;
+                }
+                continue;
+            }
+            noisy_lines += 1;
+            continue;
+        }
+
+        if let Some((raw_key, raw_value)) = body.split_once(':') {
+            let key = raw_key.trim();
+            let value = raw_value.trim();
+            if !is_yaml_key_token(key) {
+                noisy_lines += 1;
+                continue;
+            }
+            if value.is_empty() {
+                key_only_lines += 1;
+                if looks_machine_yaml_key(key) {
+                    machine_key_lines += 1;
+                }
+                continue;
+            }
+            if value.contains(';') || value.starts_with("//") {
+                noisy_lines += 1;
+                continue;
+            }
+
+            pair_lines += 1;
+            if looks_machine_yaml_key(key) {
+                machine_key_lines += 1;
+            }
+            continue;
+        }
+
+        noisy_lines += 1;
+        if noisy_lines > 40 {
+            break;
         }
     }
 
-    has_assignment && (has_section || text.lines().count() > 1)
+    if pair_lines < 2 {
+        return false;
+    }
+
+    let structural_signal =
+        has_doc_marker || list_lines > 0 || indented_lines > 0 || key_only_lines > 0;
+    let structured_lines = pair_lines + key_only_lines + list_lines;
+
+    if structural_signal {
+        return structured_lines >= 3
+            && machine_key_lines >= 1
+            && noisy_lines <= structured_lines.saturating_add(1);
+    }
+
+    pair_lines >= 4 && machine_key_lines * 2 >= pair_lines && noisy_lines <= 1
+}
+
+fn looks_like_toml(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.starts_with('{') {
+        return false;
+    }
+
+    let Ok(value) = toml::from_str::<toml::Value>(trimmed) else {
+        return false;
+    };
+    matches!(value, toml::Value::Table(table) if !table.is_empty())
+}
+
+fn is_yaml_key_token(raw: &str) -> bool {
+    let key = raw
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim_matches('`');
+    if key.is_empty() || key.len() > 80 || key.contains(char::is_whitespace) {
+        return false;
+    }
+
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+}
+
+fn looks_machine_yaml_key(raw: &str) -> bool {
+    let key = raw
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim_matches('`');
+    key.chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '_' | '-' | '.'))
 }
 
 fn content_hash(content: &str) -> String {
@@ -1808,12 +2482,44 @@ fn insert_language_aliases(language: &str, terms: &mut HashSet<String>) {
         "go" => {
             terms.insert("golang".to_owned());
         }
+        "zig" => {
+            terms.insert("ziglang".to_owned());
+        }
         "cpp" => {
             terms.insert("c++".to_owned());
             terms.insert("cxx".to_owned());
         }
+        "c" => {
+            terms.insert("clang".to_owned());
+        }
+        "csharp" => {
+            terms.insert("c#".to_owned());
+            terms.insert("cs".to_owned());
+            terms.insert("dotnet".to_owned());
+        }
+        "java" => {
+            terms.insert("jvm".to_owned());
+        }
+        "kotlin" => {
+            terms.insert("kt".to_owned());
+            terms.insert("kts".to_owned());
+        }
+        "ruby" => {
+            terms.insert("rb".to_owned());
+        }
+        "sql" => {
+            terms.insert("db".to_owned());
+            terms.insert("database".to_owned());
+        }
         "yaml" => {
             terms.insert("yml".to_owned());
+        }
+        "dockerfile" => {
+            terms.insert("docker".to_owned());
+        }
+        "makefile" => {
+            terms.insert("make".to_owned());
+            terms.insert("mk".to_owned());
         }
         "markdown" => {
             terms.insert("md".to_owned());
@@ -2047,5 +2753,151 @@ mod tests {
         };
 
         assert!(record_matches_query(&record, "stale container", false));
+    }
+
+    #[test]
+    fn json_detection_requires_structural_json() {
+        assert_eq!(
+            detect_language_tag(ClipboardItemType::Text, r#"{"id":"101","email":"a@b.com"}"#),
+            Some("json")
+        );
+        assert_ne!(
+            detect_language_tag(ClipboardItemType::Text, "[1,2,3]"),
+            Some("json")
+        );
+    }
+
+    #[test]
+    fn yaml_detection_is_more_conservative_for_plain_text() {
+        let not_yaml = "Error: timed out\nReason: upstream disconnected";
+        assert_ne!(
+            detect_language_tag(ClipboardItemType::Text, not_yaml),
+            Some("yaml")
+        );
+
+        let yaml = r#"
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sample-config
+data:
+  mode: prod
+"#;
+        assert_eq!(
+            detect_language_tag(ClipboardItemType::Text, yaml),
+            Some("yaml")
+        );
+    }
+
+    #[test]
+    fn yaml_detection_ignores_clock_style_lines() {
+        let schedule = "09:00 standup\n10:30 status";
+        assert_ne!(
+            detect_language_tag(ClipboardItemType::Text, schedule),
+            Some("yaml")
+        );
+    }
+
+    #[test]
+    fn popular_language_detection_handles_rust_zig_go() {
+        let rust = r#"
+use std::collections::HashMap;
+fn main() {
+    let mut map = HashMap::new();
+    println!("{:?}", map);
+}
+"#;
+        let zig = r#"
+const std = @import("std");
+pub fn main() !void {
+    std.debug.print("hi\n", .{});
+}
+"#;
+        let go = r#"
+package main
+import "fmt"
+func main() {
+    fmt.Println("hi")
+}
+"#;
+
+        assert_eq!(
+            detect_language_tag(ClipboardItemType::Code, rust),
+            Some("rust")
+        );
+        assert_eq!(
+            detect_language_tag(ClipboardItemType::Code, zig),
+            Some("zig")
+        );
+        assert_eq!(detect_language_tag(ClipboardItemType::Code, go), Some("go"));
+    }
+
+    #[test]
+    fn popular_language_detection_distinguishes_web_stack() {
+        let ts = r#"
+interface User { id: string; active: boolean }
+const user: User = { id: "1", active: true } as const;
+"#;
+        let js = r#"
+const fs = require("fs");
+module.exports = () => console.log(fs.readFileSync("a.txt", "utf8"));
+"#;
+        let css = "body { margin: 0; display: flex; color: #111; }";
+        let html = "<!doctype html><html><body><div>Hello</div></body></html>";
+
+        assert_eq!(
+            detect_language_tag(ClipboardItemType::Code, ts),
+            Some("typescript")
+        );
+        assert_eq!(
+            detect_language_tag(ClipboardItemType::Code, js),
+            Some("javascript")
+        );
+        assert_eq!(
+            detect_language_tag(ClipboardItemType::Code, css),
+            Some("css")
+        );
+        assert_eq!(
+            detect_language_tag(ClipboardItemType::Code, html),
+            Some("html")
+        );
+    }
+
+    #[test]
+    fn popular_language_detection_handles_system_languages() {
+        let csharp = r#"
+using System;
+namespace Demo {
+    public class Program {
+        public static void Main(string[] args) {
+            Console.WriteLine("hi");
+        }
+    }
+}
+"#;
+        let cpp = r#"
+#include <iostream>
+int main() {
+    std::cout << "hi" << std::endl;
+    return 0;
+}
+"#;
+        let c = r#"
+#include <stdio.h>
+int main(void) {
+    printf("hi\n");
+    return 0;
+}
+"#;
+
+        assert_eq!(
+            detect_language_tag(ClipboardItemType::Code, csharp),
+            Some("csharp")
+        );
+        assert_eq!(
+            detect_language_tag(ClipboardItemType::Code, cpp),
+            Some("cpp")
+        );
+        assert_eq!(detect_language_tag(ClipboardItemType::Code, c), Some("c"));
     }
 }

@@ -1,5 +1,5 @@
 #[cfg(target_os = "macos")]
-use super::actions::parameter_clickable_ranges;
+use super::actions::{has_structured_parameter_candidates, parameter_clickable_candidates};
 #[cfg(target_os = "macos")]
 use crate::*;
 
@@ -269,7 +269,7 @@ impl Render for LauncherView {
 
         if let Some(item_id) = self.info_editor_target_id {
             let info_display = if self.info_editor_input.is_empty() {
-                "e.g. Removes stale Docker container and network".to_owned()
+                "Add info…".to_owned()
             } else {
                 self.info_editor_input.clone()
             };
@@ -301,21 +301,29 @@ impl Render for LauncherView {
                                     .text_sm()
                                     .text_color(palette.title_text)
                                     .child(format!("Snippet Info • Snippet #{item_id}")),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(palette.muted_text)
-                                    .child("Enter save • Esc cancel"),
                             ),
                     )
                     .child(
-                        div()
-                            .w_full()
-                            .mt_1()
-                            .text_sm()
-                            .text_color(info_color)
-                            .child(info_display),
+                        if self.info_editor_select_all && !self.info_editor_input.is_empty() {
+                            div()
+                                .w_full()
+                                .mt_1()
+                                .text_sm()
+                                .text_color(info_color)
+                                .bg(scale_alpha(
+                                    palette.selected_bg,
+                                    if palette.dark { 0.92 } else { 0.68 },
+                                ))
+                                .rounded_sm()
+                                .child(info_display)
+                        } else {
+                            div()
+                                .w_full()
+                                .mt_1()
+                                .text_sm()
+                                .text_color(info_color)
+                                .child(info_display)
+                        },
                     )
                     .child(
                         div()
@@ -323,20 +331,14 @@ impl Render for LauncherView {
                             .mt_1()
                             .text_xs()
                             .text_color(palette.muted_text)
-                            .child(
-                                "Optional info for this snippet • ⌘V paste • Enter on empty clears",
-                            ),
+                            .child("⌘V paste"),
                     ),
             );
         }
 
         if let Some(item_id) = self.tag_editor_target_id {
             let input_display = if self.tag_editor_input.is_empty() {
-                if self.tag_editor_mode == TagEditorMode::Add {
-                    "e.g. DEVOPS,PROD,DOCKER".to_owned()
-                } else {
-                    "e.g. PROD,OLDTAG".to_owned()
-                }
+                "tag1,tag2".to_owned()
             } else {
                 self.tag_editor_input.clone()
             };
@@ -373,21 +375,29 @@ impl Render for LauncherView {
                                     .text_sm()
                                     .text_color(palette.title_text)
                                     .child(format!("{title} • Snippet #{item_id}")),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(palette.muted_text)
-                                    .child("Enter save • Esc cancel"),
                             ),
                     )
                     .child(
-                        div()
-                            .w_full()
-                            .mt_1()
-                            .text_sm()
-                            .text_color(input_color)
-                            .child(input_display),
+                        if self.tag_editor_select_all && !self.tag_editor_input.is_empty() {
+                            div()
+                                .w_full()
+                                .mt_1()
+                                .text_sm()
+                                .text_color(input_color)
+                                .bg(scale_alpha(
+                                    palette.selected_bg,
+                                    if palette.dark { 0.92 } else { 0.68 },
+                                ))
+                                .rounded_sm()
+                                .child(input_display)
+                        } else {
+                            div()
+                                .w_full()
+                                .mt_1()
+                                .text_sm()
+                                .text_color(input_color)
+                                .child(input_display)
+                        },
                     )
                     .child(
                         div()
@@ -395,7 +405,7 @@ impl Render for LauncherView {
                             .mt_1()
                             .text_xs()
                             .text_color(palette.muted_text)
-                            .child("Comma separated tags • ⌘V paste • case-insensitive"),
+                            .child("comma-separated • ⌘V"),
                     ),
             );
         }
@@ -408,30 +418,37 @@ impl Render for LauncherView {
                     .find(|entry| entry.id == item_id)
                     .map(|entry| entry.content.clone())
                     .unwrap_or_default();
+                let has_structured_candidates = has_structured_parameter_candidates(&item_content);
+                let candidates =
+                    parameter_clickable_candidates(&item_content, self.parameter_editor_force_full);
+                let auto_named_candidates =
+                    has_structured_candidates && !self.parameter_editor_force_full;
                 let mut token_picker = div().w_full().mt_1().flex().flex_row().flex_wrap().gap_1();
-                for (range_ix, range) in parameter_clickable_ranges(&item_content)
-                    .into_iter()
-                    .take(120)
-                    .enumerate()
-                {
-                    let Some(token) = item_content.get(range.clone()) else {
-                        continue;
-                    };
-                    if token.is_empty() {
+                for (range_ix, candidate) in candidates.into_iter().take(120).enumerate() {
+                    if candidate.target.is_empty() {
                         continue;
                     }
-                    let token = token.to_owned();
+                    let token = candidate.label;
+                    let target = candidate.target;
                     let is_selected = self
                         .parameter_editor_selected_targets
                         .iter()
-                        .any(|existing| existing == &token);
+                        .any(|existing| existing == &target);
                     let chip_bg = if is_selected {
-                        scale_alpha(palette.selected_bg, if palette.dark { 0.9 } else { 0.6 })
+                        if palette.dark {
+                            rgb(0x22d3ee)
+                        } else {
+                            rgb(0x0891b2)
+                        }
                     } else {
                         scale_alpha(palette.row_hover_bg, 0.92)
                     };
                     let chip_border = if is_selected {
-                        scale_alpha(palette.selected_border, 0.95)
+                        if palette.dark {
+                            rgb(0x67e8f9)
+                        } else {
+                            rgb(0x0e7490)
+                        }
                     } else {
                         scale_alpha(palette.window_border, 0.85)
                     };
@@ -442,9 +459,9 @@ impl Render for LauncherView {
                             .text_xs()
                             .text_color(if is_selected {
                                 if palette.dark {
-                                    rgb(0xbfdbfe)
+                                    rgb(0x042f2e)
                                 } else {
-                                    rgb(0x1d4ed8)
+                                    rgb(0xffffff)
                                 }
                             } else {
                                 palette.row_text
@@ -464,6 +481,120 @@ impl Render for LauncherView {
                     );
                 }
 
+                let mut selector_header = div()
+                    .w_full()
+                    .flex()
+                    .justify_between()
+                    .items_center()
+                    .child(div().text_sm().text_color(palette.title_text).child(
+                        if auto_named_candidates {
+                            format!("Select Parameters • Snippet #{item_id}")
+                        } else if has_structured_candidates && self.parameter_editor_force_full {
+                            format!("Full Parametrize • Snippet #{item_id}")
+                        } else {
+                            format!("Parametrize Snippet • Snippet #{item_id}")
+                        },
+                    ));
+
+                let guided_active = has_structured_candidates && !self.parameter_editor_force_full;
+                let full_active = self.parameter_editor_force_full || !has_structured_candidates;
+
+                let guided_bg = if guided_active {
+                    if palette.dark {
+                        rgb(0x22d3ee)
+                    } else {
+                        rgb(0x0891b2)
+                    }
+                } else {
+                    scale_alpha(palette.row_hover_bg, if palette.dark { 0.95 } else { 0.9 })
+                };
+                let guided_border = if guided_active {
+                    if palette.dark {
+                        rgb(0x67e8f9)
+                    } else {
+                        rgb(0x0e7490)
+                    }
+                } else {
+                    scale_alpha(palette.window_border, 0.85)
+                };
+                let full_bg = if full_active {
+                    if palette.dark {
+                        rgb(0x22d3ee)
+                    } else {
+                        rgb(0x0891b2)
+                    }
+                } else {
+                    scale_alpha(palette.row_hover_bg, if palette.dark { 0.95 } else { 0.9 })
+                };
+                let full_border = if full_active {
+                    if palette.dark {
+                        rgb(0x67e8f9)
+                    } else {
+                        rgb(0x0e7490)
+                    }
+                } else {
+                    scale_alpha(palette.window_border, 0.85)
+                };
+
+                selector_header = selector_header.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            div()
+                                .id(("parameter-mode-guided", item_id as u64))
+                                .text_xs()
+                                .text_color(if guided_active {
+                                    if palette.dark {
+                                        rgb(0x042f2e)
+                                    } else {
+                                        rgb(0xffffff)
+                                    }
+                                } else if has_structured_candidates {
+                                    palette.row_text
+                                } else {
+                                    palette.muted_text
+                                })
+                                .bg(guided_bg)
+                                .border_1()
+                                .border_color(guided_border)
+                                .rounded_md()
+                                .px_1()
+                                .py(px(1.0))
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.set_parameter_editor_full_mode(false, cx);
+                                }))
+                                .child("Guided (g)"),
+                        )
+                        .child(
+                            div()
+                                .id(("parameter-mode-full", item_id as u64))
+                                .text_xs()
+                                .text_color(if full_active {
+                                    if palette.dark {
+                                        rgb(0x042f2e)
+                                    } else {
+                                        rgb(0xffffff)
+                                    }
+                                } else {
+                                    palette.row_text
+                                })
+                                .bg(full_bg)
+                                .border_1()
+                                .border_color(full_border)
+                                .rounded_md()
+                                .px_1()
+                                .py(px(1.0))
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.set_parameter_editor_full_mode(true, cx);
+                                }))
+                                .child("Full (f)"),
+                        ),
+                );
+
                 content = content.child(
                     div()
                         .w_full()
@@ -475,25 +606,7 @@ impl Render for LauncherView {
                         .border_1()
                         .border_color(palette.selected_border)
                         .rounded_lg()
-                        .child(
-                            div()
-                                .w_full()
-                                .flex()
-                                .justify_between()
-                                .items_center()
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(palette.title_text)
-                                        .child(format!("Parametrize Snippet • Snippet #{item_id}")),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(palette.muted_text)
-                                        .child("Select token buttons, then P/Enter"),
-                                ),
-                        )
+                        .child(selector_header)
                         .child(token_picker)
                         .child(
                             div()
@@ -502,9 +615,15 @@ impl Render for LauncherView {
                                 .text_xs()
                                 .text_color(palette.muted_text)
                                 .child(if self.parameter_editor_selected_targets.is_empty() {
-                                    "Click a token • ⌘+click to multi-select • Tab/P/Enter next • Esc cancel"
+                                    if auto_named_candidates {
+                                        "pick one or more fields"
+                                    } else {
+                                        "pick one or more values"
+                                    }
+                                } else if auto_named_candidates {
+                                    "Enter saves • ⌘+click toggles"
                                 } else {
-                                    "⌘+click toggles additional tokens • Tab/P/Enter next • Esc cancel"
+                                    "Enter then name • ⌘+click toggles"
                                 }),
                         ),
                 );
@@ -524,17 +643,20 @@ impl Render for LauncherView {
                             .get(ix)
                             .cloned()
                             .unwrap_or_default();
+                        let value_is_empty = value.is_empty();
                         let is_focus = ix == self.parameter_editor_name_focus_index;
-                        let value_display = if value.is_empty() {
-                            "e.g. reg_id".to_owned()
+                        let value_display = if value_is_empty {
+                            "name".to_owned()
                         } else {
                             value
                         };
-                        let value_color = if value_display == "e.g. reg_id" {
+                        let value_color = if value_display == "name" {
                             palette.query_placeholder
                         } else {
                             palette.query_active
                         };
+                        let selected_all_value =
+                            is_focus && self.parameter_editor_name_select_all && !value_is_empty;
 
                         name_rows = name_rows.child(
                             div()
@@ -576,6 +698,15 @@ impl Render for LauncherView {
                                         .mt_1()
                                         .text_sm()
                                         .text_color(value_color)
+                                        .bg(if selected_all_value {
+                                            scale_alpha(
+                                                palette.selected_bg,
+                                                if palette.dark { 0.92 } else { 0.68 },
+                                            )
+                                        } else {
+                                            rgba(0x00000000)
+                                        })
+                                        .rounded_sm()
                                         .child(value_display),
                                 ),
                         );
@@ -604,23 +735,9 @@ impl Render for LauncherView {
                                         .text_sm()
                                         .text_color(palette.title_text)
                                         .child(format!("Parameter Name • Snippet #{item_id}")),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(palette.muted_text)
-                                        .child("Enter save • Esc cancel"),
                                 ),
                         )
-                        .child(name_rows)
-                        .child(
-                            div()
-                                .w_full()
-                                .mt_1()
-                                .text_xs()
-                                .text_color(palette.muted_text)
-                                .child("Stage 2/2 • Tab/↑↓ switch field • Use letters, numbers, underscores • ⌘V paste"),
-                        ),
+                        .child(name_rows),
                 );
             }
         }
@@ -639,8 +756,9 @@ impl Render for LauncherView {
                     .get(ix)
                     .cloned()
                     .unwrap_or_default();
+                let value_is_empty = value.is_empty();
                 let is_focus = ix == self.parameter_fill_focus_index;
-                let value_display = if value.is_empty() {
+                let value_display = if value_is_empty {
                     "Type value…".to_owned()
                 } else {
                     value
@@ -650,6 +768,8 @@ impl Render for LauncherView {
                 } else {
                     palette.query_active
                 };
+                let selected_all_value =
+                    is_focus && self.parameter_fill_select_all && !value_is_empty;
 
                 fill_rows = fill_rows.child(
                     div()
@@ -688,6 +808,15 @@ impl Render for LauncherView {
                                 .mt_1()
                                 .text_sm()
                                 .text_color(value_color)
+                                .bg(if selected_all_value {
+                                    scale_alpha(
+                                        palette.selected_bg,
+                                        if palette.dark { 0.92 } else { 0.68 },
+                                    )
+                                } else {
+                                    rgba(0x00000000)
+                                })
+                                .rounded_sm()
                                 .child(value_display),
                         ),
                 );
@@ -723,12 +852,6 @@ impl Render for LauncherView {
                                     .text_sm()
                                     .text_color(palette.title_text)
                                     .child(format!("Fill Parameters • Snippet #{item_id}")),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(palette.muted_text)
-                                    .child("Enter copy • Esc cancel"),
                             ),
                     )
                     .child(fill_rows)
@@ -738,7 +861,7 @@ impl Render for LauncherView {
                             .mt_1()
                             .text_xs()
                             .text_color(palette.muted_text)
-                            .child("Tab/↑↓ switch field • ⌘V paste • leave all fields empty to copy original"),
+                            .child("blank all = original"),
                     ),
             );
         }

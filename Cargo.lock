@@ -3341,6 +3341,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "syntect",
+ "toml 0.8.23",
 ]
 
 [[package]]
