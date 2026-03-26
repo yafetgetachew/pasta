@@ -13,11 +13,50 @@ pub(crate) struct SearchResponse {
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) struct CachedRowPresentation {
+    pub(crate) created_label: String,
+    pub(crate) detected_language: Option<LanguageTag>,
+    pub(crate) base_tags: Vec<String>,
+    pub(crate) collapsed_preview: String,
+    pub(crate) masked_preview: String,
+}
+
+#[cfg(target_os = "macos")]
+impl CachedRowPresentation {
+    pub(crate) fn from_record(item: &ClipboardRecord) -> Self {
+        let detected_language = detect_language(item.item_type, &item.content);
+        let mut base_tags = visible_tag_chips(item.item_type, detected_language, &item.tags);
+        if !item.description.trim().is_empty() {
+            base_tags.insert(0, "INFO".to_owned());
+        }
+        if !item.parameters.is_empty() {
+            base_tags.insert(0, "PARAM".to_owned());
+            for parameter in item.parameters.iter().take(2) {
+                base_tags.push(format!("P:{}", parameter.name.to_ascii_uppercase()));
+            }
+        }
+
+        let collapsed_preview = preview_content(&item.content);
+
+        Self {
+            created_label: format_timestamp(&item.created_at),
+            detected_language,
+            base_tags,
+            collapsed_preview,
+            masked_preview: masked_secret_preview(&item.content),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) fn start_search_worker(
     storage: Arc<ClipboardStorage>,
-) -> (mpsc::Sender<SearchRequest>, mpsc::Receiver<SearchResponse>) {
+) -> (
+    mpsc::Sender<SearchRequest>,
+    futures::channel::mpsc::UnboundedReceiver<SearchResponse>,
+) {
     let (request_tx, request_rx) = mpsc::channel::<SearchRequest>();
-    let (result_tx, result_rx) = mpsc::channel::<SearchResponse>();
+    let (result_tx, result_rx) = futures::channel::mpsc::unbounded::<SearchResponse>();
 
     let spawn_result = std::thread::Builder::new()
         .name("pasta-search-worker".to_owned())
@@ -35,7 +74,7 @@ pub(crate) fn start_search_worker(
                     });
 
                 if result_tx
-                    .send(SearchResponse {
+                    .unbounded_send(SearchResponse {
                         request_id: request.request_id,
                         items,
                     })
@@ -58,15 +97,20 @@ pub(crate) struct LauncherView {
     pub(crate) font_family: SharedString,
     pub(crate) surface_alpha: f32,
     pub(crate) syntax_highlighting: bool,
-    pub(crate) results_scroll: ScrollHandle,
+    pub(crate) query_focus_handle: FocusHandle,
+    pub(crate) query_selected_range: Range<usize>,
+    pub(crate) query_selection_reversed: bool,
+    pub(crate) query_marked_range: Option<Range<usize>>,
+    pub(crate) query_last_layout: Option<ShapedLine>,
+    pub(crate) query_last_bounds: Option<Bounds<Pixels>>,
+    pub(crate) query_is_selecting: bool,
+    pub(crate) results_scroll: UniformListScrollHandle,
     pub(crate) search_request_tx: mpsc::Sender<SearchRequest>,
-    pub(crate) search_result_rx: mpsc::Receiver<SearchResponse>,
     pub(crate) next_search_request_id: u64,
     pub(crate) latest_search_request_id: u64,
     pub(crate) query: String,
-    pub(crate) query_refresh_due_at: Option<Instant>,
-    pub(crate) query_select_all: bool,
     pub(crate) items: Vec<ClipboardRecord>,
+    pub(crate) row_presentations: Vec<CachedRowPresentation>,
     pub(crate) selected_index: usize,
     pub(crate) selection_changed_at: Instant,
     pub(crate) transition_alpha: f32,

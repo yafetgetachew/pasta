@@ -1,5 +1,7 @@
 #[cfg(target_os = "macos")]
 use crate::*;
+#[cfg(target_os = "macos")]
+use futures::StreamExt;
 
 pub(crate) struct HotkeyRegistration {
     pub(crate) _manager: GlobalHotKeyManager,
@@ -139,6 +141,32 @@ pub(crate) fn spawn_menu_command_listener(cx: &mut App, receiver: mpsc::Receiver
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) fn spawn_search_result_listener(
+    cx: &mut App,
+    window: WindowHandle<LauncherView>,
+    receiver: futures::channel::mpsc::UnboundedReceiver<SearchResponse>,
+) {
+    cx.spawn(async move |cx| {
+        let mut receiver = receiver;
+        while let Some(response) = receiver.next().await {
+            let update_result = cx.update(|cx| {
+                window
+                    .update(cx, |view, _window, cx| {
+                        if view.apply_search_response(response) {
+                            cx.notify();
+                        }
+                    })
+                    .is_ok()
+            });
+            if !matches!(update_result, Ok(true)) {
+                break;
+            }
+        }
+    })
+    .detach();
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) fn spawn_launcher_transition_loop(cx: &mut App) {
     cx.spawn(async move |cx| {
         loop {
@@ -148,12 +176,10 @@ pub(crate) fn spawn_launcher_transition_loop(cx: &mut App) {
                     .and_then(|state| state.window)
                 {
                     let _ = window.update(cx, |view, window, cx| {
-                        let search_results_changed = view.drain_search_results();
                         let appearance_changed = view.sync_window_appearance(window);
                         let resized = view.tick_window_height_animation(window);
                         let reveal_changed = view.clear_expired_secret_reveal();
                         let reveal_tick_changed = view.secret_countdown_tick_changed();
-                        let query_refreshed = view.tick_query_refresh();
                         let transition_active = view.transition_running();
 
                         if !transition_active {
@@ -161,8 +187,6 @@ pub(crate) fn spawn_launcher_transition_loop(cx: &mut App) {
                                 || resized
                                 || reveal_changed
                                 || reveal_tick_changed
-                                || search_results_changed
-                                || query_refreshed
                             {
                                 cx.notify();
                             }
@@ -223,6 +247,7 @@ pub(crate) fn show_launcher(cx: &mut App) {
             window.resize(size(px(LAUNCHER_WIDTH), px(LAUNCHER_HEIGHT)));
             set_window_move_to_active_space(window);
             view.begin_open_transition();
+            window.focus(&view.query_focus_handle);
             cx.notify();
             window.activate_window();
         })
@@ -238,6 +263,7 @@ pub(crate) fn show_launcher(cx: &mut App) {
             window.resize(size(px(LAUNCHER_WIDTH), px(LAUNCHER_HEIGHT)));
             set_window_move_to_active_space(window);
             view.begin_open_transition();
+            window.focus(&view.query_focus_handle);
             cx.notify();
             window.activate_window();
         });

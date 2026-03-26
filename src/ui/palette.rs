@@ -48,17 +48,17 @@ pub(crate) fn palette_for(appearance: WindowAppearance, surface_alpha: f32) -> P
         Palette {
             dark,
             window_bg: rgba(0xfffffff2),
-            window_border: rgba(0x0f172a1f),
+            window_border: rgba(0x0f172a38),
             title_text: rgba(0x0f172ad9),
             query_placeholder: rgba(0x64748bb8),
             query_active: rgba(0x020617f2),
             muted_text: rgba(0x334155c4),
-            list_divider: rgba(0x33415517),
+            list_divider: rgba(0x33415528),
             row_text: rgba(0x020617eb),
             row_meta_text: rgba(0x475569ab),
-            row_hover_bg: rgba(0x1d4ed818),
-            selected_bg: rgba(0x2563eb3d),
-            selected_border: rgba(0x1d4ed88f),
+            row_hover_bg: rgba(0x1d4ed830),
+            selected_bg: rgba(0x2563eb58),
+            selected_border: rgba(0x1d4ed8a0),
         }
     };
 
@@ -70,9 +70,13 @@ pub(crate) fn palette_for(appearance: WindowAppearance, surface_alpha: f32) -> P
     palette.selected_bg = scale_alpha(palette.selected_bg, alpha_scale);
     palette.selected_border = scale_alpha(palette.selected_border, alpha_scale);
     if !palette.dark {
-        // Keep selected rows visible even when the user lowers panel transparency.
-        palette.selected_bg.a = palette.selected_bg.a.max(0.16);
-        palette.selected_border.a = palette.selected_border.a.max(0.42);
+        // Keep light-mode surfaces readable even on bright wallpapers when the
+        // user lowers panel transparency.
+        palette.window_border.a = palette.window_border.a.max(0.18);
+        palette.list_divider.a = palette.list_divider.a.max(0.14);
+        palette.row_hover_bg.a = palette.row_hover_bg.a.max(0.12);
+        palette.selected_bg.a = palette.selected_bg.a.max(0.24);
+        palette.selected_border.a = palette.selected_border.a.max(0.45);
     }
 
     palette

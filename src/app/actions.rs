@@ -1,5 +1,5 @@
 #[cfg(target_os = "macos")]
-use super::state::{SearchRequest, start_search_worker};
+use super::state::{CachedRowPresentation, SearchRequest, SearchResponse};
 #[cfg(target_os = "macos")]
 use crate::*;
 #[cfg(target_os = "macos")]
@@ -15,22 +15,28 @@ impl LauncherView {
         font_family: SharedString,
         surface_alpha: f32,
         syntax_highlighting: bool,
+        search_request_tx: mpsc::Sender<SearchRequest>,
+        cx: &mut Context<Self>,
     ) -> Self {
-        let (search_request_tx, search_result_rx) = start_search_worker(storage.clone());
         let mut view = Self {
             storage,
             font_family,
             surface_alpha,
             syntax_highlighting,
-            results_scroll: ScrollHandle::new(),
+            query_focus_handle: cx.focus_handle(),
+            query_selected_range: 0..0,
+            query_selection_reversed: false,
+            query_marked_range: None,
+            query_last_layout: None,
+            query_last_bounds: None,
+            query_is_selecting: false,
+            results_scroll: UniformListScrollHandle::new(),
             search_request_tx,
-            search_result_rx,
             next_search_request_id: 0,
             latest_search_request_id: 0,
             query: String::new(),
-            query_refresh_due_at: None,
-            query_select_all: false,
             items: Vec::new(),
+            row_presentations: Vec::new(),
             selected_index: 0,
             selection_changed_at: Instant::now(),
             transition_alpha: 1.0,
@@ -79,11 +85,16 @@ impl LauncherView {
 
     pub(crate) fn reset_for_show(&mut self) {
         self.query.clear();
-        self.query_refresh_due_at = None;
-        self.query_select_all = false;
+        self.query_selected_range = 0..0;
+        self.query_selection_reversed = false;
+        self.query_marked_range = None;
+        self.query_last_layout = None;
+        self.query_last_bounds = None;
+        self.query_is_selecting = false;
         self.selected_index = 0;
         self.selection_changed_at = Instant::now();
         self.items.clear();
+        self.row_presentations.clear();
         self.revealed_secret_id = None;
         self.reveal_until = None;
         self.last_reveal_second_bucket = None;
@@ -118,6 +129,35 @@ impl LauncherView {
         self.show_command_help = false;
         self.last_window_appearance = None;
         self.request_search();
+    }
+
+    pub(crate) fn rebuild_row_presentations(&mut self) {
+        self.row_presentations = self
+            .items
+            .iter()
+            .map(CachedRowPresentation::from_record)
+            .collect();
+    }
+
+    pub(crate) fn set_items(&mut self, items: Vec<ClipboardRecord>) {
+        self.items = items;
+        self.rebuild_row_presentations();
+        if self.selected_index >= self.items.len() {
+            self.selected_index = 0;
+        }
+    }
+
+    pub(crate) fn reset_results_scroll_to_top(&mut self) {
+        self.results_scroll
+            .scroll_to_item_strict(0, ScrollStrategy::Top);
+    }
+
+    pub(crate) fn query_did_change(&mut self, cx: &mut Context<Self>) {
+        self.selected_index = 0;
+        self.selection_changed_at = Instant::now();
+        self.reset_results_scroll_to_top();
+        self.schedule_query_refresh();
+        cx.notify();
     }
 
     pub(crate) fn sync_window_appearance(&mut self, window: &Window) -> bool {
@@ -338,13 +378,11 @@ impl LauncherView {
     }
 
     pub(crate) fn refresh_items(&mut self) {
-        self.items = self
+        let items = self
             .storage
             .search_items(&self.query, 48)
             .unwrap_or_else(|_| Vec::new());
-        if self.selected_index >= self.items.len() {
-            self.selected_index = 0;
-        }
+        self.set_items(items);
     }
 
     pub(crate) fn request_search(&mut self) {
@@ -365,66 +403,20 @@ impl LauncherView {
         }
     }
 
-    pub(crate) fn drain_search_results(&mut self) -> bool {
-        let mut changed = false;
-        while let Ok(response) = self.search_result_rx.try_recv() {
-            if response.request_id < self.latest_search_request_id {
-                continue;
-            }
-
-            self.items = response.items;
-            if self.selected_index >= self.items.len() {
-                self.selected_index = 0;
-            }
-            changed = true;
-        }
-        changed
-    }
-
-    pub(crate) fn schedule_query_refresh(&mut self) {
-        self.query_refresh_due_at =
-            Some(Instant::now() + Duration::from_millis(QUERY_REFRESH_DEBOUNCE_MS));
-    }
-
-    pub(crate) fn flush_pending_query_refresh(&mut self) -> bool {
-        if self.query_refresh_due_at.take().is_none() {
+    pub(crate) fn apply_search_response(&mut self, response: SearchResponse) -> bool {
+        if response.request_id < self.latest_search_request_id {
             return false;
         }
-        self.request_search();
+
+        self.set_items(response.items);
+        if self.selected_index == 0 {
+            self.reset_results_scroll_to_top();
+        }
         true
     }
 
-    pub(crate) fn tick_query_refresh(&mut self) -> bool {
-        let Some(due_at) = self.query_refresh_due_at else {
-            return false;
-        };
-        if Instant::now() < due_at {
-            return false;
-        }
-        self.flush_pending_query_refresh()
-    }
-
-    pub(crate) fn filter_visible_items_for_query(&mut self, query: &str) {
-        let normalized = query.trim().to_lowercase();
-        if normalized.is_empty() {
-            return;
-        }
-
-        let tag_only = normalized.starts_with('/');
-        let effective_query = if tag_only {
-            normalized.trim_start_matches('/').trim().to_owned()
-        } else {
-            normalized
-        };
-        if effective_query.is_empty() {
-            return;
-        }
-
-        self.items
-            .retain(|record| record_matches_query(record, &effective_query, tag_only));
-        if self.selected_index >= self.items.len() {
-            self.selected_index = 0;
-        }
+    pub(crate) fn schedule_query_refresh(&mut self) {
+        self.request_search();
     }
 
     pub(crate) fn move_selection(&mut self, direction: i32, cx: &mut Context<Self>) {
@@ -444,7 +436,8 @@ impl LauncherView {
 
         if self.selected_index != previous_index {
             self.selection_changed_at = Instant::now();
-            self.results_scroll.scroll_to_item(self.selected_index);
+            self.results_scroll
+                .scroll_to_item(self.selected_index, ScrollStrategy::Center);
             cx.notify();
         }
     }
@@ -488,7 +481,8 @@ impl LauncherView {
     pub(crate) fn copy_index_to_clipboard(&mut self, index: usize, cx: &mut Context<Self>) {
         self.selected_index = index;
         self.selection_changed_at = Instant::now();
-        self.results_scroll.scroll_to_item(self.selected_index);
+        self.results_scroll
+            .scroll_to_item(self.selected_index, ScrollStrategy::Center);
         self.copy_selected_to_clipboard(cx);
     }
 
@@ -501,7 +495,8 @@ impl LauncherView {
             Ok(_) => {
                 self.refresh_items();
                 if !self.items.is_empty() {
-                    self.results_scroll.scroll_to_item(self.selected_index);
+                    self.results_scroll
+                        .scroll_to_item(self.selected_index, ScrollStrategy::Center);
                 }
                 self.selection_changed_at = Instant::now();
                 cx.notify();
@@ -533,7 +528,8 @@ impl LauncherView {
                     self.selected_index = 0;
                 }
                 if !self.items.is_empty() {
-                    self.results_scroll.scroll_to_item(self.selected_index);
+                    self.results_scroll
+                        .scroll_to_item(self.selected_index, ScrollStrategy::Center);
                 }
                 self.selection_changed_at = Instant::now();
                 show_macos_notification("Pasta", "Item marked as secret.");
@@ -547,20 +543,6 @@ impl LauncherView {
                 show_macos_notification("Pasta", "Failed to mark item as secret.");
             }
         }
-    }
-
-    pub(crate) fn update_query(&mut self, query: String, cx: &mut Context<Self>) {
-        let previous_query = self.query.clone();
-        self.query = query;
-        self.query_select_all = false;
-        self.selected_index = 0;
-        self.selection_changed_at = Instant::now();
-        if !previous_query.is_empty() && self.query.starts_with(&previous_query) {
-            let query = self.query.clone();
-            self.filter_visible_items_for_query(&query);
-        }
-        self.schedule_query_refresh();
-        cx.notify();
     }
 
     pub(crate) fn start_info_editor_for_selected(&mut self, cx: &mut Context<Self>) {
@@ -607,7 +589,8 @@ impl LauncherView {
                     self.selected_index = 0;
                 }
                 if !self.items.is_empty() {
-                    self.results_scroll.scroll_to_item(self.selected_index);
+                    self.results_scroll
+                        .scroll_to_item(self.selected_index, ScrollStrategy::Center);
                 }
                 self.selection_changed_at = Instant::now();
                 self.info_editor_target_id = None;
@@ -694,11 +677,12 @@ impl LauncherView {
                 if let Some(ix) = self.items.iter().position(|entry| entry.id == item_id) {
                     self.selected_index = ix;
                     self.selection_changed_at = Instant::now();
-                    self.results_scroll.scroll_to_item(ix);
+                    self.results_scroll.scroll_to_item(ix, ScrollStrategy::Center);
                 } else if !self.items.is_empty() {
                     self.selected_index = previous_index.min(self.items.len().saturating_sub(1));
                     self.selection_changed_at = Instant::now();
-                    self.results_scroll.scroll_to_item(self.selected_index);
+                    self.results_scroll
+                        .scroll_to_item(self.selected_index, ScrollStrategy::Center);
                 }
 
                 self.tag_editor_target_id = None;
@@ -1074,7 +1058,8 @@ impl LauncherView {
                 self.selected_index = 0;
             }
             if !self.items.is_empty() {
-                self.results_scroll.scroll_to_item(self.selected_index);
+                self.results_scroll
+                    .scroll_to_item(self.selected_index, ScrollStrategy::Center);
             }
             self.selection_changed_at = Instant::now();
             self.parameter_editor_target_id = None;
@@ -1683,14 +1668,16 @@ impl LauncherView {
         }
 
         self.query.clear();
-        self.query_select_all = false;
-        self.query_refresh_due_at = None;
+        let query_cursor = self.query.len();
+        self.query_selected_range = query_cursor..query_cursor;
+        self.query_selection_reversed = false;
+        self.query_marked_range = None;
         self.transform_menu_open = false;
         self.selected_index = 0;
         self.selection_changed_at = Instant::now();
         self.refresh_items();
         if !self.items.is_empty() {
-            self.results_scroll.scroll_to_item(0);
+            self.results_scroll.scroll_to_item(0, ScrollStrategy::Top);
         }
 
         show_macos_notification("Pasta", &notification);
@@ -1701,14 +1688,11 @@ impl LauncherView {
         let key = event.keystroke.key.as_str();
         let modifiers = &event.keystroke.modifiers;
         let no_modifiers = !modifiers.modified();
-        let platform_only =
-            modifiers.platform && !modifiers.control && !modifiers.alt && !modifiers.function;
         let command_navigation = modifiers.platform
             && !modifiers.shift
             && !modifiers.control
             && !modifiers.alt
             && !modifiers.function;
-        let typed_char = typed_character(event);
 
         if self.info_editor_target_id.is_some() {
             self.handle_info_editor_keystroke(event, cx);
@@ -1733,11 +1717,6 @@ impl LauncherView {
         if self.transform_menu_open {
             self.handle_transform_keystroke(event, cx);
             return;
-        }
-
-        let is_query_edit_key = (key == "backspace" && no_modifiers) || typed_char.is_some();
-        if !is_query_edit_key && self.query_refresh_due_at.is_some() {
-            self.flush_pending_query_refresh();
         }
 
         if command_navigation {
@@ -1869,34 +1848,7 @@ impl LauncherView {
                 self.delete_selected_item(cx);
                 return;
             }
-            "a" if platform_only => {
-                if !self.query.is_empty() {
-                    self.query_select_all = true;
-                    cx.notify();
-                }
-                return;
-            }
-            "backspace" if no_modifiers => {
-                if self.query_select_all {
-                    self.update_query(String::new(), cx);
-                } else {
-                    let mut query = self.query.clone();
-                    query.pop();
-                    self.update_query(query, cx);
-                }
-                return;
-            }
             _ => {}
-        }
-
-        if let Some(character) = typed_char {
-            if self.query_select_all {
-                self.update_query(character.to_string(), cx);
-            } else {
-                let mut query = self.query.clone();
-                query.push(character);
-                self.update_query(query, cx);
-            }
         }
     }
 }

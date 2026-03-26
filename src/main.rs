@@ -9,6 +9,7 @@ use std::{
     env,
     ffi::CStr,
     fs,
+    ops::Range,
     path::PathBuf,
     sync::{Arc, OnceLock, mpsc},
     time::{Duration, Instant},
@@ -33,10 +34,14 @@ use global_hotkey::{
 };
 #[cfg(target_os = "macos")]
 use gpui::{
-    App, Application, Bounds, ClickEvent, ClipboardItem, Context, FontWeight, Global,
-    KeystrokeEvent, Render, ScrollHandle, SharedString, Window, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions, div, point,
-    prelude::*, px, rgb, rgba, size,
+    App, Application, Bounds, ClickEvent, ClipboardItem, Context, CursorStyle,
+    Element as GpuiElement, ElementId, ElementInputHandler, Entity, EntityInputHandler,
+    FocusHandle, Focusable, FontWeight, Global, GlobalElementId, InspectorElementId, KeyBinding,
+    KeystrokeEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    PaintQuad, Pixels, Point, Render, ScrollStrategy, ShapedLine, SharedString, Style, TextRun,
+    UTF16Selection, UnderlineStyle, UniformListScrollHandle, Window, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions, actions,
+    div, fill, point, prelude::*, px, relative, rgb, rgba, size, uniform_list,
 };
 #[cfg(target_os = "macos")]
 use objc::rc::StrongPtr;
@@ -56,9 +61,28 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "macos")]
 use storage::{
-    ClipboardItemType, ClipboardParameter, ClipboardRecord, ClipboardStorage, record_matches_query,
+    ClipboardItemType, ClipboardParameter, ClipboardRecord, ClipboardStorage,
     render_parameterized_content,
 };
+
+#[cfg(target_os = "macos")]
+actions!(
+    pasta_query_input,
+    [
+        QueryBackspace,
+        QueryLeft,
+        QueryRight,
+        QuerySelectLeft,
+        QuerySelectRight,
+        QuerySelectAll,
+        QueryHome,
+        QueryEnd,
+        QueryShowCharacterPalette,
+        QueryPaste,
+        QueryCut,
+        QueryCopy,
+    ]
+);
 
 #[cfg(target_os = "macos")]
 #[link(name = "LocalAuthentication", kind = "framework")]
@@ -91,15 +115,11 @@ const WINDOW_HEIGHT_ANIMATION_SNAP: f32 = 0.5;
 #[cfg(target_os = "macos")]
 const WINDOW_HEIGHT_RESIZE_STEP: f32 = 1.0;
 #[cfg(target_os = "macos")]
-const QUERY_REFRESH_DEBOUNCE_MS: u64 = 22;
-#[cfg(target_os = "macos")]
-const SELECTION_EXPAND_DWELL_MS: u64 = 90;
-#[cfg(target_os = "macos")]
 const MAX_VISIBLE_TAG_CHIPS: usize = 4;
 #[cfg(target_os = "macos")]
 const RESULTS_HEIGHT_NORMAL: f32 = 446.0;
 #[cfg(target_os = "macos")]
-const RESULTS_HEIGHT_EXPANDED: f32 = 636.0;
+const RESULT_ROW_HEIGHT: f32 = 110.0;
 #[cfg(target_os = "macos")]
 const NS_WINDOW_COLLECTION_BEHAVIOR_MOVE_TO_ACTIVE_SPACE: usize = 1 << 1;
 
@@ -464,6 +484,24 @@ fn main() {
             storage: storage.clone(),
         });
         load_embedded_ui_font(cx);
+        cx.bind_keys([
+            KeyBinding::new("backspace", QueryBackspace, Some("PastaQueryInput")),
+            KeyBinding::new("left", QueryLeft, Some("PastaQueryInput")),
+            KeyBinding::new("right", QueryRight, Some("PastaQueryInput")),
+            KeyBinding::new("shift-left", QuerySelectLeft, Some("PastaQueryInput")),
+            KeyBinding::new("shift-right", QuerySelectRight, Some("PastaQueryInput")),
+            KeyBinding::new("cmd-a", QuerySelectAll, Some("PastaQueryInput")),
+            KeyBinding::new("cmd-v", QueryPaste, Some("PastaQueryInput")),
+            KeyBinding::new("cmd-c", QueryCopy, Some("PastaQueryInput")),
+            KeyBinding::new("cmd-x", QueryCut, Some("PastaQueryInput")),
+            KeyBinding::new("home", QueryHome, Some("PastaQueryInput")),
+            KeyBinding::new("end", QueryEnd, Some("PastaQueryInput")),
+            KeyBinding::new(
+                "ctrl-cmd-space",
+                QueryShowCharacterPalette,
+                Some("PastaQueryInput"),
+            ),
+        ]);
 
         let window = create_launcher_window(cx);
         cx.set_global(LauncherState { window });

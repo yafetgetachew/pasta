@@ -53,6 +53,7 @@ pub(crate) fn create_launcher_window(cx: &mut App) -> Option<WindowHandle<Launch
     let (bounds, display_id) = launcher_window_bounds(cx);
     let storage = cx.global::<StorageState>().storage.clone();
     let style = cx.global::<UiStyleState>().clone();
+    let (search_request_tx, search_result_rx) = start_search_worker(storage.clone());
 
     match cx.open_window(
         WindowOptions {
@@ -71,6 +72,7 @@ pub(crate) fn create_launcher_window(cx: &mut App) -> Option<WindowHandle<Launch
         move |window, cx| {
             let storage = storage.clone();
             let style = style.clone();
+            let search_request_tx = search_request_tx.clone();
             set_window_move_to_active_space(window);
             window.on_window_should_close(cx, |_, cx| {
                 cx.hide();
@@ -78,11 +80,13 @@ pub(crate) fn create_launcher_window(cx: &mut App) -> Option<WindowHandle<Launch
             });
 
             cx.new(move |cx| {
-                let mut view = LauncherView::new(
+                let view = LauncherView::new(
                     storage.clone(),
                     style.family.clone(),
                     style.surface_alpha,
                     style.syntax_highlighting,
+                    search_request_tx,
+                    cx,
                 );
                 cx.observe_window_activation(window, |_view: &mut LauncherView, window, cx| {
                     if window.is_window_active() {
@@ -108,12 +112,14 @@ pub(crate) fn create_launcher_window(cx: &mut App) -> Option<WindowHandle<Launch
                 })
                 .detach();
 
-                view.refresh_items();
                 view
             })
         },
     ) {
-        Ok(window) => Some(window),
+        Ok(window) => {
+            spawn_search_result_listener(cx, window, search_result_rx);
+            Some(window)
+        }
         Err(err) => {
             eprintln!("warning: failed to open launcher window: {err}");
             None

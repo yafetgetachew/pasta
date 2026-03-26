@@ -23,6 +23,8 @@ const SEMANTIC_VECTOR_DIM: usize = 192;
 const SEMANTIC_MIN_MATCH_SCORE: f32 = 0.36;
 const SEMANTIC_MIN_QUERY_CHARS: usize = 3;
 const SEMANTIC_EMBEDDING_CACHE_MAX: usize = 12_000;
+const SEMANTIC_SOURCE_TEXT_LIMIT: usize = 4_096;
+const SEARCH_FUZZY_TEXT_LIMIT: usize = 4_096;
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum ClipboardItemType {
@@ -808,7 +810,10 @@ impl ClipboardStorage {
             return existing.clone();
         }
 
-        let embedding = semantic_embedding(content, seed_terms);
+        let embedding = semantic_embedding(
+            bounded_text_prefix(content, SEMANTIC_SOURCE_TEXT_LIMIT),
+            seed_terms,
+        );
         if let Ok(mut cache) = self.semantic_embedding_cache.lock() {
             if cache.len() >= SEMANTIC_EMBEDDING_CACHE_MAX {
                 cache.clear();
@@ -2227,6 +2232,19 @@ fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
     (dot / norm).clamp(-1.0, 1.0)
 }
 
+fn bounded_text_prefix(value: &str, limit: usize) -> &str {
+    if value.len() <= limit {
+        return value;
+    }
+
+    let mut end = limit;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    &value[..end]
+}
+
 pub(crate) fn record_matches_query(record: &ClipboardRecord, query: &str, tag_only: bool) -> bool {
     if tag_only {
         let tag_terms: Vec<&str> = query
@@ -2262,15 +2280,19 @@ pub(crate) fn record_matches_query(record: &ClipboardRecord, query: &str, tag_on
         return false;
     }
 
-    let searchable_text = if description.is_empty() {
-        content.clone()
+    let fuzzy_search_text = if description.is_empty() {
+        bounded_text_prefix(&content, SEARCH_FUZZY_TEXT_LIMIT).to_owned()
     } else {
-        format!("{content} {description}")
+        format!(
+            "{} {}",
+            bounded_text_prefix(&content, SEARCH_FUZZY_TEXT_LIMIT),
+            bounded_text_prefix(&description, SEARCH_FUZZY_TEXT_LIMIT.min(512))
+        )
     };
-    let content_terms = tokenize_search_terms(&searchable_text);
-    query_terms
-        .iter()
-        .all(|term| term_matches_record(record, term, &searchable_text, &content_terms))
+    let content_terms = tokenize_search_terms(&fuzzy_search_text);
+    query_terms.iter().all(|term| {
+        term_matches_record(record, term, &content, &description, &content_terms)
+    })
 }
 
 pub fn render_parameterized_content(
@@ -2368,11 +2390,6 @@ fn searchable_tag_terms(record: &ClipboardRecord) -> HashSet<String> {
 
     for raw in &record.tags {
         insert_tag_variants(raw, &mut terms);
-    }
-
-    if let Some(language) = detect_language_tag(record.item_type, &record.content) {
-        terms.insert(format!("lang:{language}"));
-        insert_language_aliases(language, &mut terms);
     }
 
     if terms.contains("multiline") {
@@ -2550,9 +2567,13 @@ fn term_matches_record(
     record: &ClipboardRecord,
     query_term: &str,
     content: &str,
+    description: &str,
     content_terms: &[&str],
 ) -> bool {
-    if content.contains(query_term) || record_matches_tag(record, query_term) {
+    if content.contains(query_term)
+        || (!description.is_empty() && description.contains(query_term))
+        || record_matches_tag(record, query_term)
+    {
         return true;
     }
 
@@ -2753,6 +2774,39 @@ mod tests {
         };
 
         assert!(record_matches_query(&record, "stale container", false));
+    }
+
+    #[test]
+    fn record_match_still_finds_exact_term_beyond_fuzzy_window() {
+        let mut content = "x".repeat(SEARCH_FUZZY_TEXT_LIMIT + 128);
+        content.push_str(" needle-at-the-end");
+
+        let record = ClipboardRecord {
+            id: 2,
+            item_type: ClipboardItemType::Text,
+            content,
+            description: String::new(),
+            tags: vec!["text".to_owned()],
+            parameters: Vec::new(),
+            created_at: "2026-03-11T00:00:00Z".to_owned(),
+        };
+
+        assert!(record_matches_query(&record, "needle-at-the-end", false));
+    }
+
+    #[test]
+    fn record_match_uses_stored_language_tag_aliases() {
+        let record = ClipboardRecord {
+            id: 3,
+            item_type: ClipboardItemType::Code,
+            content: "fn main() { println!(\"hi\"); }".to_owned(),
+            description: String::new(),
+            tags: vec!["lang:rust".to_owned()],
+            parameters: Vec::new(),
+            created_at: "2026-03-11T00:00:00Z".to_owned(),
+        };
+
+        assert!(record_matches_query(&record, "rs", true));
     }
 
     #[test]

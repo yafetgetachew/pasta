@@ -33,11 +33,6 @@ pub(crate) fn expanded_preview_content(content: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn preview_would_truncate(content: &str) -> bool {
-    expanded_preview_content(content).lines().count() > PREVIEW_LINE_LIMIT
-}
-
-#[cfg(target_os = "macos")]
 fn wrap_long_words(input: &str, max_run: usize) -> String {
     let mut out = String::with_capacity(input.len() + (input.len() / max_run.max(1)));
     let mut run = 0_usize;

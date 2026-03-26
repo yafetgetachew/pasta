@@ -3331,6 +3331,7 @@ dependencies = [
  "chrono",
  "cocoa",
  "dirs 5.0.1",
+ "futures",
  "global-hotkey",
  "gpui",
  "keyring",
@@ -3342,6 +3343,7 @@ dependencies = [
  "sha2",
  "syntect",
  "toml 0.8.23",
+ "unicode-segmentation",
 ]
 
 [[package]]
