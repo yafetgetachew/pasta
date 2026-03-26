@@ -177,17 +177,12 @@ pub(crate) fn spawn_launcher_transition_loop(cx: &mut App) {
                 {
                     let _ = window.update(cx, |view, window, cx| {
                         let appearance_changed = view.sync_window_appearance(window);
-                        let resized = view.tick_window_height_animation(window);
                         let reveal_changed = view.clear_expired_secret_reveal();
                         let reveal_tick_changed = view.secret_countdown_tick_changed();
                         let transition_active = view.transition_running();
 
                         if !transition_active {
-                            if appearance_changed
-                                || resized
-                                || reveal_changed
-                                || reveal_tick_changed
-                            {
+                            if appearance_changed || reveal_changed || reveal_tick_changed {
                                 cx.notify();
                             }
                             return;

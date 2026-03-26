@@ -18,6 +18,9 @@ pub(crate) struct CachedRowPresentation {
     pub(crate) detected_language: Option<LanguageTag>,
     pub(crate) base_tags: Vec<String>,
     pub(crate) collapsed_preview: String,
+    pub(crate) expanded_preview: String,
+    pub(crate) expanded_preview_line_count: usize,
+    pub(crate) expanded_preview_truncated: bool,
     pub(crate) masked_preview: String,
 }
 
@@ -36,6 +39,10 @@ impl CachedRowPresentation {
             }
         }
 
+        let expanded_preview_full = expanded_preview_content(&item.content);
+        let (expanded_preview, expanded_preview_truncated) =
+            bounded_preview_content(&expanded_preview_full, PREVIEW_PANE_TEXT_LIMIT);
+        let expanded_preview_line_count = expanded_preview.lines().count();
         let collapsed_preview = preview_content(&item.content);
 
         Self {
@@ -43,6 +50,9 @@ impl CachedRowPresentation {
             detected_language,
             base_tags,
             collapsed_preview,
+            expanded_preview,
+            expanded_preview_line_count,
+            expanded_preview_truncated,
             masked_preview: masked_secret_preview(&item.content),
         }
     }
@@ -141,12 +151,6 @@ pub(crate) struct LauncherView {
     pub(crate) parameter_fill_focus_index: usize,
     pub(crate) parameter_fill_select_all: bool,
     pub(crate) transform_menu_open: bool,
-    pub(crate) window_height: f32,
-    pub(crate) applied_window_height: f32,
-    pub(crate) window_height_from: f32,
-    pub(crate) window_height_target: f32,
-    pub(crate) window_height_started_at: Instant,
-    pub(crate) window_height_duration: Duration,
     pub(crate) blur_close_armed: bool,
     pub(crate) suppress_auto_hide: bool,
     pub(crate) suppress_auto_hide_until: Option<Instant>,

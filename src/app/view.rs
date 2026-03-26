@@ -7,7 +7,7 @@ use super::state::CachedRowPresentation;
 #[cfg(target_os = "macos")]
 use crate::*;
 #[cfg(target_os = "macos")]
-use gpui::AnyElement;
+use gpui::{AnyElement, StatefulInteractiveElement};
 
 #[cfg(target_os = "macos")]
 impl Render for LauncherView {
@@ -20,21 +20,13 @@ impl Render for LauncherView {
         let transform_menu_open = self.transform_menu_open;
         let query_input_enabled = self.query_input_enabled();
         let query_focused = self.query_focus_handle.is_focused(window);
-        let target_height = LAUNCHER_HEIGHT;
-        if (self.window_height_target - target_height).abs() > WINDOW_HEIGHT_ANIMATION_SNAP {
-            self.window_height_from = self.window_height;
-            self.window_height_target = target_height;
-            self.window_height_started_at = Instant::now();
-            self.window_height_duration =
-                Duration::from_millis(WINDOW_HEIGHT_ANIMATION_DURATION_MS);
-        }
         let results_height = RESULTS_HEIGHT_NORMAL;
 
         let results = if self.items.is_empty() {
             div()
                 .id("results-list")
                 .w_full()
-                .h(px(results_height))
+                .h_full()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -70,7 +62,7 @@ impl Render for LauncherView {
                 }),
             )
             .w_full()
-            .h(px(results_height))
+            .h_full()
             .track_scroll(self.results_scroll.clone())
             .into_any_element()
         };
@@ -868,9 +860,34 @@ impl Render for LauncherView {
             );
         }
 
+        let workspace = div()
+            .w_full()
+            .h(px(results_height))
+            .flex()
+            .gap_2()
+            .child(
+                div()
+                    .w(relative(RESULTS_LIST_WIDTH_RATIO))
+                    .h_full()
+                    .min_w(px(0.0))
+                    .bg(scale_alpha(
+                        palette.row_hover_bg,
+                        if palette.dark { 0.84 } else { 0.88 },
+                    ))
+                    .border_1()
+                    .border_color(scale_alpha(
+                        palette.window_border,
+                        if palette.dark { 0.9 } else { 1.0 },
+                    ))
+                    .rounded_lg()
+                    .overflow_hidden()
+                    .child(results),
+            )
+            .child(self.render_preview_pane(palette));
+
         content
             .child(div().w_full().h(px(1.0)).bg(palette.list_divider))
-            .child(results)
+            .child(workspace)
             .child(
                 if self.show_command_help {
                     div()
@@ -920,6 +937,247 @@ impl Render for LauncherView {
 
 #[cfg(target_os = "macos")]
 impl LauncherView {
+    fn render_preview_pane(&self, palette: Palette) -> AnyElement {
+        let mut pane = div()
+            .flex_1()
+            .h_full()
+            .min_w(px(0.0))
+            .p_2()
+            .bg(scale_alpha(
+                palette.row_hover_bg,
+                if palette.dark { 0.92 } else { 1.0 },
+            ))
+            .border_1()
+            .border_color(scale_alpha(
+                palette.window_border,
+                if palette.dark { 0.9 } else { 1.0 },
+            ))
+            .rounded_lg()
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .gap_2();
+
+        let Some(item) = self.items.get(self.selected_index) else {
+            return pane
+                .items_center()
+                .justify_center()
+                .text_center()
+                .child(
+                    div()
+                        .max_w(px(260.0))
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(palette.title_text)
+                                .child(if self.query.is_empty() {
+                                    "Select a snippet to inspect it."
+                                } else {
+                                    "No matching snippet to preview."
+                                }),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(palette.muted_text)
+                                .child("The launcher now keeps a fixed height and uses this pane for full preview details."),
+                        ),
+                )
+                .into_any_element();
+        };
+
+        let Some(row_data) = self.row_presentations.get(self.selected_index) else {
+            return pane.into_any_element();
+        };
+
+        let is_masked_secret =
+            item.item_type == ClipboardItemType::Password && self.is_secret_masked(item.id);
+        let preview_settled = Instant::now().duration_since(self.selection_changed_at)
+            >= Duration::from_millis(PREVIEW_SETTLE_DELAY_MS);
+        let preview_language = if is_masked_secret {
+            None
+        } else {
+            row_data.detected_language
+        };
+        let preview_text = if is_masked_secret {
+            row_data.masked_preview.clone()
+        } else if preview_settled {
+            row_data.expanded_preview.clone()
+        } else {
+            row_data.collapsed_preview.clone()
+        };
+        let created_detail = format_timestamp_detail(&item.created_at);
+        let primary_action_hint = if is_masked_secret {
+            "⌘R Reveal"
+        } else {
+            "⏎ Copy"
+        };
+        let preview_syntax_enabled = self.syntax_highlighting
+            && !is_masked_secret
+            && preview_settled
+            && row_data.expanded_preview.len() <= PREVIEW_PANE_SYNTAX_MAX_CHARS
+            && row_data.expanded_preview_line_count <= PREVIEW_PANE_SYNTAX_MAX_LINES;
+
+        let mut item_tags = row_data.base_tags.clone();
+        if item.item_type == ClipboardItemType::Password {
+            if let Some(seconds) = self.secret_seconds_left(item.id) {
+                item_tags.insert(0, format!("OPEN {seconds}s"));
+            } else {
+                item_tags.insert(0, "LOCKED".to_owned());
+            }
+        }
+
+        let mut tag_row = div().w_full().flex().flex_row().flex_wrap().gap_1();
+        for tag in item_tags.iter() {
+            tag_row = tag_row.child(
+                div()
+                    .text_xs()
+                    .text_color(tag_chip_color(tag, palette.dark))
+                    .bg(scale_alpha(
+                        palette.row_hover_bg,
+                        if palette.dark { 0.96 } else { 1.0 },
+                    ))
+                    .border_1()
+                    .border_color(scale_alpha(
+                        palette.window_border,
+                        if palette.dark { 0.9 } else { 1.0 },
+                    ))
+                    .rounded_md()
+                    .px_1()
+                    .child(tag.clone()),
+            );
+        }
+
+        pane = pane
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_between()
+                    .items_start()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette.title_text)
+                                    .child(primary_action_hint),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette.row_meta_text)
+                            .child(created_detail),
+                    ),
+            )
+            .child(tag_row);
+
+        if !item.description.trim().is_empty() {
+            pane = pane.child(
+                div()
+                    .w_full()
+                    .p_2()
+                    .bg(scale_alpha(
+                        palette.selected_bg,
+                        if palette.dark { 0.65 } else { 0.38 },
+                    ))
+                    .rounded_md()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette.muted_text)
+                            .child("Info"),
+                    )
+                    .child(
+                        div()
+                            .mt_1()
+                            .text_sm()
+                            .text_color(palette.row_text)
+                            .child(item.description.clone()),
+                    ),
+            );
+        }
+
+        if !item.parameters.is_empty() {
+            let mut parameter_row = div().w_full().mt_1().flex().flex_row().flex_wrap().gap_1();
+            for parameter in item.parameters.iter().take(8) {
+                parameter_row = parameter_row.child(
+                    div()
+                        .text_xs()
+                        .text_color(palette.row_text)
+                        .bg(scale_alpha(
+                            palette.row_hover_bg,
+                            if palette.dark { 0.95 } else { 1.0 },
+                        ))
+                        .border_1()
+                        .border_color(scale_alpha(
+                            palette.window_border,
+                            if palette.dark { 0.9 } else { 1.0 },
+                        ))
+                        .rounded_md()
+                        .px_1()
+                        .child(parameter.name.clone()),
+                );
+            }
+
+            pane = pane.child(
+                div()
+                    .w_full()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette.muted_text)
+                            .child(format!(
+                                "Parameters ({})",
+                                item.parameters.len()
+                            )),
+                    )
+                    .child(parameter_row),
+            );
+        }
+
+        if row_data.expanded_preview_truncated {
+            pane = pane.child(
+                div()
+                    .w_full()
+                    .text_xs()
+                    .text_color(palette.muted_text)
+                    .child("Preview shortened for speed."),
+            );
+        }
+
+        pane.child(div().w_full().h(px(1.0)).bg(palette.list_divider))
+            .child(
+                div()
+                    .id(("preview-scroll", item.id as u64))
+                    .w_full()
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .pr_2()
+                    .child(
+                        div()
+                            .w_full()
+                            .text_sm()
+                            .text_color(palette.row_text)
+                            .child(syntax_styled_text(
+                                &preview_text,
+                                preview_language,
+                                preview_syntax_enabled,
+                                palette.dark,
+                            )),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_result_row(
         &self,
         ix: usize,
@@ -954,7 +1212,7 @@ impl LauncherView {
         } else {
             row_data.detected_language
         };
-        let row_syntax_enabled = self.syntax_highlighting && is_selected;
+        let row_syntax_enabled = false;
 
         let mut row = div()
             .id(("result", item.id as u64))

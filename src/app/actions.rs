@@ -67,12 +67,6 @@ impl LauncherView {
             parameter_fill_focus_index: 0,
             parameter_fill_select_all: false,
             transform_menu_open: false,
-            window_height: LAUNCHER_HEIGHT,
-            applied_window_height: LAUNCHER_HEIGHT,
-            window_height_from: LAUNCHER_HEIGHT,
-            window_height_target: LAUNCHER_HEIGHT,
-            window_height_started_at: Instant::now(),
-            window_height_duration: Duration::from_millis(WINDOW_HEIGHT_ANIMATION_DURATION_MS),
             blur_close_armed: false,
             suppress_auto_hide: false,
             suppress_auto_hide_until: None,
@@ -117,12 +111,6 @@ impl LauncherView {
         self.parameter_fill_focus_index = 0;
         self.parameter_fill_select_all = false;
         self.transform_menu_open = false;
-        self.window_height = LAUNCHER_HEIGHT;
-        self.applied_window_height = LAUNCHER_HEIGHT;
-        self.window_height_from = LAUNCHER_HEIGHT;
-        self.window_height_target = LAUNCHER_HEIGHT;
-        self.window_height_started_at = Instant::now();
-        self.window_height_duration = Duration::from_millis(WINDOW_HEIGHT_ANIMATION_DURATION_MS);
         self.blur_close_armed = false;
         self.suppress_auto_hide = false;
         self.suppress_auto_hide_until = None;
@@ -154,10 +142,31 @@ impl LauncherView {
 
     pub(crate) fn query_did_change(&mut self, cx: &mut Context<Self>) {
         self.selected_index = 0;
-        self.selection_changed_at = Instant::now();
+        self.mark_selection_changed(cx);
         self.reset_results_scroll_to_top();
         self.schedule_query_refresh();
         cx.notify();
+    }
+
+    pub(crate) fn mark_selection_changed(&mut self, cx: &mut Context<Self>) {
+        self.selection_changed_at = Instant::now();
+        self.schedule_preview_settle(cx);
+    }
+
+    fn schedule_preview_settle(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(PREVIEW_SETTLE_DELAY_MS))
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                if Instant::now().duration_since(view.selection_changed_at)
+                    >= Duration::from_millis(PREVIEW_SETTLE_DELAY_MS)
+                {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn sync_window_appearance(&mut self, window: &Window) -> bool {
@@ -326,41 +335,6 @@ impl LauncherView {
         None
     }
 
-    pub(crate) fn tick_window_height_animation(&mut self, window: &mut Window) -> bool {
-        let mut animating =
-            (self.window_height_target - self.window_height).abs() > WINDOW_HEIGHT_ANIMATION_SNAP;
-        if animating {
-            let duration_secs = self.window_height_duration.as_secs_f32().max(0.001);
-            let elapsed_secs = (Instant::now() - self.window_height_started_at).as_secs_f32();
-            let t = (elapsed_secs / duration_secs).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - t).powi(3);
-            self.window_height = (self.window_height_from
-                + (self.window_height_target - self.window_height_from) * eased)
-                .clamp(LAUNCHER_HEIGHT, LAUNCHER_EXPANDED_HEIGHT);
-
-            if t >= 1.0
-                || (self.window_height_target - self.window_height).abs()
-                    <= WINDOW_HEIGHT_ANIMATION_SNAP
-            {
-                self.window_height = self.window_height_target;
-                animating = false;
-            }
-        }
-
-        let quantized_height =
-            (self.window_height / WINDOW_HEIGHT_RESIZE_STEP).round() * WINDOW_HEIGHT_RESIZE_STEP;
-        self.window_height = quantized_height.clamp(LAUNCHER_HEIGHT, LAUNCHER_EXPANDED_HEIGHT);
-
-        let needs_resize =
-            (self.window_height - self.applied_window_height).abs() >= WINDOW_HEIGHT_RESIZE_STEP;
-        if needs_resize {
-            window.resize(size(px(LAUNCHER_WIDTH), px(self.window_height)));
-            self.applied_window_height = self.window_height;
-        }
-
-        animating || needs_resize
-    }
-
     pub(crate) fn secret_countdown_tick_changed(&mut self) -> bool {
         let Some(until) = self.reveal_until else {
             return self.last_reveal_second_bucket.take().is_some();
@@ -435,7 +409,7 @@ impl LauncherView {
         }
 
         if self.selected_index != previous_index {
-            self.selection_changed_at = Instant::now();
+            self.mark_selection_changed(cx);
             self.results_scroll
                 .scroll_to_item(self.selected_index, ScrollStrategy::Center);
             cx.notify();
@@ -943,6 +917,9 @@ impl LauncherView {
 
         self.parameter_editor_stage = ParameterEditorStage::EnterName;
         self.sync_parameter_editor_name_inputs();
+        self.parameter_editor_name_focus_index =
+            first_parameter_name_issue_index(&self.parameter_editor_name_inputs);
+        self.parameter_editor_name_select_all = false;
         cx.notify();
     }
 
@@ -1911,6 +1888,25 @@ fn is_parameter_word_char(ch: char) -> bool {
 }
 
 #[cfg(target_os = "macos")]
+fn first_parameter_name_issue_index(names: &[String]) -> usize {
+    let mut seen = HashSet::new();
+
+    for (ix, name) in names.iter().enumerate() {
+        let trimmed = name.trim();
+        if !is_valid_parameter_name(trimmed) {
+            return ix;
+        }
+
+        let normalized = trimmed.to_ascii_lowercase();
+        if !seen.insert(normalized) {
+            return ix;
+        }
+    }
+
+    0
+}
+
+#[cfg(target_os = "macos")]
 #[derive(Clone)]
 pub(super) struct ParameterClickableCandidate {
     pub(super) target: String,
@@ -2604,5 +2600,21 @@ city = "New York"
                 .iter()
                 .all(|candidate| candidate.suggested_name.is_none())
         );
+    }
+
+    #[test]
+    fn parameter_name_stage_focuses_first_incomplete_name() {
+        let names = vec!["".to_owned(), "second_name".to_owned(), "".to_owned()];
+        assert_eq!(first_parameter_name_issue_index(&names), 0);
+    }
+
+    #[test]
+    fn parameter_name_stage_focuses_first_duplicate_name() {
+        let names = vec![
+            "first_name".to_owned(),
+            "second_name".to_owned(),
+            "first_name".to_owned(),
+        ];
+        assert_eq!(first_parameter_name_issue_index(&names), 2);
     }
 }
