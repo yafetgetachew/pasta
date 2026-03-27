@@ -242,7 +242,7 @@ pub(crate) fn show_launcher(cx: &mut App) {
             window.resize(size(px(LAUNCHER_WIDTH), px(LAUNCHER_HEIGHT)));
             set_window_move_to_active_space(window);
             view.begin_open_transition();
-            window.focus(&view.query_focus_handle);
+            window.focus(&view.query_input_state.focus_handle);
             cx.notify();
             window.activate_window();
         })
@@ -258,7 +258,7 @@ pub(crate) fn show_launcher(cx: &mut App) {
             window.resize(size(px(LAUNCHER_WIDTH), px(LAUNCHER_HEIGHT)));
             set_window_move_to_active_space(window);
             view.begin_open_transition();
-            window.focus(&view.query_focus_handle);
+            window.focus(&view.query_input_state.focus_handle);
             cx.notify();
             window.activate_window();
         });

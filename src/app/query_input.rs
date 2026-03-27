@@ -1,30 +1,39 @@
 #[cfg(target_os = "macos")]
+use super::state::TextInputState;
+#[cfg(target_os = "macos")]
 use crate::*;
 #[cfg(target_os = "macos")]
 use unicode_segmentation::UnicodeSegmentation;
 
 #[cfg(target_os = "macos")]
-const QUERY_PLACEHOLDER: &str = "Search snippets, commands, and passwords…";
-
-#[cfg(target_os = "macos")]
-pub(super) struct QueryInputElement {
+pub(super) struct TextInputElement {
     pub(super) input: Entity<LauncherView>,
+    pub(super) target: TextInputTarget,
+    pub(super) placeholder: SharedString,
     pub(super) palette: Palette,
     pub(super) enabled: bool,
 }
 
 #[cfg(target_os = "macos")]
-pub(super) struct QueryPrepaintState {
+pub(super) struct TextInputPrepaintState {
     line: Option<ShapedLine>,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
 }
 
 #[cfg(target_os = "macos")]
-impl QueryInputElement {
-    pub(super) fn new(input: Entity<LauncherView>, palette: Palette, enabled: bool) -> Self {
+impl TextInputElement {
+    pub(super) fn new(
+        input: Entity<LauncherView>,
+        target: TextInputTarget,
+        placeholder: impl Into<SharedString>,
+        palette: Palette,
+        enabled: bool,
+    ) -> Self {
         Self {
             input,
+            target,
+            placeholder: placeholder.into(),
             palette,
             enabled,
         }
@@ -32,7 +41,7 @@ impl QueryInputElement {
 }
 
 #[cfg(target_os = "macos")]
-impl IntoElement for QueryInputElement {
+impl IntoElement for TextInputElement {
     type Element = Self;
 
     fn into_element(self) -> Self::Element {
@@ -41,9 +50,9 @@ impl IntoElement for QueryInputElement {
 }
 
 #[cfg(target_os = "macos")]
-impl GpuiElement for QueryInputElement {
+impl GpuiElement for TextInputElement {
     type RequestLayoutState = ();
-    type PrepaintState = QueryPrepaintState;
+    type PrepaintState = TextInputPrepaintState;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -76,13 +85,18 @@ impl GpuiElement for QueryInputElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
-        let content = input.query.clone();
-        let selected_range = input.query_selected_range.clone();
-        let cursor = input.query_cursor_offset();
+        let content = input.text_input_content(self.target).to_owned();
+        let input_state = input.text_input_state(self.target);
+        let selected_range = clamp_text_range(&content, &input_state.selected_range);
+        let marked_range = input_state
+            .marked_range
+            .as_ref()
+            .map(|range| clamp_text_range(&content, range));
+        let cursor = clamp_text_offset(&content, input_state.cursor_offset());
         let style = window.text_style();
 
         let (display_text, text_color): (SharedString, gpui::Hsla) = if content.is_empty() {
-            (QUERY_PLACEHOLDER.into(), self.palette.query_placeholder.into())
+            (self.placeholder.clone(), self.palette.query_placeholder.into())
         } else {
             (content.clone().into(), self.palette.query_active.into())
         };
@@ -96,7 +110,7 @@ impl GpuiElement for QueryInputElement {
             strikethrough: None,
         };
         let runs = if !content.is_empty() {
-            if let Some(marked_range) = input.query_marked_range.as_ref() {
+            if let Some(marked_range) = marked_range.as_ref() {
                 vec![
                     TextRun {
                         len: marked_range.start,
@@ -162,7 +176,7 @@ impl GpuiElement for QueryInputElement {
             )
         };
 
-        QueryPrepaintState {
+        TextInputPrepaintState {
             line: Some(line),
             cursor,
             selection,
@@ -179,7 +193,7 @@ impl GpuiElement for QueryInputElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let focus_handle = self.input.read(cx).query_focus_handle.clone();
+        let focus_handle = self.input.read(cx).text_input_focus_handle(self.target);
         if self.enabled {
             window.handle_input(
                 &focus_handle,
@@ -203,10 +217,93 @@ impl GpuiElement for QueryInputElement {
         }
 
         self.input.update(cx, |input, _cx| {
-            input.query_last_layout = Some(line);
-            input.query_last_bounds = Some(bounds);
+            let input_state = input.text_input_state_mut(self.target);
+            input_state.last_layout = Some(line);
+            input_state.last_bounds = Some(bounds);
         });
     }
+}
+
+#[cfg(target_os = "macos")]
+fn text_offset_from_utf16(text: &str, offset: usize) -> usize {
+    let mut utf8_offset = 0;
+    let mut utf16_count = 0;
+
+    for ch in text.chars() {
+        if utf16_count >= offset {
+            break;
+        }
+        utf16_count += ch.len_utf16();
+        utf8_offset += ch.len_utf8();
+    }
+
+    utf8_offset
+}
+
+#[cfg(target_os = "macos")]
+fn text_offset_to_utf16(text: &str, offset: usize) -> usize {
+    let mut utf16_offset = 0;
+    let mut utf8_count = 0;
+
+    for ch in text.chars() {
+        if utf8_count >= offset {
+            break;
+        }
+        utf8_count += ch.len_utf8();
+        utf16_offset += ch.len_utf16();
+    }
+
+    utf16_offset
+}
+
+#[cfg(target_os = "macos")]
+fn clamp_text_offset(text: &str, offset: usize) -> usize {
+    let mut clamped = offset.min(text.len());
+    while clamped > 0 && !text.is_char_boundary(clamped) {
+        clamped -= 1;
+    }
+    clamped
+}
+
+#[cfg(target_os = "macos")]
+fn clamp_text_range(text: &str, range: &Range<usize>) -> Range<usize> {
+    let start = clamp_text_offset(text, range.start);
+    let end = clamp_text_offset(text, range.end);
+    if end < start {
+        start..start
+    } else {
+        start..end
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn text_range_to_utf16(text: &str, range: &Range<usize>) -> Range<usize> {
+    let range = clamp_text_range(text, range);
+    text_offset_to_utf16(text, range.start)..text_offset_to_utf16(text, range.end)
+}
+
+#[cfg(target_os = "macos")]
+fn text_range_from_utf16(text: &str, range_utf16: &Range<usize>) -> Range<usize> {
+    clamp_text_range(
+        text,
+        &(text_offset_from_utf16(text, range_utf16.start)
+            ..text_offset_from_utf16(text, range_utf16.end)),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn previous_boundary(text: &str, offset: usize) -> usize {
+    text.grapheme_indices(true)
+        .rev()
+        .find_map(|(idx, _)| (idx < offset).then_some(idx))
+        .unwrap_or(0)
+}
+
+#[cfg(target_os = "macos")]
+fn next_boundary(text: &str, offset: usize) -> usize {
+    text.grapheme_indices(true)
+        .find_map(|(idx, _)| (idx > offset).then_some(idx))
+        .unwrap_or(text.len())
 }
 
 #[cfg(target_os = "macos")]
@@ -219,43 +316,171 @@ impl LauncherView {
             && !self.transform_menu_open
     }
 
-    pub(super) fn query_cursor_offset(&self) -> usize {
-        if self.query_selection_reversed {
-            self.query_selected_range.start
-        } else {
-            self.query_selected_range.end
+    pub(super) fn apply_pending_text_input_focus(&mut self, window: &mut Window) {
+        let Some(target) = self.pending_text_input_focus.take() else {
+            return;
+        };
+        if self.text_input_is_visible(target) {
+            window.focus(&self.text_input_focus_handle(target));
         }
     }
 
-    pub(super) fn query_move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        self.query_selected_range = offset..offset;
-        self.query_selection_reversed = false;
-        self.query_marked_range = None;
+    pub(super) fn text_input_focus_handle(&self, target: TextInputTarget) -> FocusHandle {
+        self.text_input_state(target).focus_handle.clone()
+    }
+
+    pub(super) fn text_input_state(&self, target: TextInputTarget) -> &TextInputState {
+        match target {
+            TextInputTarget::Query => &self.query_input_state,
+            TextInputTarget::InfoEditor => &self.info_editor_input_state,
+            TextInputTarget::TagEditor => &self.tag_editor_input_state,
+            TextInputTarget::ParameterName => &self.parameter_name_input_state,
+            TextInputTarget::ParameterFill => &self.parameter_fill_input_state,
+        }
+    }
+
+    pub(super) fn text_input_state_mut(&mut self, target: TextInputTarget) -> &mut TextInputState {
+        match target {
+            TextInputTarget::Query => &mut self.query_input_state,
+            TextInputTarget::InfoEditor => &mut self.info_editor_input_state,
+            TextInputTarget::TagEditor => &mut self.tag_editor_input_state,
+            TextInputTarget::ParameterName => &mut self.parameter_name_input_state,
+            TextInputTarget::ParameterFill => &mut self.parameter_fill_input_state,
+        }
+    }
+
+    pub(super) fn text_input_content(&self, target: TextInputTarget) -> &str {
+        match target {
+            TextInputTarget::Query => &self.query,
+            TextInputTarget::InfoEditor => &self.info_editor_input,
+            TextInputTarget::TagEditor => &self.tag_editor_input,
+            TextInputTarget::ParameterName => self
+                .parameter_editor_name_inputs
+                .get(self.parameter_editor_name_focus_index)
+                .map(String::as_str)
+                .unwrap_or(""),
+            TextInputTarget::ParameterFill => self
+                .parameter_fill_values
+                .get(self.parameter_fill_focus_index)
+                .map(String::as_str)
+                .unwrap_or(""),
+        }
+    }
+
+    fn set_text_input_content(&mut self, target: TextInputTarget, content: String) {
+        match target {
+            TextInputTarget::Query => self.query = content,
+            TextInputTarget::InfoEditor => self.info_editor_input = content,
+            TextInputTarget::TagEditor => self.tag_editor_input = content,
+            TextInputTarget::ParameterName => {
+                if self.parameter_editor_name_inputs.is_empty() {
+                    self.parameter_editor_name_inputs.push(String::new());
+                    self.parameter_editor_name_focus_index = 0;
+                }
+                let max_ix = self.parameter_editor_name_inputs.len().saturating_sub(1);
+                if self.parameter_editor_name_focus_index > max_ix {
+                    self.parameter_editor_name_focus_index = max_ix;
+                }
+                if let Some(active) = self
+                    .parameter_editor_name_inputs
+                    .get_mut(self.parameter_editor_name_focus_index)
+                {
+                    *active = content;
+                }
+            }
+            TextInputTarget::ParameterFill => {
+                if self.parameter_fill_values.is_empty() {
+                    self.parameter_fill_values.push(String::new());
+                    self.parameter_fill_focus_index = 0;
+                }
+                let max_ix = self.parameter_fill_values.len().saturating_sub(1);
+                if self.parameter_fill_focus_index > max_ix {
+                    self.parameter_fill_focus_index = max_ix;
+                }
+                if let Some(active) = self.parameter_fill_values.get_mut(self.parameter_fill_focus_index)
+                {
+                    *active = content;
+                }
+            }
+        }
+    }
+
+    fn text_input_is_visible(&self, target: TextInputTarget) -> bool {
+        match target {
+            TextInputTarget::Query => self.query_input_enabled(),
+            TextInputTarget::InfoEditor => self.info_editor_target_id.is_some(),
+            TextInputTarget::TagEditor => self.tag_editor_target_id.is_some(),
+            TextInputTarget::ParameterName => {
+                self.parameter_editor_target_id.is_some()
+                    && self.parameter_editor_stage == ParameterEditorStage::EnterName
+                    && !self.parameter_editor_selected_targets.is_empty()
+            }
+            TextInputTarget::ParameterFill => {
+                self.parameter_fill_target_id.is_some() && !self.parameter_fill_values.is_empty()
+            }
+        }
+    }
+
+    fn active_text_input_target(&self, window: &Window) -> Option<TextInputTarget> {
+        [
+            TextInputTarget::InfoEditor,
+            TextInputTarget::TagEditor,
+            TextInputTarget::ParameterName,
+            TextInputTarget::ParameterFill,
+            TextInputTarget::Query,
+        ]
+        .into_iter()
+        .find(|target| {
+            self.text_input_is_visible(*target) && self.text_input_focus_handle(*target).is_focused(window)
+        })
+    }
+
+    fn text_input_cursor_offset(&self, target: TextInputTarget) -> usize {
+        self.text_input_state(target).cursor_offset()
+    }
+
+    fn text_input_move_to(&mut self, target: TextInputTarget, offset: usize, cx: &mut Context<Self>) {
+        let input_state = self.text_input_state_mut(target);
+        input_state.selected_range = offset..offset;
+        input_state.selection_reversed = false;
+        input_state.marked_range = None;
         cx.notify();
     }
 
-    pub(super) fn query_select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        if self.query_selection_reversed {
-            self.query_selected_range.start = offset;
+    fn text_input_select_to(
+        &mut self,
+        target: TextInputTarget,
+        offset: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let input_state = self.text_input_state_mut(target);
+        if input_state.selection_reversed {
+            input_state.selected_range.start = offset;
         } else {
-            self.query_selected_range.end = offset;
+            input_state.selected_range.end = offset;
         }
-        if self.query_selected_range.end < self.query_selected_range.start {
-            self.query_selection_reversed = !self.query_selection_reversed;
-            self.query_selected_range =
-                self.query_selected_range.end..self.query_selected_range.start;
+        if input_state.selected_range.end < input_state.selected_range.start {
+            input_state.selection_reversed = !input_state.selection_reversed;
+            input_state.selected_range =
+                input_state.selected_range.end..input_state.selected_range.start;
         }
         cx.notify();
     }
 
-    pub(super) fn query_index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
-        if self.query.is_empty() {
+    fn text_input_index_for_mouse_position(
+        &self,
+        target: TextInputTarget,
+        position: Point<Pixels>,
+    ) -> usize {
+        let content = self.text_input_content(target);
+        if content.is_empty() {
             return 0;
         }
 
+        let input_state = self.text_input_state(target);
         let (Some(bounds), Some(line)) = (
-            self.query_last_bounds.as_ref(),
-            self.query_last_layout.as_ref(),
+            input_state.last_bounds.as_ref(),
+            input_state.last_layout.as_ref(),
         ) else {
             return 0;
         };
@@ -263,62 +488,64 @@ impl LauncherView {
             return 0;
         }
         if position.y > bounds.bottom() {
-            return self.query.len();
+            return content.len();
         }
         line.closest_index_for_x(position.x - bounds.left())
     }
 
-    fn query_offset_from_utf16(&self, offset: usize) -> usize {
-        let mut utf8_offset = 0;
-        let mut utf16_count = 0;
+    fn text_input_previous_boundary(&self, target: TextInputTarget, offset: usize) -> usize {
+        previous_boundary(self.text_input_content(target), offset)
+    }
 
-        for ch in self.query.chars() {
-            if utf16_count >= offset {
-                break;
-            }
-            utf16_count += ch.len_utf16();
-            utf8_offset += ch.len_utf8();
+    fn text_input_next_boundary(&self, target: TextInputTarget, offset: usize) -> usize {
+        next_boundary(self.text_input_content(target), offset)
+    }
+
+    fn text_input_change_did_commit(&mut self, target: TextInputTarget, cx: &mut Context<Self>) {
+        if target == TextInputTarget::Query {
+            self.query_did_change(cx);
+        } else {
+            cx.notify();
         }
-
-        utf8_offset
     }
 
-    fn query_offset_to_utf16(&self, offset: usize) -> usize {
-        let mut utf16_offset = 0;
-        let mut utf8_count = 0;
+    fn replace_text_for_target(
+        &mut self,
+        target: TextInputTarget,
+        range_utf16: Option<Range<usize>>,
+        new_text: &str,
+        new_selected_range_utf16: Option<Range<usize>>,
+        mark_text: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let content = self.text_input_content(target).to_owned();
+        let input_state = self.text_input_state(target);
+        let range = range_utf16
+            .as_ref()
+            .map(|range_utf16| text_range_from_utf16(&content, range_utf16))
+            .or_else(|| {
+                input_state
+                    .marked_range
+                    .as_ref()
+                    .map(|range| clamp_text_range(&content, range))
+            })
+            .unwrap_or_else(|| clamp_text_range(&content, &input_state.selected_range));
 
-        for ch in self.query.chars() {
-            if utf8_count >= offset {
-                break;
-            }
-            utf8_count += ch.len_utf8();
-            utf16_offset += ch.len_utf16();
-        }
+        let updated_content = content[0..range.start].to_owned() + new_text + &content[range.end..];
+        let selected_range = new_selected_range_utf16
+            .as_ref()
+            .map(|range_utf16| text_range_from_utf16(new_text, range_utf16))
+            .map(|new_range| new_range.start + range.start..new_range.end + range.start)
+            .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+        let marked_range =
+            (mark_text && !new_text.is_empty()).then_some(range.start..range.start + new_text.len());
 
-        utf16_offset
-    }
-
-    fn query_range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
-        self.query_offset_to_utf16(range.start)..self.query_offset_to_utf16(range.end)
-    }
-
-    fn query_range_from_utf16(&self, range_utf16: &Range<usize>) -> Range<usize> {
-        self.query_offset_from_utf16(range_utf16.start)..self.query_offset_from_utf16(range_utf16.end)
-    }
-
-    fn query_previous_boundary(&self, offset: usize) -> usize {
-        self.query
-            .grapheme_indices(true)
-            .rev()
-            .find_map(|(idx, _)| (idx < offset).then_some(idx))
-            .unwrap_or(0)
-    }
-
-    fn query_next_boundary(&self, offset: usize) -> usize {
-        self.query
-            .grapheme_indices(true)
-            .find_map(|(idx, _)| (idx > offset).then_some(idx))
-            .unwrap_or(self.query.len())
+        self.set_text_input_content(target, updated_content);
+        let input_state = self.text_input_state_mut(target);
+        input_state.selected_range = selected_range;
+        input_state.selection_reversed = false;
+        input_state.marked_range = marked_range;
+        self.text_input_change_did_commit(target, cx);
     }
 
     pub(super) fn query_backspace(
@@ -327,72 +554,105 @@ impl LauncherView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.query_selected_range.is_empty() {
-            self.query_select_to(self.query_previous_boundary(self.query_cursor_offset()), cx);
+        let Some(target) = self.active_text_input_target(window) else {
+            return;
+        };
+        if self.text_input_state(target).selected_range.is_empty() {
+            let previous = self.text_input_previous_boundary(target, self.text_input_cursor_offset(target));
+            self.text_input_select_to(target, previous, cx);
         }
         self.replace_text_in_range(None, "", window, cx);
     }
 
-    pub(super) fn query_left(&mut self, _: &QueryLeft, _: &mut Window, cx: &mut Context<Self>) {
-        if self.query_selected_range.is_empty() {
-            self.query_move_to(self.query_previous_boundary(self.query_cursor_offset()), cx);
+    pub(super) fn query_left(&mut self, _: &QueryLeft, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(target) = self.active_text_input_target(window) else {
+            return;
+        };
+        if self.text_input_state(target).selected_range.is_empty() {
+            self.text_input_move_to(
+                target,
+                self.text_input_previous_boundary(target, self.text_input_cursor_offset(target)),
+                cx,
+            );
         } else {
-            self.query_move_to(self.query_selected_range.start, cx);
+            self.text_input_move_to(target, self.text_input_state(target).selected_range.start, cx);
         }
     }
 
-    pub(super) fn query_right(&mut self, _: &QueryRight, _: &mut Window, cx: &mut Context<Self>) {
-        if self.query_selected_range.is_empty() {
-            self.query_move_to(self.query_next_boundary(self.query_cursor_offset()), cx);
+    pub(super) fn query_right(&mut self, _: &QueryRight, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(target) = self.active_text_input_target(window) else {
+            return;
+        };
+        if self.text_input_state(target).selected_range.is_empty() {
+            self.text_input_move_to(
+                target,
+                self.text_input_next_boundary(target, self.text_input_cursor_offset(target)),
+                cx,
+            );
         } else {
-            self.query_move_to(self.query_selected_range.end, cx);
+            self.text_input_move_to(target, self.text_input_state(target).selected_range.end, cx);
         }
     }
 
     pub(super) fn query_select_left(
         &mut self,
         _: &QuerySelectLeft,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.query_select_to(self.query_previous_boundary(self.query_cursor_offset()), cx);
+        let Some(target) = self.active_text_input_target(window) else {
+            return;
+        };
+        let previous = self.text_input_previous_boundary(target, self.text_input_cursor_offset(target));
+        self.text_input_select_to(target, previous, cx);
     }
 
     pub(super) fn query_select_right(
         &mut self,
         _: &QuerySelectRight,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.query_select_to(self.query_next_boundary(self.query_cursor_offset()), cx);
+        let Some(target) = self.active_text_input_target(window) else {
+            return;
+        };
+        let next = self.text_input_next_boundary(target, self.text_input_cursor_offset(target));
+        self.text_input_select_to(target, next, cx);
     }
 
     pub(super) fn query_select_all(
         &mut self,
         _: &QuerySelectAll,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.query_move_to(0, cx);
-        self.query_select_to(self.query.len(), cx);
+        let Some(target) = self.active_text_input_target(window) else {
+            return;
+        };
+        self.text_input_move_to(target, 0, cx);
+        self.text_input_select_to(target, self.text_input_content(target).len(), cx);
     }
 
     pub(super) fn query_home(
         &mut self,
         _: &QueryHome,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.query_move_to(0, cx);
+        if let Some(target) = self.active_text_input_target(window) {
+            self.text_input_move_to(target, 0, cx);
+        }
     }
 
     pub(super) fn query_end(
         &mut self,
         _: &QueryEnd,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.query_move_to(self.query.len(), cx);
+        if let Some(target) = self.active_text_input_target(window) {
+            self.text_input_move_to(target, self.text_input_content(target).len(), cx);
+        }
     }
 
     pub(super) fn query_show_character_palette(
@@ -401,7 +661,9 @@ impl LauncherView {
         window: &mut Window,
         _: &mut Context<Self>,
     ) {
-        window.show_character_palette();
+        if self.active_text_input_target(window).is_some() {
+            window.show_character_palette();
+        }
     }
 
     pub(super) fn query_paste(
@@ -410,21 +672,32 @@ impl LauncherView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(target) = self.active_text_input_target(window) else {
+            return;
+        };
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text.replace('\n', " "), window, cx);
+            let normalized = if target == TextInputTarget::Query {
+                text.replace('\n', " ")
+            } else {
+                text
+            };
+            self.replace_text_in_range(None, &normalized, window, cx);
         }
     }
 
     pub(super) fn query_copy(
         &mut self,
         _: &QueryCopy,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.query_selected_range.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(
-                self.query[self.query_selected_range.clone()].to_string(),
-            ));
+        let Some(target) = self.active_text_input_target(window) else {
+            return;
+        };
+        let content = self.text_input_content(target).to_owned();
+        let selection = clamp_text_range(&content, &self.text_input_state(target).selected_range);
+        if !selection.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(content[selection].to_string()));
         }
     }
 
@@ -434,47 +707,57 @@ impl LauncherView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.query_selected_range.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(
-                self.query[self.query_selected_range.clone()].to_string(),
-            ));
+        let Some(target) = self.active_text_input_target(window) else {
+            return;
+        };
+        let content = self.text_input_content(target).to_owned();
+        let selection = clamp_text_range(&content, &self.text_input_state(target).selected_range);
+        if !selection.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(content[selection].to_string()));
             self.replace_text_in_range(None, "", window, cx);
         }
     }
 
-    pub(super) fn query_on_mouse_down(
+    pub(super) fn text_input_on_mouse_down(
         &mut self,
+        target: TextInputTarget,
         event: &MouseDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.focus(&self.query_focus_handle);
-        self.query_is_selecting = true;
+        window.focus(&self.text_input_focus_handle(target));
+        self.pending_text_input_focus = None;
+        self.text_input_state_mut(target).is_selecting = true;
 
         if event.modifiers.shift {
-            self.query_select_to(self.query_index_for_mouse_position(event.position), cx);
+            let index = self.text_input_index_for_mouse_position(target, event.position);
+            self.text_input_select_to(target, index, cx);
         } else {
-            self.query_move_to(self.query_index_for_mouse_position(event.position), cx);
+            let index = self.text_input_index_for_mouse_position(target, event.position);
+            self.text_input_move_to(target, index, cx);
         }
     }
 
-    pub(super) fn query_on_mouse_up(
+    pub(super) fn text_input_on_mouse_up(
         &mut self,
+        target: TextInputTarget,
         _: &MouseUpEvent,
         _: &mut Window,
         _: &mut Context<Self>,
     ) {
-        self.query_is_selecting = false;
+        self.text_input_state_mut(target).is_selecting = false;
     }
 
-    pub(super) fn query_on_mouse_move(
+    pub(super) fn text_input_on_mouse_move(
         &mut self,
+        target: TextInputTarget,
         event: &MouseMoveEvent,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.query_is_selecting {
-            self.query_select_to(self.query_index_for_mouse_position(event.position), cx);
+        if self.text_input_state(target).is_selecting {
+            let index = self.text_input_index_for_mouse_position(target, event.position);
+            self.text_input_select_to(target, index, cx);
         }
     }
 }
@@ -482,7 +765,7 @@ impl LauncherView {
 #[cfg(target_os = "macos")]
 impl Focusable for LauncherView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.query_focus_handle.clone()
+        self.query_input_state.focus_handle.clone()
     }
 }
 
@@ -492,59 +775,61 @@ impl EntityInputHandler for LauncherView {
         &mut self,
         range_utf16: Range<usize>,
         actual_range: &mut Option<Range<usize>>,
-        _window: &mut Window,
+        window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
-        let range = self.query_range_from_utf16(&range_utf16);
-        actual_range.replace(self.query_range_to_utf16(&range));
-        Some(self.query[range].to_string())
+        let target = self.active_text_input_target(window)?;
+        let content = self.text_input_content(target).to_owned();
+        let range = text_range_from_utf16(&content, &range_utf16);
+        actual_range.replace(text_range_to_utf16(&content, &range));
+        Some(content[range].to_string())
     }
 
     fn selected_text_range(
         &mut self,
         _ignore_disabled_input: bool,
-        _window: &mut Window,
+        window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
+        let target = self.active_text_input_target(window)?;
+        let content = self.text_input_content(target).to_owned();
+        let input_state = self.text_input_state(target);
+        let selected_range = clamp_text_range(&content, &input_state.selected_range);
         Some(UTF16Selection {
-            range: self.query_range_to_utf16(&self.query_selected_range),
-            reversed: self.query_selection_reversed,
+            range: text_range_to_utf16(&content, &selected_range),
+            reversed: input_state.selection_reversed,
         })
     }
 
     fn marked_text_range(
         &self,
-        _window: &mut Window,
+        window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
-        self.query_marked_range
+        let target = self.active_text_input_target(window)?;
+        let content = self.text_input_content(target).to_owned();
+        self.text_input_state(target)
+            .marked_range
             .as_ref()
-            .map(|range| self.query_range_to_utf16(range))
+            .map(|range| text_range_to_utf16(&content, &clamp_text_range(&content, range)))
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
-        self.query_marked_range = None;
+    fn unmark_text(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
+        if let Some(target) = self.active_text_input_target(window) {
+            self.text_input_state_mut(target).marked_range = None;
+        }
     }
 
     fn replace_text_in_range(
         &mut self,
         range_utf16: Option<Range<usize>>,
         new_text: &str,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range = range_utf16
-            .as_ref()
-            .map(|range_utf16| self.query_range_from_utf16(range_utf16))
-            .or(self.query_marked_range.clone())
-            .unwrap_or(self.query_selected_range.clone());
-
-        self.query = self.query[0..range.start].to_owned() + new_text + &self.query[range.end..];
-        self.query_selected_range =
-            range.start + new_text.len()..range.start + new_text.len();
-        self.query_selection_reversed = false;
-        self.query_marked_range.take();
-        self.query_did_change(cx);
+        if let Some(target) = self.active_text_input_target(window) {
+            self.replace_text_for_target(target, range_utf16, new_text, None, false, cx);
+        }
     }
 
     fn replace_and_mark_text_in_range(
@@ -552,36 +837,32 @@ impl EntityInputHandler for LauncherView {
         range_utf16: Option<Range<usize>>,
         new_text: &str,
         new_selected_range_utf16: Option<Range<usize>>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range = range_utf16
-            .as_ref()
-            .map(|range_utf16| self.query_range_from_utf16(range_utf16))
-            .or(self.query_marked_range.clone())
-            .unwrap_or(self.query_selected_range.clone());
-
-        self.query = self.query[0..range.start].to_owned() + new_text + &self.query[range.end..];
-        self.query_marked_range = (!new_text.is_empty()).then_some(range.start..range.start + new_text.len());
-        self.query_selected_range = new_selected_range_utf16
-            .as_ref()
-            .map(|range_utf16| self.query_range_from_utf16(range_utf16))
-            .map(|new_range| new_range.start + range.start..new_range.end + range.start)
-            .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
-        self.query_selection_reversed = false;
-
-        self.query_did_change(cx);
+        if let Some(target) = self.active_text_input_target(window) {
+            self.replace_text_for_target(
+                target,
+                range_utf16,
+                new_text,
+                new_selected_range_utf16,
+                true,
+                cx,
+            );
+        }
     }
 
     fn bounds_for_range(
         &mut self,
         range_utf16: Range<usize>,
         bounds: Bounds<Pixels>,
-        _window: &mut Window,
+        window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let last_layout = self.query_last_layout.as_ref()?;
-        let range = self.query_range_from_utf16(&range_utf16);
+        let target = self.active_text_input_target(window)?;
+        let content = self.text_input_content(target).to_owned();
+        let last_layout = self.text_input_state(target).last_layout.as_ref()?;
+        let range = text_range_from_utf16(&content, &range_utf16);
         Some(Bounds::from_corners(
             point(bounds.left() + last_layout.x_for_index(range.start), bounds.top()),
             point(bounds.left() + last_layout.x_for_index(range.end), bounds.bottom()),
@@ -591,16 +872,36 @@ impl EntityInputHandler for LauncherView {
     fn character_index_for_point(
         &mut self,
         point: Point<Pixels>,
-        _window: &mut Window,
+        window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
-        if self.query.is_empty() {
+        let target = self.active_text_input_target(window)?;
+        let content = self.text_input_content(target).to_owned();
+        if content.is_empty() {
             return Some(0);
         }
 
-        let line_point = self.query_last_bounds?.localize(&point)?;
-        let last_layout = self.query_last_layout.as_ref()?;
-        let utf8_index = last_layout.index_for_x(point.x - line_point.x)?;
-        Some(self.query_offset_to_utf16(utf8_index))
+        let input_state = self.text_input_state(target);
+        let bounds = input_state.last_bounds?;
+        let last_layout = input_state.last_layout.as_ref()?;
+        let utf8_index = last_layout.index_for_x(point.x - bounds.left())?;
+        Some(text_offset_to_utf16(&content, utf8_index))
+    }
+}
+
+#[cfg(all(target_os = "macos", test))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clamp_text_range_handles_empty_content() {
+        assert_eq!(clamp_text_range("", &(5..5)), 0..0);
+        assert_eq!(clamp_text_range("", &(2..9)), 0..0);
+    }
+
+    #[test]
+    fn text_range_from_utf16_clamps_to_current_content() {
+        assert_eq!(text_range_from_utf16("", &(4..4)), 0..0);
+        assert_eq!(text_range_from_utf16("abc", &(5..5)), 3..3);
     }
 }

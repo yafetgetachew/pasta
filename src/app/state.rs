@@ -13,6 +13,49 @@ pub(crate) struct SearchResponse {
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) struct TextInputState {
+    pub(crate) focus_handle: FocusHandle,
+    pub(crate) selected_range: Range<usize>,
+    pub(crate) selection_reversed: bool,
+    pub(crate) marked_range: Option<Range<usize>>,
+    pub(crate) last_layout: Option<ShapedLine>,
+    pub(crate) last_bounds: Option<Bounds<Pixels>>,
+    pub(crate) is_selecting: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl TextInputState {
+    pub(crate) fn new<T>(cx: &mut Context<T>) -> Self {
+        Self {
+            focus_handle: cx.focus_handle(),
+            selected_range: 0..0,
+            selection_reversed: false,
+            marked_range: None,
+            last_layout: None,
+            last_bounds: None,
+            is_selecting: false,
+        }
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.selected_range = 0..0;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.last_layout = None;
+        self.last_bounds = None;
+        self.is_selecting = false;
+    }
+
+    pub(crate) fn cursor_offset(&self) -> usize {
+        if self.selection_reversed {
+            self.selected_range.start
+        } else {
+            self.selected_range.end
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) struct CachedRowPresentation {
     pub(crate) created_label: String,
     pub(crate) detected_language: Option<LanguageTag>,
@@ -107,13 +150,12 @@ pub(crate) struct LauncherView {
     pub(crate) font_family: SharedString,
     pub(crate) surface_alpha: f32,
     pub(crate) syntax_highlighting: bool,
-    pub(crate) query_focus_handle: FocusHandle,
-    pub(crate) query_selected_range: Range<usize>,
-    pub(crate) query_selection_reversed: bool,
-    pub(crate) query_marked_range: Option<Range<usize>>,
-    pub(crate) query_last_layout: Option<ShapedLine>,
-    pub(crate) query_last_bounds: Option<Bounds<Pixels>>,
-    pub(crate) query_is_selecting: bool,
+    pub(crate) query_input_state: TextInputState,
+    pub(crate) info_editor_input_state: TextInputState,
+    pub(crate) tag_editor_input_state: TextInputState,
+    pub(crate) parameter_name_input_state: TextInputState,
+    pub(crate) parameter_fill_input_state: TextInputState,
+    pub(crate) pending_text_input_focus: Option<TextInputTarget>,
     pub(crate) results_scroll: UniformListScrollHandle,
     pub(crate) search_request_tx: mpsc::Sender<SearchRequest>,
     pub(crate) next_search_request_id: u64,

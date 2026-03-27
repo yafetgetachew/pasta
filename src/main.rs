@@ -111,7 +111,7 @@ const MAX_VISIBLE_TAG_CHIPS: usize = 4;
 #[cfg(target_os = "macos")]
 const RESULTS_HEIGHT_NORMAL: f32 = 446.0;
 #[cfg(target_os = "macos")]
-const RESULT_ROW_HEIGHT: f32 = 110.0;
+const RESULT_ROW_HEIGHT: f32 = 118.0;
 #[cfg(target_os = "macos")]
 const RESULTS_LIST_WIDTH_RATIO: f32 = 0.47;
 #[cfg(target_os = "macos")]
@@ -275,6 +275,16 @@ enum TagEditorMode {
 enum ParameterEditorStage {
     SelectValue,
     EnterName,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TextInputTarget {
+    Query,
+    InfoEditor,
+    TagEditor,
+    ParameterName,
+    ParameterFill,
 }
 
 #[cfg(target_os = "macos")]
@@ -487,21 +497,21 @@ fn main() {
         });
         load_embedded_ui_font(cx);
         cx.bind_keys([
-            KeyBinding::new("backspace", QueryBackspace, Some("PastaQueryInput")),
-            KeyBinding::new("left", QueryLeft, Some("PastaQueryInput")),
-            KeyBinding::new("right", QueryRight, Some("PastaQueryInput")),
-            KeyBinding::new("shift-left", QuerySelectLeft, Some("PastaQueryInput")),
-            KeyBinding::new("shift-right", QuerySelectRight, Some("PastaQueryInput")),
-            KeyBinding::new("cmd-a", QuerySelectAll, Some("PastaQueryInput")),
-            KeyBinding::new("cmd-v", QueryPaste, Some("PastaQueryInput")),
-            KeyBinding::new("cmd-c", QueryCopy, Some("PastaQueryInput")),
-            KeyBinding::new("cmd-x", QueryCut, Some("PastaQueryInput")),
-            KeyBinding::new("home", QueryHome, Some("PastaQueryInput")),
-            KeyBinding::new("end", QueryEnd, Some("PastaQueryInput")),
+            KeyBinding::new("backspace", QueryBackspace, Some("PastaTextInput")),
+            KeyBinding::new("left", QueryLeft, Some("PastaTextInput")),
+            KeyBinding::new("right", QueryRight, Some("PastaTextInput")),
+            KeyBinding::new("shift-left", QuerySelectLeft, Some("PastaTextInput")),
+            KeyBinding::new("shift-right", QuerySelectRight, Some("PastaTextInput")),
+            KeyBinding::new("cmd-a", QuerySelectAll, Some("PastaTextInput")),
+            KeyBinding::new("cmd-v", QueryPaste, Some("PastaTextInput")),
+            KeyBinding::new("cmd-c", QueryCopy, Some("PastaTextInput")),
+            KeyBinding::new("cmd-x", QueryCut, Some("PastaTextInput")),
+            KeyBinding::new("home", QueryHome, Some("PastaTextInput")),
+            KeyBinding::new("end", QueryEnd, Some("PastaTextInput")),
             KeyBinding::new(
                 "ctrl-cmd-space",
                 QueryShowCharacterPalette,
-                Some("PastaQueryInput"),
+                Some("PastaTextInput"),
             ),
         ]);
 

@@ -1,5 +1,7 @@
 #[cfg(target_os = "macos")]
-use super::state::{CachedRowPresentation, SearchRequest, SearchResponse};
+use super::state::{
+    CachedRowPresentation, SearchRequest, SearchResponse, TextInputState,
+};
 #[cfg(target_os = "macos")]
 use crate::*;
 #[cfg(target_os = "macos")]
@@ -23,13 +25,12 @@ impl LauncherView {
             font_family,
             surface_alpha,
             syntax_highlighting,
-            query_focus_handle: cx.focus_handle(),
-            query_selected_range: 0..0,
-            query_selection_reversed: false,
-            query_marked_range: None,
-            query_last_layout: None,
-            query_last_bounds: None,
-            query_is_selecting: false,
+            query_input_state: TextInputState::new(cx),
+            info_editor_input_state: TextInputState::new(cx),
+            tag_editor_input_state: TextInputState::new(cx),
+            parameter_name_input_state: TextInputState::new(cx),
+            parameter_fill_input_state: TextInputState::new(cx),
+            pending_text_input_focus: None,
             results_scroll: UniformListScrollHandle::new(),
             search_request_tx,
             next_search_request_id: 0,
@@ -79,12 +80,12 @@ impl LauncherView {
 
     pub(crate) fn reset_for_show(&mut self) {
         self.query.clear();
-        self.query_selected_range = 0..0;
-        self.query_selection_reversed = false;
-        self.query_marked_range = None;
-        self.query_last_layout = None;
-        self.query_last_bounds = None;
-        self.query_is_selecting = false;
+        self.query_input_state.reset();
+        self.info_editor_input_state.reset();
+        self.tag_editor_input_state.reset();
+        self.parameter_name_input_state.reset();
+        self.parameter_fill_input_state.reset();
+        self.pending_text_input_focus = Some(TextInputTarget::Query);
         self.selected_index = 0;
         self.selection_changed_at = Instant::now();
         self.items.clear();
@@ -138,6 +139,10 @@ impl LauncherView {
     pub(crate) fn reset_results_scroll_to_top(&mut self) {
         self.results_scroll
             .scroll_to_item_strict(0, ScrollStrategy::Top);
+    }
+
+    pub(crate) fn queue_text_input_focus(&mut self, target: TextInputTarget) {
+        self.pending_text_input_focus = Some(target);
     }
 
     pub(crate) fn query_did_change(&mut self, cx: &mut Context<Self>) {
@@ -416,6 +421,23 @@ impl LauncherView {
         }
     }
 
+    pub(crate) fn select_result_index(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.items.is_empty() {
+            self.selected_index = 0;
+            return;
+        }
+
+        let next_index = index.min(self.items.len().saturating_sub(1));
+        let changed = self.selected_index != next_index;
+        self.selected_index = next_index;
+        self.results_scroll
+            .scroll_to_item(self.selected_index, ScrollStrategy::Center);
+        if changed {
+            self.mark_selection_changed(cx);
+        }
+        cx.notify();
+    }
+
     pub(crate) fn copy_selected_to_clipboard(&mut self, cx: &mut Context<Self>) {
         let Some(item) = self.items.get(self.selected_index).cloned() else {
             return;
@@ -526,23 +548,30 @@ impl LauncherView {
 
         self.info_editor_target_id = Some(item.id);
         self.info_editor_input = item.description;
+        self.info_editor_input_state.reset();
+        let cursor = self.info_editor_input.len();
+        self.info_editor_input_state.selected_range = cursor..cursor;
         self.info_editor_select_all = false;
         self.tag_editor_target_id = None;
         self.tag_editor_input.clear();
+        self.tag_editor_input_state.reset();
         self.tag_editor_select_all = false;
         self.tag_editor_mode = TagEditorMode::Add;
         self.parameter_editor_target_id = None;
         self.parameter_editor_selected_targets.clear();
         self.parameter_editor_name_inputs.clear();
+        self.parameter_name_input_state.reset();
         self.parameter_editor_name_focus_index = 0;
         self.parameter_editor_name_select_all = false;
         self.parameter_editor_stage = ParameterEditorStage::SelectValue;
         self.parameter_editor_force_full = true;
         self.parameter_fill_target_id = None;
         self.parameter_fill_values.clear();
+        self.parameter_fill_input_state.reset();
         self.parameter_fill_focus_index = 0;
         self.parameter_fill_select_all = false;
         self.transform_menu_open = false;
+        self.queue_text_input_focus(TextInputTarget::InfoEditor);
         cx.notify();
     }
 
@@ -569,7 +598,9 @@ impl LauncherView {
                 self.selection_changed_at = Instant::now();
                 self.info_editor_target_id = None;
                 self.info_editor_input.clear();
+                self.info_editor_input_state.reset();
                 self.info_editor_select_all = false;
+                self.queue_text_input_focus(TextInputTarget::Query);
                 show_macos_notification(
                     "Pasta",
                     if normalized.is_empty() {
@@ -583,7 +614,9 @@ impl LauncherView {
             Ok(false) => {
                 self.info_editor_target_id = None;
                 self.info_editor_input.clear();
+                self.info_editor_input_state.reset();
                 self.info_editor_select_all = false;
+                self.queue_text_input_focus(TextInputTarget::Query);
                 show_macos_notification("Pasta", "Info unchanged.");
                 cx.notify();
             }
@@ -597,7 +630,9 @@ impl LauncherView {
     pub(crate) fn cancel_info_editor(&mut self, cx: &mut Context<Self>) {
         self.info_editor_target_id = None;
         self.info_editor_input.clear();
+        self.info_editor_input_state.reset();
         self.info_editor_select_all = false;
+        self.queue_text_input_focus(TextInputTarget::Query);
         cx.notify();
     }
 
@@ -607,11 +642,14 @@ impl LauncherView {
         };
         self.info_editor_target_id = None;
         self.info_editor_input.clear();
+        self.info_editor_input_state.reset();
         self.info_editor_select_all = false;
         self.tag_editor_mode = TagEditorMode::Add;
         self.tag_editor_target_id = Some(item_id);
         self.tag_editor_input.clear();
+        self.tag_editor_input_state.reset();
         self.tag_editor_select_all = false;
+        self.queue_text_input_focus(TextInputTarget::TagEditor);
         cx.notify();
     }
 
@@ -621,11 +659,14 @@ impl LauncherView {
         };
         self.info_editor_target_id = None;
         self.info_editor_input.clear();
+        self.info_editor_input_state.reset();
         self.info_editor_select_all = false;
         self.tag_editor_mode = TagEditorMode::Remove;
         self.tag_editor_target_id = Some(item_id);
         self.tag_editor_input.clear();
+        self.tag_editor_input_state.reset();
         self.tag_editor_select_all = false;
+        self.queue_text_input_focus(TextInputTarget::TagEditor);
         cx.notify();
     }
 
@@ -661,7 +702,9 @@ impl LauncherView {
 
                 self.tag_editor_target_id = None;
                 self.tag_editor_input.clear();
+                self.tag_editor_input_state.reset();
                 self.tag_editor_select_all = false;
+                self.queue_text_input_focus(TextInputTarget::Query);
                 show_macos_notification(
                     "Pasta",
                     if self.tag_editor_mode == TagEditorMode::Add {
@@ -676,7 +719,9 @@ impl LauncherView {
             Ok(false) => {
                 self.tag_editor_target_id = None;
                 self.tag_editor_input.clear();
+                self.tag_editor_input_state.reset();
                 self.tag_editor_select_all = false;
+                self.queue_text_input_focus(TextInputTarget::Query);
                 show_macos_notification(
                     "Pasta",
                     if self.tag_editor_mode == TagEditorMode::Add {
@@ -698,8 +743,10 @@ impl LauncherView {
     pub(crate) fn cancel_custom_tags_editor(&mut self, cx: &mut Context<Self>) {
         self.tag_editor_target_id = None;
         self.tag_editor_input.clear();
+        self.tag_editor_input_state.reset();
         self.tag_editor_select_all = false;
         self.tag_editor_mode = TagEditorMode::Add;
+        self.queue_text_input_focus(TextInputTarget::Query);
         cx.notify();
     }
 
@@ -714,20 +761,25 @@ impl LauncherView {
 
         self.info_editor_target_id = None;
         self.info_editor_input.clear();
+        self.info_editor_input_state.reset();
         self.info_editor_select_all = false;
         self.parameter_editor_target_id = Some(item.id);
         self.parameter_editor_selected_targets.clear();
         self.parameter_editor_name_inputs.clear();
+        self.parameter_name_input_state.reset();
         self.parameter_editor_name_focus_index = 0;
         self.parameter_editor_name_select_all = false;
         self.parameter_editor_stage = ParameterEditorStage::SelectValue;
         self.parameter_editor_force_full = true;
         self.parameter_fill_target_id = None;
         self.parameter_fill_values.clear();
+        self.parameter_fill_input_state.reset();
         self.parameter_fill_focus_index = 0;
         self.parameter_fill_select_all = false;
         self.transform_menu_open = false;
         self.tag_editor_target_id = None;
+        self.tag_editor_input_state.reset();
+        self.pending_text_input_focus = None;
         cx.notify();
     }
 
@@ -735,10 +787,12 @@ impl LauncherView {
         self.parameter_editor_target_id = None;
         self.parameter_editor_selected_targets.clear();
         self.parameter_editor_name_inputs.clear();
+        self.parameter_name_input_state.reset();
         self.parameter_editor_name_focus_index = 0;
         self.parameter_editor_name_select_all = false;
         self.parameter_editor_stage = ParameterEditorStage::SelectValue;
         self.parameter_editor_force_full = true;
+        self.queue_text_input_focus(TextInputTarget::Query);
         cx.notify();
     }
 
@@ -746,6 +800,7 @@ impl LauncherView {
         self.parameter_editor_stage = ParameterEditorStage::SelectValue;
         self.parameter_editor_selected_targets.clear();
         self.parameter_editor_name_inputs.clear();
+        self.parameter_name_input_state.reset();
         self.parameter_editor_name_focus_index = 0;
         self.parameter_editor_name_select_all = false;
     }
@@ -919,7 +974,17 @@ impl LauncherView {
         self.sync_parameter_editor_name_inputs();
         self.parameter_editor_name_focus_index =
             first_parameter_name_issue_index(&self.parameter_editor_name_inputs);
+        if let Some(active_name) = self
+            .parameter_editor_name_inputs
+            .get(self.parameter_editor_name_focus_index)
+        {
+            let cursor = active_name.len();
+            self.parameter_name_input_state.selected_range = cursor..cursor;
+        }
+        self.parameter_name_input_state.selection_reversed = false;
+        self.parameter_name_input_state.marked_range = None;
         self.parameter_editor_name_select_all = false;
+        self.queue_text_input_focus(TextInputTarget::ParameterName);
         cx.notify();
     }
 
@@ -931,6 +996,16 @@ impl LauncherView {
                 % self.parameter_editor_name_inputs.len();
         }
         self.parameter_editor_name_select_all = false;
+        if let Some(active_name) = self
+            .parameter_editor_name_inputs
+            .get(self.parameter_editor_name_focus_index)
+        {
+            let cursor = active_name.len();
+            self.parameter_name_input_state.selected_range = cursor..cursor;
+        }
+        self.parameter_name_input_state.selection_reversed = false;
+        self.parameter_name_input_state.marked_range = None;
+        self.queue_text_input_focus(TextInputTarget::ParameterName);
     }
 
     fn focus_previous_parameter_name_input(&mut self) {
@@ -943,6 +1018,16 @@ impl LauncherView {
             self.parameter_editor_name_focus_index -= 1;
         }
         self.parameter_editor_name_select_all = false;
+        if let Some(active_name) = self
+            .parameter_editor_name_inputs
+            .get(self.parameter_editor_name_focus_index)
+        {
+            let cursor = active_name.len();
+            self.parameter_name_input_state.selected_range = cursor..cursor;
+        }
+        self.parameter_name_input_state.selection_reversed = false;
+        self.parameter_name_input_state.marked_range = None;
+        self.queue_text_input_focus(TextInputTarget::ParameterName);
     }
 
     pub(crate) fn focus_parameter_name_index(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -951,20 +1036,18 @@ impl LauncherView {
         }
         self.parameter_editor_name_focus_index =
             index.min(self.parameter_editor_name_inputs.len() - 1);
+        if let Some(active_name) = self
+            .parameter_editor_name_inputs
+            .get(self.parameter_editor_name_focus_index)
+        {
+            let cursor = active_name.len();
+            self.parameter_name_input_state.selected_range = cursor..cursor;
+        }
+        self.parameter_name_input_state.selection_reversed = false;
+        self.parameter_name_input_state.marked_range = None;
         self.parameter_editor_name_select_all = false;
+        self.queue_text_input_focus(TextInputTarget::ParameterName);
         cx.notify();
-    }
-
-    fn active_parameter_name_input_mut(&mut self) -> Option<&mut String> {
-        if self.parameter_editor_name_inputs.is_empty() {
-            return None;
-        }
-        let max_ix = self.parameter_editor_name_inputs.len().saturating_sub(1);
-        if self.parameter_editor_name_focus_index > max_ix {
-            self.parameter_editor_name_focus_index = max_ix;
-        }
-        self.parameter_editor_name_inputs
-            .get_mut(self.parameter_editor_name_focus_index)
     }
 
     pub(crate) fn commit_parameter_editor(&mut self, cx: &mut Context<Self>) {
@@ -1042,10 +1125,12 @@ impl LauncherView {
             self.parameter_editor_target_id = None;
             self.parameter_editor_selected_targets.clear();
             self.parameter_editor_name_inputs.clear();
+            self.parameter_name_input_state.reset();
             self.parameter_editor_name_focus_index = 0;
             self.parameter_editor_name_select_all = false;
             self.parameter_editor_stage = ParameterEditorStage::SelectValue;
             self.parameter_editor_force_full = true;
+            self.queue_text_input_focus(TextInputTarget::Query);
             show_macos_notification("Pasta", "Parameters saved.");
             cx.notify();
         } else {
@@ -1093,8 +1178,6 @@ impl LauncherView {
         let key = event.keystroke.key.as_str();
         let modifiers = &event.keystroke.modifiers;
         let no_modifiers = !modifiers.modified();
-        let platform_only =
-            modifiers.platform && !modifiers.control && !modifiers.alt && !modifiers.function;
         let shift_only = modifiers.shift && !modifiers.platform && !modifiers.control;
         if self.parameter_editor_target_id.is_none() {
             return;
@@ -1123,41 +1206,6 @@ impl LauncherView {
                     self.commit_parameter_editor(cx);
                     return;
                 }
-                "backspace" if no_modifiers => {
-                    let clear_all = self.parameter_editor_name_select_all;
-                    if let Some(active) = self.active_parameter_name_input_mut() {
-                        if clear_all {
-                            active.clear();
-                        } else {
-                            active.pop();
-                        }
-                    }
-                    self.parameter_editor_name_select_all = false;
-                    cx.notify();
-                    return;
-                }
-                "a" if platform_only => {
-                    self.parameter_editor_name_select_all = self
-                        .parameter_editor_name_inputs
-                        .get(self.parameter_editor_name_focus_index)
-                        .is_some_and(|active| !active.is_empty());
-                    cx.notify();
-                    return;
-                }
-                "v" if platform_only => {
-                    let replace_all = self.parameter_editor_name_select_all;
-                    if let Some(text) = read_clipboard_text()
-                        && let Some(active) = self.active_parameter_name_input_mut()
-                    {
-                        if replace_all {
-                            active.clear();
-                        }
-                        active.push_str(text.trim());
-                    }
-                    self.parameter_editor_name_select_all = false;
-                    cx.notify();
-                    return;
-                }
                 "up" | "arrowup" => {
                     self.focus_previous_parameter_name_input();
                     cx.notify();
@@ -1169,18 +1217,6 @@ impl LauncherView {
                     return;
                 }
                 _ => {}
-            }
-
-            if let Some(character) = typed_character(event) {
-                let replace_all = self.parameter_editor_name_select_all;
-                if let Some(active) = self.active_parameter_name_input_mut() {
-                    if replace_all {
-                        active.clear();
-                    }
-                    active.push(character);
-                }
-                self.parameter_editor_name_select_all = false;
-                cx.notify();
             }
             return;
         }
@@ -1216,28 +1252,39 @@ impl LauncherView {
     ) {
         self.info_editor_target_id = None;
         self.info_editor_input.clear();
+        self.info_editor_input_state.reset();
         self.info_editor_select_all = false;
         self.parameter_fill_target_id = Some(item_id);
         self.parameter_fill_values = vec![String::new(); parameters.len()];
+        self.parameter_fill_input_state.reset();
         self.parameter_fill_focus_index = 0;
         self.parameter_fill_select_all = false;
         self.parameter_editor_target_id = None;
         self.parameter_editor_selected_targets.clear();
         self.parameter_editor_name_inputs.clear();
+        self.parameter_name_input_state.reset();
         self.parameter_editor_name_focus_index = 0;
         self.parameter_editor_name_select_all = false;
         self.parameter_editor_stage = ParameterEditorStage::SelectValue;
         self.parameter_editor_force_full = true;
         self.transform_menu_open = false;
         self.tag_editor_target_id = None;
+        self.tag_editor_input_state.reset();
+        if !self.parameter_fill_values.is_empty() {
+            self.queue_text_input_focus(TextInputTarget::ParameterFill);
+        } else {
+            self.queue_text_input_focus(TextInputTarget::Query);
+        }
         cx.notify();
     }
 
     pub(crate) fn cancel_parameter_fill_prompt(&mut self, cx: &mut Context<Self>) {
         self.parameter_fill_target_id = None;
         self.parameter_fill_values.clear();
+        self.parameter_fill_input_state.reset();
         self.parameter_fill_focus_index = 0;
         self.parameter_fill_select_all = false;
+        self.queue_text_input_focus(TextInputTarget::Query);
         cx.notify();
     }
 
@@ -1246,7 +1293,14 @@ impl LauncherView {
             return;
         }
         self.parameter_fill_focus_index = index.min(self.parameter_fill_values.len() - 1);
+        if let Some(active_value) = self.parameter_fill_values.get(self.parameter_fill_focus_index) {
+            let cursor = active_value.len();
+            self.parameter_fill_input_state.selected_range = cursor..cursor;
+        }
+        self.parameter_fill_input_state.selection_reversed = false;
+        self.parameter_fill_input_state.marked_range = None;
         self.parameter_fill_select_all = false;
+        self.queue_text_input_focus(TextInputTarget::ParameterFill);
         cx.notify();
     }
 
@@ -1257,14 +1311,17 @@ impl LauncherView {
         let Some(item) = self.items.iter().find(|entry| entry.id == item_id).cloned() else {
             self.parameter_fill_target_id = None;
             self.parameter_fill_values.clear();
+            self.parameter_fill_input_state.reset();
             self.parameter_fill_focus_index = 0;
             self.parameter_fill_select_all = false;
+            self.queue_text_input_focus(TextInputTarget::Query);
             cx.notify();
             return;
         };
 
         if self.parameter_fill_values.len() != item.parameters.len() {
             self.parameter_fill_values = vec![String::new(); item.parameters.len()];
+            self.parameter_fill_input_state.reset();
             self.parameter_fill_focus_index = 0;
             self.parameter_fill_select_all = false;
         }
@@ -1305,8 +1362,10 @@ impl LauncherView {
         cx.write_to_clipboard(ClipboardItem::new_string(rendered));
         self.parameter_fill_target_id = None;
         self.parameter_fill_values.clear();
+        self.parameter_fill_input_state.reset();
         self.parameter_fill_focus_index = 0;
         self.parameter_fill_select_all = false;
+        self.queue_text_input_focus(TextInputTarget::Query);
         show_macos_notification(
             "Pasta",
             if all_blank {
@@ -1327,14 +1386,9 @@ impl LauncherView {
         let key = event.keystroke.key.as_str();
         let modifiers = &event.keystroke.modifiers;
         let no_modifiers = !modifiers.modified();
-        let platform_only =
-            modifiers.platform && !modifiers.control && !modifiers.alt && !modifiers.function;
         let shift_only = modifiers.shift && !modifiers.platform && !modifiers.control;
-
-        if self.parameter_fill_values.is_empty() {
-            self.parameter_fill_values.push(String::new());
-            self.parameter_fill_focus_index = 0;
-            self.parameter_fill_select_all = false;
+        if self.parameter_fill_values.is_empty() && key != "escape" && key != "esc" {
+            return;
         }
 
         match key {
@@ -1380,63 +1434,7 @@ impl LauncherView {
                 self.commit_parameter_fill_prompt(cx);
                 return;
             }
-            "backspace" if no_modifiers => {
-                let clear_all = self.parameter_fill_select_all;
-                if let Some(active) = self
-                    .parameter_fill_values
-                    .get_mut(self.parameter_fill_focus_index)
-                {
-                    if clear_all {
-                        active.clear();
-                    } else {
-                        active.pop();
-                    }
-                }
-                self.parameter_fill_select_all = false;
-                cx.notify();
-                return;
-            }
-            "a" if platform_only => {
-                self.parameter_fill_select_all = self
-                    .parameter_fill_values
-                    .get(self.parameter_fill_focus_index)
-                    .is_some_and(|active| !active.is_empty());
-                cx.notify();
-                return;
-            }
-            "v" if platform_only => {
-                let replace_all = self.parameter_fill_select_all;
-                if let Some(text) = read_clipboard_text() {
-                    if let Some(active) = self
-                        .parameter_fill_values
-                        .get_mut(self.parameter_fill_focus_index)
-                    {
-                        if replace_all {
-                            active.clear();
-                        }
-                        active.push_str(text.trim());
-                    }
-                    self.parameter_fill_select_all = false;
-                    cx.notify();
-                }
-                return;
-            }
             _ => {}
-        }
-
-        if let Some(character) = typed_character(event) {
-            let replace_all = self.parameter_fill_select_all;
-            if let Some(active) = self
-                .parameter_fill_values
-                .get_mut(self.parameter_fill_focus_index)
-            {
-                if replace_all {
-                    active.clear();
-                }
-                active.push(character);
-            }
-            self.parameter_fill_select_all = false;
-            cx.notify();
         }
     }
 
@@ -1446,10 +1444,6 @@ impl LauncherView {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.as_str();
-        let modifiers = &event.keystroke.modifiers;
-        let no_modifiers = !modifiers.modified();
-        let platform_only =
-            modifiers.platform && !modifiers.control && !modifiers.alt && !modifiers.function;
 
         match key {
             "escape" | "esc" => {
@@ -1460,42 +1454,7 @@ impl LauncherView {
                 self.commit_info_editor(cx);
                 return;
             }
-            "backspace" if no_modifiers => {
-                if self.info_editor_select_all {
-                    self.info_editor_input.clear();
-                    self.info_editor_select_all = false;
-                } else {
-                    self.info_editor_input.pop();
-                }
-                cx.notify();
-                return;
-            }
-            "a" if platform_only => {
-                self.info_editor_select_all = !self.info_editor_input.is_empty();
-                cx.notify();
-                return;
-            }
-            "v" if platform_only => {
-                if let Some(text) = read_clipboard_text() {
-                    if self.info_editor_select_all {
-                        self.info_editor_input.clear();
-                    }
-                    self.info_editor_input.push_str(&text);
-                    self.info_editor_select_all = false;
-                    cx.notify();
-                }
-                return;
-            }
             _ => {}
-        }
-
-        if let Some(character) = typed_character(event) {
-            if self.info_editor_select_all {
-                self.info_editor_input.clear();
-            }
-            self.info_editor_input.push(character);
-            self.info_editor_select_all = false;
-            cx.notify();
         }
     }
 
@@ -1505,10 +1464,6 @@ impl LauncherView {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.as_str();
-        let modifiers = &event.keystroke.modifiers;
-        let no_modifiers = !modifiers.modified();
-        let platform_only =
-            modifiers.platform && !modifiers.control && !modifiers.alt && !modifiers.function;
 
         match key {
             "escape" | "esc" => {
@@ -1519,42 +1474,7 @@ impl LauncherView {
                 self.commit_custom_tags(cx);
                 return;
             }
-            "backspace" if no_modifiers => {
-                if self.tag_editor_select_all {
-                    self.tag_editor_input.clear();
-                    self.tag_editor_select_all = false;
-                } else {
-                    self.tag_editor_input.pop();
-                }
-                cx.notify();
-                return;
-            }
-            "a" if platform_only => {
-                self.tag_editor_select_all = !self.tag_editor_input.is_empty();
-                cx.notify();
-                return;
-            }
-            "v" if platform_only => {
-                if let Some(text) = read_clipboard_text() {
-                    if self.tag_editor_select_all {
-                        self.tag_editor_input.clear();
-                    }
-                    self.tag_editor_input.push_str(&text);
-                    self.tag_editor_select_all = false;
-                    cx.notify();
-                }
-                return;
-            }
             _ => {}
-        }
-
-        if let Some(character) = typed_character(event) {
-            if self.tag_editor_select_all {
-                self.tag_editor_input.clear();
-            }
-            self.tag_editor_input.push(character);
-            self.tag_editor_select_all = false;
-            cx.notify();
         }
     }
 
@@ -1646,9 +1566,9 @@ impl LauncherView {
 
         self.query.clear();
         let query_cursor = self.query.len();
-        self.query_selected_range = query_cursor..query_cursor;
-        self.query_selection_reversed = false;
-        self.query_marked_range = None;
+        self.query_input_state.selected_range = query_cursor..query_cursor;
+        self.query_input_state.selection_reversed = false;
+        self.query_input_state.marked_range = None;
         self.transform_menu_open = false;
         self.selected_index = 0;
         self.selection_changed_at = Instant::now();
@@ -1827,58 +1747,6 @@ impl LauncherView {
             }
             _ => {}
         }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn typed_character(event: &KeystrokeEvent) -> Option<char> {
-    let modifiers = &event.keystroke.modifiers;
-    if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function {
-        return None;
-    }
-
-    let key = event.keystroke.key.as_str();
-    if key == "space" {
-        return Some(' ');
-    }
-
-    if let Some(candidate) = event.keystroke.key_char.as_deref() {
-        let mut chars = candidate.chars();
-        let first = chars.next()?;
-        if chars.next().is_none() && !first.is_control() {
-            return Some(first);
-        }
-    }
-
-    if let Some(mapped) = key_name_to_char(key) {
-        return Some(mapped);
-    }
-
-    let candidate = key;
-    let mut chars = candidate.chars();
-    let first = chars.next()?;
-    if chars.next().is_some() || first.is_control() {
-        return None;
-    }
-
-    Some(first)
-}
-
-#[cfg(target_os = "macos")]
-fn key_name_to_char(key: &str) -> Option<char> {
-    match key {
-        "minus" | "hyphen" => Some('-'),
-        "equal" | "equals" => Some('='),
-        "comma" => Some(','),
-        "period" | "dot" => Some('.'),
-        "slash" => Some('/'),
-        "backslash" => Some('\\'),
-        "semicolon" => Some(';'),
-        "quote" | "apostrophe" => Some('\''),
-        "grave" | "backtick" => Some('`'),
-        "leftbracket" | "openbracket" | "bracketleft" => Some('['),
-        "rightbracket" | "closebracket" | "bracketright" => Some(']'),
-        _ => None,
     }
 }
 
