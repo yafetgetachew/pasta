@@ -34,7 +34,7 @@ impl Render for LauncherView {
                 .justify_center()
                 .text_color(palette.muted_text)
                 .text_sm()
-                .child("Clipboard is empty. Copy text/code/commands to get started.")
+                .child("Nothing copied yet.")
                 .into_any_element()
         } else {
             uniform_list(
@@ -111,9 +111,10 @@ impl Render for LauncherView {
             .child({
                 let mut query_container = div()
                     .w_full()
-                    .px_1()
+                    .px_2()
+                    .py(px(2.0))
                     .rounded_md()
-                    .line_height(px(28.0))
+                    .line_height(px(30.0))
                     .text_lg()
                     .font_weight(FontWeight::NORMAL);
 
@@ -163,7 +164,10 @@ impl Render for LauncherView {
                             if palette.dark { 0.95 } else { 0.75 },
                         ))
                         .border_1()
-                        .border_color(palette.selected_border);
+                        .border_color(scale_alpha(
+                            palette.selected_border,
+                            if palette.dark { 0.58 } else { 0.52 },
+                        ));
                 }
 
                 div()
@@ -176,6 +180,9 @@ impl Render for LauncherView {
                         query_input_enabled,
                     )))
             });
+        if !self.tag_search_suggestions.is_empty() && query_input_enabled {
+            content = content.child(self.render_tag_search_suggestions(palette, cx));
+        }
 
         if let Some(item_id) = self.info_editor_target_id {
             let info_editor_focus_handle = self.text_input_focus_handle(TextInputTarget::InfoEditor);
@@ -1069,26 +1076,27 @@ impl Render for LauncherView {
                     .w(relative(RESULTS_LIST_WIDTH_RATIO))
                     .h_full()
                     .min_w(px(0.0))
-                    .bg(scale_alpha(
-                        palette.row_hover_bg,
-                        if palette.dark { 0.84 } else { 0.88 },
-                    ))
-                    .border_1()
-                    .border_color(scale_alpha(
-                        palette.window_border,
-                        if palette.dark { 0.9 } else { 1.0 },
-                    ))
-                    .rounded_lg()
                     .overflow_hidden()
                     .child(results),
             )
-            .child(self.render_preview_pane(palette));
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .min_w(px(0.0))
+                    .py(px(4.0))
+                    .child(self.render_preview_pane(palette)),
+            );
 
         content
             .child(div().w_full().h(px(1.0)).bg(palette.list_divider))
             .child(workspace)
             .child(
                 if self.show_command_help {
+                    let help_chip_bg =
+                        scale_alpha(palette.row_hover_bg, if palette.dark { 0.9 } else { 1.0 });
+                    let help_chip_border =
+                        scale_alpha(palette.window_border, if palette.dark { 0.84 } else { 0.9 });
                     div()
                         .w_full()
                         .p_2()
@@ -1113,15 +1121,167 @@ impl Render for LauncherView {
                         )
                         .child(
                             div()
-                                .text_xs()
-                                .text_color(palette.muted_text)
-                                .child("Search • /tag tag-only • Enter copy • Tab transforms • ⌘R reveal+copy secret • ⌘I info • ⌘P parametrize"),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(palette.muted_text)
-                                .child("⌘J/⌘K/⌘L/⌘; navigate • click token chips to parametrize • ⌘⇧S mark secret • ⌘T add tags • ⌘⇧T remove tags • ⌘D delete • Esc close • ⌘Q close • ⌘H hide help"),
+                                .w_full()
+                                .flex()
+                                .flex_row()
+                                .flex_wrap()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted_text)
+                                        .bg(help_chip_bg)
+                                        .border_1()
+                                        .border_color(help_chip_border)
+                                        .rounded_md()
+                                        .px_1()
+                                        .py(px(1.0))
+                                        .child("⏎ copy"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted_text)
+                                        .bg(help_chip_bg)
+                                        .border_1()
+                                        .border_color(help_chip_border)
+                                        .rounded_md()
+                                        .px_1()
+                                        .py(px(1.0))
+                                        .child("⌘R reveal secret"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted_text)
+                                        .bg(help_chip_bg)
+                                        .border_1()
+                                        .border_color(help_chip_border)
+                                        .rounded_md()
+                                        .px_1()
+                                        .py(px(1.0))
+                                        .child("⌘J / ⌘K / ⌘L / ⌘; navigate"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted_text)
+                                        .bg(help_chip_bg)
+                                        .border_1()
+                                        .border_color(help_chip_border)
+                                        .rounded_md()
+                                        .px_1()
+                                        .py(px(1.0))
+                                        .child("⌘I edit info"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted_text)
+                                        .bg(help_chip_bg)
+                                        .border_1()
+                                        .border_color(help_chip_border)
+                                        .rounded_md()
+                                        .px_1()
+                                        .py(px(1.0))
+                                        .child("⌘T add tags"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted_text)
+                                        .bg(help_chip_bg)
+                                        .border_1()
+                                        .border_color(help_chip_border)
+                                        .rounded_md()
+                                        .px_1()
+                                        .py(px(1.0))
+                                        .child("⌘⇧T remove tags"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted_text)
+                                        .bg(help_chip_bg)
+                                        .border_1()
+                                        .border_color(help_chip_border)
+                                        .rounded_md()
+                                        .px_1()
+                                        .py(px(1.0))
+                                        .child("⌘P parametrize"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted_text)
+                                        .bg(help_chip_bg)
+                                        .border_1()
+                                        .border_color(help_chip_border)
+                                        .rounded_md()
+                                        .px_1()
+                                        .py(px(1.0))
+                                        .child("Tab transforms"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted_text)
+                                        .bg(help_chip_bg)
+                                        .border_1()
+                                        .border_color(help_chip_border)
+                                        .rounded_md()
+                                        .px_1()
+                                        .py(px(1.0))
+                                        .child("⌘⇧S mark secret"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted_text)
+                                        .bg(help_chip_bg)
+                                        .border_1()
+                                        .border_color(help_chip_border)
+                                        .rounded_md()
+                                        .px_1()
+                                        .py(px(1.0))
+                                        .child("⌘D delete"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted_text)
+                                        .bg(help_chip_bg)
+                                        .border_1()
+                                        .border_color(help_chip_border)
+                                        .rounded_md()
+                                        .px_1()
+                                        .py(px(1.0))
+                                        .child("Esc close"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted_text)
+                                        .bg(help_chip_bg)
+                                        .border_1()
+                                        .border_color(help_chip_border)
+                                        .rounded_md()
+                                        .px_1()
+                                        .py(px(1.0))
+                                        .child("⌘Q quit"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted_text)
+                                        .bg(help_chip_bg)
+                                        .border_1()
+                                        .border_color(help_chip_border)
+                                        .rounded_md()
+                                        .px_1()
+                                        .py(px(1.0))
+                                        .child("⌘H hide help"),
+                                ),
                         )
                 } else {
                     div()
@@ -1136,9 +1296,81 @@ impl Render for LauncherView {
 
 #[cfg(target_os = "macos")]
 impl LauncherView {
+    fn render_tag_search_suggestions(
+        &self,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut chips = div().w_full().flex().flex_row().flex_wrap().gap_1();
+        for (ix, suggestion) in self.tag_search_suggestions.iter().enumerate() {
+            let is_primary = ix == 0;
+            let chip_bg = if is_primary {
+                scale_alpha(palette.selected_bg, if palette.dark { 0.92 } else { 0.72 })
+            } else {
+                scale_alpha(palette.row_hover_bg, if palette.dark { 0.9 } else { 1.0 })
+            };
+            let chip_border = if is_primary {
+                palette.selected_border
+            } else {
+                scale_alpha(palette.window_border, if palette.dark { 0.84 } else { 0.9 })
+            };
+            let chip_text = if is_primary {
+                palette.title_text
+            } else {
+                palette.muted_text
+            };
+
+            chips = chips.child(
+                div()
+                    .id(("tag-search-suggestion", ix))
+                    .text_xs()
+                    .text_color(chip_text)
+                    .bg(chip_bg)
+                    .border_1()
+                    .border_color(chip_border)
+                    .rounded_md()
+                    .px_1()
+                    .py(px(1.0))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.apply_tag_search_suggestion_index(ix, cx);
+                    }))
+                    .child(format!(":{suggestion}")),
+            );
+        }
+
+        div()
+            .w_full()
+            .mt_1()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette.muted_text)
+                            .child("Tag suggestions"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette.muted_text)
+                            .child("↹ autocomplete"),
+                    ),
+            )
+            .child(chips)
+            .into_any_element()
+    }
+
     fn render_preview_pane(&self, palette: Palette) -> AnyElement {
         let mut pane = div()
-            .flex_1()
+            .w_full()
             .h_full()
             .min_w(px(0.0))
             .p_2()
@@ -1164,26 +1396,13 @@ impl LauncherView {
                 .text_center()
                 .child(
                     div()
-                        .max_w(px(260.0))
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(palette.title_text)
-                                .child(if self.query.is_empty() {
-                                    "Select a snippet to inspect it."
-                                } else {
-                                    "No matching snippet to preview."
-                                }),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(palette.muted_text)
-                                .child("The launcher now keeps a fixed height and uses this pane for full preview details."),
-                        ),
+                        .text_sm()
+                        .text_color(palette.muted_text)
+                        .child(if self.query.is_empty() {
+                            "Nothing to inspect."
+                        } else {
+                            "No matches."
+                        }),
                 )
                 .into_any_element();
         };

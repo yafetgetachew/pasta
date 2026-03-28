@@ -25,6 +25,7 @@ const SEMANTIC_MIN_QUERY_CHARS: usize = 3;
 const SEMANTIC_EMBEDDING_CACHE_MAX: usize = 12_000;
 const SEMANTIC_SOURCE_TEXT_LIMIT: usize = 4_096;
 const SEARCH_FUZZY_TEXT_LIMIT: usize = 4_096;
+const TAG_ONLY_PREFIX: char = ':';
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum ClipboardItemType {
@@ -237,13 +238,7 @@ impl ClipboardStorage {
     }
 
     pub fn search_items(&self, query: &str, limit: usize) -> Result<Vec<ClipboardRecord>> {
-        let normalized = query.trim().to_lowercase();
-        let tag_only = normalized.starts_with('/');
-        let effective_query = if tag_only {
-            normalized.trim_start_matches('/').trim().to_owned()
-        } else {
-            normalized
-        };
+        let (effective_query, tag_only) = normalize_search_query(query);
         let use_semantic_search = !tag_only
             && effective_query.chars().count() >= SEMANTIC_MIN_QUERY_CHARS
             && !effective_query.is_empty();
@@ -347,6 +342,56 @@ impl ClipboardStorage {
         }
 
         Ok(output)
+    }
+
+    pub fn suggest_search_tags(&self, query: &str, limit: usize) -> Vec<String> {
+        if limit == 0 {
+            return Vec::new();
+        }
+
+        let Some(context) = tag_search_autocomplete_context(query) else {
+            return Vec::new();
+        };
+
+        let index = self
+            .memory_index
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut candidate_counts: HashMap<String, usize> = HashMap::new();
+
+        for id in &index.order_desc_ids {
+            let Some(indexed) = index.by_id.get(id) else {
+                continue;
+            };
+
+            for candidate in searchable_tag_terms(&indexed.record) {
+                if tag_search_suggestion_match_rank(&candidate, &context).is_some() {
+                    *candidate_counts.entry(candidate).or_insert(0) += 1;
+                }
+            }
+        }
+
+        let mut suggestions: Vec<(String, u8, usize)> = candidate_counts
+            .into_iter()
+            .filter_map(|(candidate, count)| {
+                let rank = tag_search_suggestion_match_rank(&candidate, &context)?;
+                Some((candidate, rank, count))
+            })
+            .collect();
+
+        suggestions.sort_by(|left, right| {
+            left.1
+                .cmp(&right.1)
+                .then_with(|| right.2.cmp(&left.2))
+                .then_with(|| left.0.len().cmp(&right.0.len()))
+                .then_with(|| left.0.cmp(&right.0))
+        });
+
+        suggestions
+            .into_iter()
+            .take(limit)
+            .map(|(candidate, _, _)| candidate)
+            .collect()
     }
 
     pub fn delete_item(&self, id: i64) -> Result<bool> {
@@ -822,6 +867,82 @@ impl ClipboardStorage {
         }
         embedding
     }
+}
+
+fn normalize_search_query(query: &str) -> (String, bool) {
+    let normalized = query.trim().to_lowercase();
+    let tag_only = normalized.starts_with(TAG_ONLY_PREFIX);
+    let effective_query = if tag_only {
+        normalized
+            .trim_start_matches(TAG_ONLY_PREFIX)
+            .trim()
+            .to_owned()
+    } else {
+        normalized
+    };
+
+    (effective_query, tag_only)
+}
+
+struct TagSearchAutocompleteContext {
+    completed_terms: HashSet<String>,
+    fragment: String,
+}
+
+fn tag_search_autocomplete_context(query: &str) -> Option<TagSearchAutocompleteContext> {
+    let normalized = query.trim_start().to_lowercase();
+    if !normalized.starts_with(TAG_ONLY_PREFIX) {
+        return None;
+    }
+
+    let effective_query = normalized.trim_start_matches(TAG_ONLY_PREFIX);
+    let ends_with_whitespace = effective_query
+        .chars()
+        .last()
+        .is_some_and(|ch| ch.is_whitespace());
+    let mut terms: Vec<String> = effective_query
+        .split_whitespace()
+        .map(|term| term.trim_start_matches(TAG_ONLY_PREFIX).trim().to_owned())
+        .filter(|term| !term.is_empty())
+        .collect();
+
+    let fragment = if ends_with_whitespace {
+        String::new()
+    } else {
+        terms.pop().unwrap_or_default()
+    };
+
+    Some(TagSearchAutocompleteContext {
+        completed_terms: terms.into_iter().collect(),
+        fragment,
+    })
+}
+
+fn tag_search_suggestion_match_rank(
+    candidate: &str,
+    context: &TagSearchAutocompleteContext,
+) -> Option<u8> {
+    if candidate.len() < 2 || context.completed_terms.contains(candidate) {
+        return None;
+    }
+
+    if context.fragment.is_empty() {
+        return Some(3);
+    }
+    if candidate == context.fragment {
+        return None;
+    }
+    if candidate.starts_with(&context.fragment) {
+        return Some(0);
+    }
+    if candidate.contains(&context.fragment) {
+        return Some(1);
+    }
+    if fuzzy_token_match(&context.fragment, candidate) {
+        return Some(2);
+    }
+
+    None
 }
 
 #[derive(Clone)]
@@ -2249,7 +2370,7 @@ pub(crate) fn record_matches_query(record: &ClipboardRecord, query: &str, tag_on
     if tag_only {
         let tag_terms: Vec<&str> = query
             .split_whitespace()
-            .map(|term| term.trim_start_matches('/').trim())
+            .map(|term| term.trim_start_matches(TAG_ONLY_PREFIX).trim())
             .filter(|term| !term.is_empty())
             .collect();
 
@@ -2807,6 +2928,30 @@ mod tests {
         };
 
         assert!(record_matches_query(&record, "rs", true));
+    }
+
+    #[test]
+    fn normalize_search_query_uses_colon_for_tag_mode() {
+        assert_eq!(normalize_search_query(":rs"), ("rs".to_owned(), true));
+        assert_eq!(
+            normalize_search_query(" : lang:rust command "),
+            ("lang:rust command".to_owned(), true)
+        );
+        assert_eq!(normalize_search_query("/rs"), ("/rs".to_owned(), false));
+    }
+
+    #[test]
+    fn tag_search_autocomplete_context_tracks_completed_terms_and_fragment() {
+        let context =
+            tag_search_autocomplete_context(" :rust command py").expect("expected tag context");
+        assert!(context.completed_terms.contains("rust"));
+        assert!(context.completed_terms.contains("command"));
+        assert_eq!(context.fragment, "py");
+
+        let context =
+            tag_search_autocomplete_context(":rust ").expect("expected tag context after space");
+        assert!(context.completed_terms.contains("rust"));
+        assert_eq!(context.fragment, "");
     }
 
     #[test]

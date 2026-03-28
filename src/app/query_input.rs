@@ -367,7 +367,33 @@ impl LauncherView {
         }
     }
 
-    fn set_text_input_content(&mut self, target: TextInputTarget, content: String) {
+    pub(super) fn normalize_text_input_value(content: &str) -> String {
+        if !content.contains('\n') && !content.contains('\r') {
+            return content.to_owned();
+        }
+
+        let mut normalized = String::with_capacity(content.len());
+        let mut previous_was_line_break = false;
+        for ch in content.chars() {
+            match ch {
+                '\n' | '\r' => {
+                    if !previous_was_line_break {
+                        normalized.push(' ');
+                        previous_was_line_break = true;
+                    }
+                }
+                _ => {
+                    normalized.push(ch);
+                    previous_was_line_break = false;
+                }
+            }
+        }
+
+        normalized
+    }
+
+    pub(super) fn set_text_input_content(&mut self, target: TextInputTarget, content: String) {
+        let content = Self::normalize_text_input_value(&content);
         match target {
             TextInputTarget::Query => self.query = content,
             TextInputTarget::InfoEditor => self.info_editor_input = content,
@@ -439,20 +465,19 @@ impl LauncherView {
         self.text_input_state(target).cursor_offset()
     }
 
-    fn text_input_move_to(&mut self, target: TextInputTarget, offset: usize, cx: &mut Context<Self>) {
+    fn set_cursor_to(&mut self, target: TextInputTarget, offset: usize) {
         let input_state = self.text_input_state_mut(target);
         input_state.selected_range = offset..offset;
         input_state.selection_reversed = false;
         input_state.marked_range = None;
+    }
+
+    fn text_input_move_to(&mut self, target: TextInputTarget, offset: usize, cx: &mut Context<Self>) {
+        self.set_cursor_to(target, offset);
         cx.notify();
     }
 
-    fn text_input_select_to(
-        &mut self,
-        target: TextInputTarget,
-        offset: usize,
-        cx: &mut Context<Self>,
-    ) {
+    fn set_select_to(&mut self, target: TextInputTarget, offset: usize) {
         let input_state = self.text_input_state_mut(target);
         if input_state.selection_reversed {
             input_state.selected_range.start = offset;
@@ -464,6 +489,15 @@ impl LauncherView {
             input_state.selected_range =
                 input_state.selected_range.end..input_state.selected_range.start;
         }
+    }
+
+    fn text_input_select_to(
+        &mut self,
+        target: TextInputTarget,
+        offset: usize,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_select_to(target, offset);
         cx.notify();
     }
 
@@ -531,14 +565,18 @@ impl LauncherView {
             })
             .unwrap_or_else(|| clamp_text_range(&content, &input_state.selected_range));
 
-        let updated_content = content[0..range.start].to_owned() + new_text + &content[range.end..];
+        let normalized_new_text = Self::normalize_text_input_value(new_text);
+        let updated_content =
+            content[0..range.start].to_owned() + &normalized_new_text + &content[range.end..];
         let selected_range = new_selected_range_utf16
             .as_ref()
-            .map(|range_utf16| text_range_from_utf16(new_text, range_utf16))
+            .map(|range_utf16| text_range_from_utf16(&normalized_new_text, range_utf16))
             .map(|new_range| new_range.start + range.start..new_range.end + range.start)
-            .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
-        let marked_range =
-            (mark_text && !new_text.is_empty()).then_some(range.start..range.start + new_text.len());
+            .unwrap_or_else(|| {
+                range.start + normalized_new_text.len()..range.start + normalized_new_text.len()
+            });
+        let marked_range = (mark_text && !normalized_new_text.is_empty())
+            .then_some(range.start..range.start + normalized_new_text.len());
 
         self.set_text_input_content(target, updated_content);
         let input_state = self.text_input_state_mut(target);
@@ -559,7 +597,7 @@ impl LauncherView {
         };
         if self.text_input_state(target).selected_range.is_empty() {
             let previous = self.text_input_previous_boundary(target, self.text_input_cursor_offset(target));
-            self.text_input_select_to(target, previous, cx);
+            self.set_select_to(target, previous);
         }
         self.replace_text_in_range(None, "", window, cx);
     }
@@ -629,8 +667,9 @@ impl LauncherView {
         let Some(target) = self.active_text_input_target(window) else {
             return;
         };
-        self.text_input_move_to(target, 0, cx);
-        self.text_input_select_to(target, self.text_input_content(target).len(), cx);
+        self.set_cursor_to(target, 0);
+        self.set_select_to(target, self.text_input_content(target).len());
+        cx.notify();
     }
 
     pub(super) fn query_home(
@@ -672,16 +711,11 @@ impl LauncherView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(target) = self.active_text_input_target(window) else {
+        if self.active_text_input_target(window).is_none() {
             return;
-        };
+        }
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            let normalized = if target == TextInputTarget::Query {
-                text.replace('\n', " ")
-            } else {
-                text
-            };
-            self.replace_text_in_range(None, &normalized, window, cx);
+            self.replace_text_in_range(None, &text, window, cx);
         }
     }
 
@@ -903,5 +937,17 @@ mod tests {
     fn text_range_from_utf16_clamps_to_current_content() {
         assert_eq!(text_range_from_utf16("", &(4..4)), 0..0);
         assert_eq!(text_range_from_utf16("abc", &(5..5)), 3..3);
+    }
+
+    #[test]
+    fn normalize_text_input_value_replaces_line_break_runs() {
+        assert_eq!(
+            LauncherView::normalize_text_input_value("alpha\r\nbeta\ngamma"),
+            "alpha beta gamma"
+        );
+        assert_eq!(
+            LauncherView::normalize_text_input_value("first\n\nsecond"),
+            "first second"
+        );
     }
 }

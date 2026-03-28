@@ -11,6 +11,9 @@ use std::collections::{HashMap, HashSet};
 #[cfg(target_os = "macos")]
 use toml::Value as TomlValue;
 
+#[cfg(target_os = "macos")]
+const TAG_SEARCH_AUTOCOMPLETE_LIMIT: usize = 6;
+
 impl LauncherView {
     pub(crate) fn new(
         storage: Arc<ClipboardStorage>,
@@ -36,6 +39,7 @@ impl LauncherView {
             next_search_request_id: 0,
             latest_search_request_id: 0,
             query: String::new(),
+            tag_search_suggestions: Vec::new(),
             items: Vec::new(),
             row_presentations: Vec::new(),
             selected_index: 0,
@@ -80,6 +84,7 @@ impl LauncherView {
 
     pub(crate) fn reset_for_show(&mut self) {
         self.query.clear();
+        self.tag_search_suggestions.clear();
         self.query_input_state.reset();
         self.info_editor_input_state.reset();
         self.tag_editor_input_state.reset();
@@ -149,8 +154,48 @@ impl LauncherView {
         self.selected_index = 0;
         self.mark_selection_changed(cx);
         self.reset_results_scroll_to_top();
+        self.refresh_tag_search_suggestions();
         self.schedule_query_refresh();
         cx.notify();
+    }
+
+    fn refresh_tag_search_suggestions(&mut self) {
+        self.tag_search_suggestions = self
+            .storage
+            .suggest_search_tags(&self.query, TAG_SEARCH_AUTOCOMPLETE_LIMIT);
+    }
+
+    fn set_query_text(&mut self, query: String) {
+        self.set_text_input_content(TextInputTarget::Query, query);
+        let cursor = self.query.len();
+        self.query_input_state.selected_range = cursor..cursor;
+        self.query_input_state.selection_reversed = false;
+        self.query_input_state.marked_range = None;
+    }
+
+    pub(crate) fn apply_tag_search_suggestion_index(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(suggestion) = self.tag_search_suggestions.get(index).cloned() else {
+            return;
+        };
+        let Some(next_query) = apply_tag_search_suggestion_to_query(&self.query, &suggestion) else {
+            return;
+        };
+        if next_query == self.query {
+            return;
+        }
+
+        self.set_query_text(next_query);
+        self.queue_text_input_focus(TextInputTarget::Query);
+        self.query_did_change(cx);
+    }
+
+    fn accept_tag_search_autocomplete(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.tag_search_suggestions.is_empty() {
+            return false;
+        }
+
+        self.apply_tag_search_suggestion_index(0, cx);
+        true
     }
 
     pub(crate) fn mark_selection_changed(&mut self, cx: &mut Context<Self>) {
@@ -547,7 +592,7 @@ impl LauncherView {
         };
 
         self.info_editor_target_id = Some(item.id);
-        self.info_editor_input = item.description;
+        self.set_text_input_content(TextInputTarget::InfoEditor, item.description);
         self.info_editor_input_state.reset();
         let cursor = self.info_editor_input.len();
         self.info_editor_input_state.selected_range = cursor..cursor;
@@ -1565,6 +1610,7 @@ impl LauncherView {
         }
 
         self.query.clear();
+        self.tag_search_suggestions.clear();
         let query_cursor = self.query.len();
         self.query_input_state.selected_range = query_cursor..query_cursor;
         self.query_input_state.selection_reversed = false;
@@ -1633,6 +1679,10 @@ impl LauncherView {
         if key == "escape" || key == "esc" {
             self.begin_close_transition(LauncherExitIntent::Hide);
             cx.notify();
+            return;
+        }
+
+        if key == "tab" && no_modifiers && self.accept_tag_search_autocomplete(cx) {
             return;
         }
 
@@ -2350,6 +2400,41 @@ fn preview_for_parameter_candidate(value: &str, max_chars: usize) -> String {
 }
 
 #[cfg(target_os = "macos")]
+fn apply_tag_search_suggestion_to_query(query: &str, suggestion: &str) -> Option<String> {
+    let normalized_suggestion = suggestion.trim().to_ascii_lowercase();
+    if normalized_suggestion.is_empty() {
+        return None;
+    }
+
+    let normalized_query = query.trim_start().to_ascii_lowercase();
+    if !normalized_query.starts_with(':') {
+        return None;
+    }
+
+    let effective_query = normalized_query.trim_start_matches(':');
+    let ends_with_whitespace = effective_query
+        .chars()
+        .last()
+        .is_some_and(|ch| ch.is_whitespace());
+    let mut terms: Vec<String> = effective_query
+        .split_whitespace()
+        .map(|term| term.trim_start_matches(':').trim().to_owned())
+        .filter(|term| !term.is_empty())
+        .collect();
+
+    if !ends_with_whitespace && !terms.is_empty() {
+        terms.pop();
+    }
+
+    if terms.iter().any(|term| term == &normalized_suggestion) {
+        return Some(format!(":{}", terms.join(" ")));
+    }
+
+    terms.push(normalized_suggestion);
+    Some(format!(":{}", terms.join(" ")))
+}
+
+#[cfg(target_os = "macos")]
 fn is_parameter_key_token(value: &str) -> bool {
     let trimmed = value.trim();
     !trimmed.is_empty()
@@ -2484,5 +2569,22 @@ city = "New York"
             "first_name".to_owned(),
         ];
         assert_eq!(first_parameter_name_issue_index(&names), 2);
+    }
+
+    #[test]
+    fn tag_search_suggestion_replaces_last_fragment() {
+        assert_eq!(
+            apply_tag_search_suggestion_to_query(":rust com", "command"),
+            Some(":rust command".to_owned())
+        );
+        assert_eq!(
+            apply_tag_search_suggestion_to_query(":rust ", "command"),
+            Some(":rust command".to_owned())
+        );
+    }
+
+    #[test]
+    fn tag_search_suggestion_requires_tag_mode_query() {
+        assert_eq!(apply_tag_search_suggestion_to_query("rust", "command"), None);
     }
 }

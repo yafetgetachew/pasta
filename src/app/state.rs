@@ -161,6 +161,7 @@ pub(crate) struct LauncherView {
     pub(crate) next_search_request_id: u64,
     pub(crate) latest_search_request_id: u64,
     pub(crate) query: String,
+    pub(crate) tag_search_suggestions: Vec<String>,
     pub(crate) items: Vec<ClipboardRecord>,
     pub(crate) row_presentations: Vec<CachedRowPresentation>,
     pub(crate) selected_index: usize,
