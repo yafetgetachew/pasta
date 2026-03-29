@@ -1,6 +1,8 @@
 #[cfg(target_os = "macos")]
 mod clipboard;
 #[cfg(target_os = "macos")]
+mod files;
+#[cfg(target_os = "macos")]
 mod hotkey;
 #[cfg(target_os = "macos")]
 mod launch_agent;
@@ -18,6 +20,8 @@ pub(crate) use clipboard::{
     clipboard_change_count, clipboard_text_hash, parse_custom_tags_input, process_secret_autoclear,
     read_clipboard_snapshot, should_ignore_self_clipboard_write, show_macos_notification,
 };
+#[cfg(target_os = "macos")]
+pub(crate) use files::{choose_bowl_export_path, choose_bowl_import_path};
 #[cfg(target_os = "macos")]
 pub(crate) use hotkey::setup_hotkey;
 #[cfg(target_os = "macos")]

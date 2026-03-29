@@ -60,6 +60,7 @@ pub(crate) struct CachedRowPresentation {
     pub(crate) created_label: String,
     pub(crate) detected_language: Option<LanguageTag>,
     pub(crate) base_tags: Vec<String>,
+    pub(crate) bowl_name: Option<String>,
     pub(crate) collapsed_preview: String,
     pub(crate) expanded_preview: String,
     pub(crate) expanded_preview_line_count: usize,
@@ -71,7 +72,9 @@ pub(crate) struct CachedRowPresentation {
 impl CachedRowPresentation {
     pub(crate) fn from_record(item: &ClipboardRecord) -> Self {
         let detected_language = detect_language(item.item_type, &item.content);
-        let mut base_tags = visible_tag_chips(item.item_type, detected_language, &item.tags);
+        let bowl_name = bowl_name_from_tags(&item.tags);
+        let visible_tags = tags_without_bowl(&item.tags);
+        let mut base_tags = visible_tag_chips(item.item_type, detected_language, &visible_tags);
         if !item.description.trim().is_empty() {
             base_tags.insert(0, "INFO".to_owned());
         }
@@ -92,6 +95,7 @@ impl CachedRowPresentation {
             created_label: format_timestamp(&item.created_at),
             detected_language,
             base_tags,
+            bowl_name,
             collapsed_preview,
             expanded_preview,
             expanded_preview_line_count,
@@ -153,6 +157,7 @@ pub(crate) struct LauncherView {
     pub(crate) query_input_state: TextInputState,
     pub(crate) info_editor_input_state: TextInputState,
     pub(crate) tag_editor_input_state: TextInputState,
+    pub(crate) bowl_editor_input_state: TextInputState,
     pub(crate) parameter_name_input_state: TextInputState,
     pub(crate) parameter_fill_input_state: TextInputState,
     pub(crate) pending_text_input_focus: Option<TextInputTarget>,
@@ -182,6 +187,9 @@ pub(crate) struct LauncherView {
     pub(crate) tag_editor_input: String,
     pub(crate) tag_editor_select_all: bool,
     pub(crate) tag_editor_mode: TagEditorMode,
+    pub(crate) bowl_editor_target_id: Option<i64>,
+    pub(crate) bowl_editor_input: String,
+    pub(crate) bowl_editor_select_all: bool,
     pub(crate) parameter_editor_target_id: Option<i64>,
     pub(crate) parameter_editor_stage: ParameterEditorStage,
     pub(crate) parameter_editor_force_full: bool,

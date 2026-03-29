@@ -61,8 +61,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "macos")]
 use storage::{
-    ClipboardItemType, ClipboardParameter, ClipboardRecord, ClipboardStorage,
-    render_parameterized_content,
+    BowlExportBundle, BowlExportItem, BowlExportParameter, ClipboardItemType, ClipboardParameter,
+    ClipboardRecord, ClipboardStorage, SearchQuery, bowl_name_from_tags, parse_search_query,
+    render_parameterized_content, tags_without_bowl,
 };
 
 #[cfg(target_os = "macos")]
@@ -283,6 +284,7 @@ enum TextInputTarget {
     Query,
     InfoEditor,
     TagEditor,
+    BowlEditor,
     ParameterName,
     ParameterFill,
 }

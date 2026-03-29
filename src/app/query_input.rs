@@ -311,6 +311,7 @@ impl LauncherView {
     pub(super) fn query_input_enabled(&self) -> bool {
         self.info_editor_target_id.is_none()
             && self.tag_editor_target_id.is_none()
+            && self.bowl_editor_target_id.is_none()
             && self.parameter_editor_target_id.is_none()
             && self.parameter_fill_target_id.is_none()
             && !self.transform_menu_open
@@ -334,6 +335,7 @@ impl LauncherView {
             TextInputTarget::Query => &self.query_input_state,
             TextInputTarget::InfoEditor => &self.info_editor_input_state,
             TextInputTarget::TagEditor => &self.tag_editor_input_state,
+            TextInputTarget::BowlEditor => &self.bowl_editor_input_state,
             TextInputTarget::ParameterName => &self.parameter_name_input_state,
             TextInputTarget::ParameterFill => &self.parameter_fill_input_state,
         }
@@ -344,6 +346,7 @@ impl LauncherView {
             TextInputTarget::Query => &mut self.query_input_state,
             TextInputTarget::InfoEditor => &mut self.info_editor_input_state,
             TextInputTarget::TagEditor => &mut self.tag_editor_input_state,
+            TextInputTarget::BowlEditor => &mut self.bowl_editor_input_state,
             TextInputTarget::ParameterName => &mut self.parameter_name_input_state,
             TextInputTarget::ParameterFill => &mut self.parameter_fill_input_state,
         }
@@ -354,6 +357,7 @@ impl LauncherView {
             TextInputTarget::Query => &self.query,
             TextInputTarget::InfoEditor => &self.info_editor_input,
             TextInputTarget::TagEditor => &self.tag_editor_input,
+            TextInputTarget::BowlEditor => &self.bowl_editor_input,
             TextInputTarget::ParameterName => self
                 .parameter_editor_name_inputs
                 .get(self.parameter_editor_name_focus_index)
@@ -398,6 +402,7 @@ impl LauncherView {
             TextInputTarget::Query => self.query = content,
             TextInputTarget::InfoEditor => self.info_editor_input = content,
             TextInputTarget::TagEditor => self.tag_editor_input = content,
+            TextInputTarget::BowlEditor => self.bowl_editor_input = content,
             TextInputTarget::ParameterName => {
                 if self.parameter_editor_name_inputs.is_empty() {
                     self.parameter_editor_name_inputs.push(String::new());
@@ -436,6 +441,7 @@ impl LauncherView {
             TextInputTarget::Query => self.query_input_enabled(),
             TextInputTarget::InfoEditor => self.info_editor_target_id.is_some(),
             TextInputTarget::TagEditor => self.tag_editor_target_id.is_some(),
+            TextInputTarget::BowlEditor => self.bowl_editor_target_id.is_some(),
             TextInputTarget::ParameterName => {
                 self.parameter_editor_target_id.is_some()
                     && self.parameter_editor_stage == ParameterEditorStage::EnterName
@@ -451,6 +457,7 @@ impl LauncherView {
         [
             TextInputTarget::InfoEditor,
             TextInputTarget::TagEditor,
+            TextInputTarget::BowlEditor,
             TextInputTarget::ParameterName,
             TextInputTarget::ParameterFill,
             TextInputTarget::Query,

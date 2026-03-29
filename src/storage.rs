@@ -26,6 +26,9 @@ const SEMANTIC_EMBEDDING_CACHE_MAX: usize = 12_000;
 const SEMANTIC_SOURCE_TEXT_LIMIT: usize = 4_096;
 const SEARCH_FUZZY_TEXT_LIMIT: usize = 4_096;
 const TAG_ONLY_PREFIX: char = ':';
+const BOWL_TAG_PREFIX: &str = "bowl:";
+const SEARCH_COMMAND_BOWL: &str = "b";
+const SEARCH_COMMAND_EXPORT: &str = "e";
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum ClipboardItemType {
@@ -79,6 +82,47 @@ pub struct ClipboardRecord {
     pub tags: Vec<String>,
     pub parameters: Vec<ClipboardParameter>,
     pub created_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SearchQuery {
+    Default { effective_query: String },
+    TagOnly { effective_query: String },
+    Bowl { bowl_query: String },
+    ExportBowl { bowl_query: String },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct BowlExportBundle {
+    pub(crate) kind: String,
+    pub(crate) version: u8,
+    pub(crate) bowl: String,
+    pub(crate) exported_at: String,
+    pub(crate) items: Vec<BowlExportItem>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct BowlExportItem {
+    pub(crate) item_type: String,
+    pub(crate) content: String,
+    pub(crate) description: String,
+    #[serde(default)]
+    pub(crate) tags: Vec<String>,
+    #[serde(default)]
+    pub(crate) parameters: Vec<BowlExportParameter>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct BowlExportParameter {
+    pub(crate) name: String,
+    #[serde(default, alias = "target")]
+    pub(crate) default_value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BowlImportSummary {
+    pub(crate) bowl: String,
+    pub(crate) imported_count: usize,
 }
 
 #[derive(Debug)]
@@ -238,17 +282,28 @@ impl ClipboardStorage {
     }
 
     pub fn search_items(&self, query: &str, limit: usize) -> Result<Vec<ClipboardRecord>> {
-        let (effective_query, tag_only) = normalize_search_query(query);
+        let parsed_query = parse_search_query(query);
+        let (effective_query, tag_only, bowl_only) = match &parsed_query {
+            SearchQuery::Default { effective_query } => (effective_query.as_str(), false, false),
+            SearchQuery::TagOnly { effective_query } => (effective_query.as_str(), true, false),
+            SearchQuery::Bowl { bowl_query } | SearchQuery::ExportBowl { bowl_query } => {
+                (bowl_query.as_str(), false, true)
+            }
+        };
+        if bowl_only {
+            return Ok(self.search_items_by_bowl(effective_query, limit));
+        }
+
         let use_semantic_search = !tag_only
             && effective_query.chars().count() >= SEMANTIC_MIN_QUERY_CHARS
             && !effective_query.is_empty();
         let query_terms = if effective_query.is_empty() {
             Vec::new()
         } else {
-            semantic_tokenize(&effective_query)
+            semantic_tokenize(effective_query)
         };
         let query_embedding =
-            use_semantic_search.then(|| semantic_embedding(&effective_query, &query_terms));
+            use_semantic_search.then(|| semantic_embedding(effective_query, &query_terms));
         let index = self
             .memory_index
             .lock()
@@ -271,7 +326,7 @@ impl ClipboardStorage {
                 continue;
             }
 
-            let lexical_match = record_matches_query(record, &effective_query, tag_only);
+            let lexical_match = record_matches_query(record, effective_query, tag_only);
             if !use_semantic_search {
                 if lexical_match {
                     output.push(record.clone());
@@ -284,7 +339,7 @@ impl ClipboardStorage {
 
             if lexical_match {
                 lexical_hits += 1;
-                let lexical_score = lexical_match_score(record, &effective_query, &query_terms);
+                let lexical_score = lexical_match_score(record, effective_query, &query_terms);
                 ranked.push(ScoredRecord {
                     record: record.clone(),
                     semantic_score: 0.0,
@@ -314,8 +369,9 @@ impl ClipboardStorage {
             } else {
                 indexed.content_hash.as_str()
             };
+            let semantic_seed_terms = tags_without_bowl(&record.tags);
             let record_embedding =
-                self.cached_semantic_embedding(cache_key, &record.content, &record.tags);
+                self.cached_semantic_embedding(cache_key, &record.content, &semantic_seed_terms);
             let semantic_score = cosine_similarity(query_embedding, &record_embedding);
 
             if semantic_score >= SEMANTIC_MIN_MATCH_SCORE {
@@ -344,15 +400,89 @@ impl ClipboardStorage {
         Ok(output)
     }
 
-    pub fn suggest_search_tags(&self, query: &str, limit: usize) -> Vec<String> {
+    pub fn suggest_search_tokens(&self, query: &str, limit: usize) -> Vec<String> {
         if limit == 0 {
             return Vec::new();
         }
 
-        let Some(context) = tag_search_autocomplete_context(query) else {
-            return Vec::new();
-        };
+        match parse_search_query(query) {
+            SearchQuery::TagOnly { .. } => {
+                let Some(context) = tag_search_autocomplete_context(query) else {
+                    return Vec::new();
+                };
 
+                let index = self
+                    .memory_index
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut candidate_counts: HashMap<String, usize> = HashMap::new();
+
+                for id in &index.order_desc_ids {
+                    let Some(indexed) = index.by_id.get(id) else {
+                        continue;
+                    };
+
+                    for candidate in searchable_tag_terms(&indexed.record) {
+                        if tag_search_suggestion_match_rank(&candidate, &context).is_some() {
+                            *candidate_counts.entry(candidate).or_insert(0) += 1;
+                        }
+                    }
+                }
+
+                let mut suggestions: Vec<(String, u8, usize)> = candidate_counts
+                    .into_iter()
+                    .filter_map(|(candidate, count)| {
+                        let rank = tag_search_suggestion_match_rank(&candidate, &context)?;
+                        Some((candidate, rank, count))
+                    })
+                    .collect();
+
+                suggestions.sort_by(|left, right| {
+                    left.1
+                        .cmp(&right.1)
+                        .then_with(|| right.2.cmp(&left.2))
+                        .then_with(|| left.0.len().cmp(&right.0.len()))
+                        .then_with(|| left.0.cmp(&right.0))
+                });
+
+                suggestions
+                    .into_iter()
+                    .take(limit)
+                    .map(|(candidate, _, _)| candidate)
+                    .collect()
+            }
+            SearchQuery::Bowl { bowl_query } | SearchQuery::ExportBowl { bowl_query } => {
+                self.suggest_bowl_names(&bowl_query, limit)
+            }
+            SearchQuery::Default { .. } => Vec::new(),
+        }
+    }
+
+    fn search_items_by_bowl(&self, bowl_query: &str, limit: usize) -> Vec<ClipboardRecord> {
+        let normalized_query = bowl_query.trim().to_ascii_lowercase();
+        let index = self
+            .memory_index
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut output = Vec::new();
+
+        for id in &index.order_desc_ids {
+            let Some(indexed) = index.by_id.get(id) else {
+                continue;
+            };
+            if record_matches_bowl(&indexed.record, &normalized_query) {
+                output.push(indexed.record.clone());
+                if output.len() >= limit {
+                    break;
+                }
+            }
+        }
+
+        output
+    }
+
+    fn suggest_bowl_names(&self, bowl_query: &str, limit: usize) -> Vec<String> {
+        let normalized_query = bowl_query.trim().to_ascii_lowercase();
         let index = self
             .memory_index
             .lock()
@@ -363,18 +493,18 @@ impl ClipboardStorage {
             let Some(indexed) = index.by_id.get(id) else {
                 continue;
             };
-
-            for candidate in searchable_tag_terms(&indexed.record) {
-                if tag_search_suggestion_match_rank(&candidate, &context).is_some() {
-                    *candidate_counts.entry(candidate).or_insert(0) += 1;
-                }
+            let Some(candidate) = bowl_name_from_tags(&indexed.record.tags) else {
+                continue;
+            };
+            if bowl_suggestion_match_rank(&candidate, &normalized_query).is_some() {
+                *candidate_counts.entry(candidate).or_insert(0) += 1;
             }
         }
 
         let mut suggestions: Vec<(String, u8, usize)> = candidate_counts
             .into_iter()
             .filter_map(|(candidate, count)| {
-                let rank = tag_search_suggestion_match_rank(&candidate, &context)?;
+                let rank = bowl_suggestion_match_rank(&candidate, &normalized_query)?;
                 Some((candidate, rank, count))
             })
             .collect();
@@ -576,6 +706,88 @@ impl ClipboardStorage {
         Ok(true)
     }
 
+    pub fn set_item_bowl(&self, id: i64, bowl_name: Option<&str>) -> Result<bool> {
+        let conn = self.open()?;
+        let existing_tags_json: Option<String> = conn
+            .query_row(
+                "SELECT tags FROM clipboard_items WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(existing_tags_json) = existing_tags_json else {
+            return Ok(false);
+        };
+
+        let tags: Vec<String> = serde_json::from_str(&existing_tags_json).unwrap_or_default();
+        let mut filtered: Vec<String> = tags.into_iter().filter(|tag| !is_bowl_tag(tag)).collect();
+        if let Some(normalized_bowl) = bowl_name.and_then(normalize_bowl_name) {
+            filtered.push(make_bowl_tag(&normalized_bowl));
+        }
+
+        filtered.sort_unstable();
+        filtered.dedup();
+        let next_tags_json = serde_json::to_string(&filtered)?;
+        if next_tags_json == existing_tags_json {
+            return Ok(false);
+        }
+
+        conn.execute(
+            "UPDATE clipboard_items SET tags = ?1 WHERE id = ?2",
+            params![next_tags_json, id],
+        )?;
+        self.sync_index_record_from_db(id)?;
+        Ok(true)
+    }
+
+    pub fn items_in_bowl(&self, bowl_name: &str) -> Vec<ClipboardRecord> {
+        let Some(normalized_bowl) = normalize_bowl_name(bowl_name) else {
+            return Vec::new();
+        };
+
+        let index = self
+            .memory_index
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut output = Vec::new();
+        for id in &index.order_desc_ids {
+            let Some(indexed) = index.by_id.get(id) else {
+                continue;
+            };
+            let Some(candidate) = bowl_name_from_tags(&indexed.record.tags) else {
+                continue;
+            };
+            if candidate.eq_ignore_ascii_case(&normalized_bowl) {
+                output.push(indexed.record.clone());
+            }
+        }
+
+        output
+    }
+
+    pub fn import_bowl_bundle(&self, bundle: &BowlExportBundle) -> Result<BowlImportSummary> {
+        if bundle.kind.trim() != "pasta-bowl" {
+            return Err(anyhow!("unsupported bowl bundle kind"));
+        }
+        if bundle.version != 1 {
+            return Err(anyhow!("unsupported bowl bundle version"));
+        }
+
+        let normalized_bowl =
+            normalize_bowl_name(&bundle.bowl).context("bowl name is missing or invalid")?;
+        let mut imported_count = 0_usize;
+        for item in &bundle.items {
+            if self.upsert_imported_bowl_item(item, &normalized_bowl)? {
+                imported_count += 1;
+            }
+        }
+
+        Ok(BowlImportSummary {
+            bowl: normalized_bowl,
+            imported_count,
+        })
+    }
+
     pub fn upsert_item_parameter(&self, id: i64, name: &str, target: &str) -> Result<bool> {
         let normalized_name = name.trim();
         let normalized_target = target.trim();
@@ -661,6 +873,85 @@ impl ClipboardStorage {
             params![normalized, id],
         )?;
         self.sync_index_record_from_db(id)?;
+        Ok(true)
+    }
+
+    fn upsert_imported_bowl_item(&self, item: &BowlExportItem, bowl_name: &str) -> Result<bool> {
+        let item_type = ClipboardItemType::from_str(item.item_type.trim());
+        if item_type == ClipboardItemType::Password {
+            return Ok(false);
+        }
+
+        let (rehydrated_content, parameters) = rehydrate_bowl_export_item(item);
+        let normalized_content = rehydrated_content.trim();
+        if normalized_content.is_empty() {
+            return Err(anyhow!("imported snippet content is empty"));
+        }
+
+        let content_hash = content_hash(normalized_content);
+        let mut tags = tags_without_bowl(&item.tags);
+        let mut seen: HashSet<String> = tags.iter().map(|tag| tag.to_ascii_lowercase()).collect();
+        let bowl_tag = make_bowl_tag(bowl_name);
+        if seen.insert(bowl_tag.to_ascii_lowercase()) {
+            tags.push(bowl_tag);
+        }
+
+        let tags_json = serde_json::to_string(&tags)?;
+        let parameters_json = serde_json::to_string(&parameters)?;
+        let description = item.description.trim().to_owned();
+        let (stored_content, is_encrypted) = if item_type == ClipboardItemType::Password {
+            (self.crypto.encrypt(normalized_content)?, 1_i64)
+        } else {
+            (normalized_content.to_owned(), 0_i64)
+        };
+
+        let mut conn = self.open()?;
+        let tx = conn.transaction()?;
+        let existing_id: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM clipboard_items WHERE content_hash = ?1 ORDER BY id DESC LIMIT 1",
+                params![content_hash],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        let record_id = if let Some(existing_id) = existing_id {
+            tx.execute(
+                "UPDATE clipboard_items
+                 SET item_type = ?1, content = ?2, is_encrypted = ?3, tags = ?4, parameters = ?5, description = ?6
+                 WHERE id = ?7",
+                params![
+                    item_type.as_str(),
+                    stored_content,
+                    is_encrypted,
+                    tags_json,
+                    parameters_json,
+                    description,
+                    existing_id
+                ],
+            )?;
+            existing_id
+        } else {
+            let created_at = Utc::now().to_rfc3339();
+            tx.execute(
+                "INSERT INTO clipboard_items (item_type, content, is_encrypted, tags, parameters, description, content_hash, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    item_type.as_str(),
+                    stored_content,
+                    is_encrypted,
+                    tags_json,
+                    parameters_json,
+                    description,
+                    content_hash,
+                    created_at
+                ],
+            )?;
+            tx.last_insert_rowid()
+        };
+
+        tx.commit()?;
+        self.sync_index_record_from_db(record_id)?;
         Ok(true)
     }
 
@@ -869,19 +1160,138 @@ impl ClipboardStorage {
     }
 }
 
-fn normalize_search_query(query: &str) -> (String, bool) {
-    let normalized = query.trim().to_lowercase();
-    let tag_only = normalized.starts_with(TAG_ONLY_PREFIX);
-    let effective_query = if tag_only {
-        normalized
-            .trim_start_matches(TAG_ONLY_PREFIX)
-            .trim()
-            .to_owned()
-    } else {
-        normalized
+pub(crate) fn parse_search_query(query: &str) -> SearchQuery {
+    let normalized = query.trim().to_ascii_lowercase();
+    if !normalized.starts_with(TAG_ONLY_PREFIX) {
+        return SearchQuery::Default {
+            effective_query: normalized,
+        };
+    }
+
+    let effective_query = normalized
+        .trim_start_matches(TAG_ONLY_PREFIX)
+        .trim_start()
+        .to_owned();
+    if let Some(bowl_query) = search_command_argument(&effective_query, SEARCH_COMMAND_BOWL) {
+        return SearchQuery::Bowl { bowl_query };
+    }
+    if let Some(bowl_query) = search_command_argument(&effective_query, SEARCH_COMMAND_EXPORT) {
+        return SearchQuery::ExportBowl { bowl_query };
+    }
+
+    SearchQuery::TagOnly { effective_query }
+}
+
+fn search_command_argument(query: &str, command: &str) -> Option<String> {
+    if query == command {
+        return Some(String::new());
+    }
+    let remainder = query.strip_prefix(command)?;
+    let first = remainder.chars().next()?;
+    if !first.is_whitespace() {
+        return None;
+    }
+    Some(remainder.trim().to_owned())
+}
+
+fn is_bowl_tag(tag: &str) -> bool {
+    tag.trim().to_ascii_lowercase().starts_with(BOWL_TAG_PREFIX)
+}
+
+fn make_bowl_tag(bowl_name: &str) -> String {
+    format!("BOWL:{bowl_name}")
+}
+
+pub(crate) fn bowl_name_from_tags(tags: &[String]) -> Option<String> {
+    tags.iter().find_map(|tag| {
+        let trimmed = tag.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        let stripped = lower.strip_prefix(BOWL_TAG_PREFIX)?;
+        if stripped.is_empty() {
+            return None;
+        }
+
+        Some(trimmed[trimmed.len() - stripped.len()..].to_owned())
+    })
+}
+
+pub(crate) fn tags_without_bowl(tags: &[String]) -> Vec<String> {
+    tags.iter()
+        .filter(|tag| !is_bowl_tag(tag))
+        .cloned()
+        .collect()
+}
+
+fn normalize_bowl_name(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let stripped = trimmed
+        .strip_prefix("bowl:")
+        .or_else(|| trimmed.strip_prefix("BOWL:"))
+        .unwrap_or(trimmed);
+    normalize_custom_tag(stripped)
+}
+
+fn bowl_parameter_placeholder(name: &str) -> String {
+    format!("{{{{{}}}}}", name.trim())
+}
+
+fn rehydrate_bowl_export_item(item: &BowlExportItem) -> (String, Vec<ClipboardParameter>) {
+    if item.parameters.is_empty() {
+        return (item.content.clone(), Vec::new());
+    }
+
+    let mut output = item.content.clone();
+    let mut replacements = Vec::new();
+    let mut parameters = Vec::new();
+
+    for (idx, parameter) in item.parameters.iter().enumerate() {
+        let name = parameter.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+
+        let placeholder = bowl_parameter_placeholder(name);
+        let mut marker = format!("\u{001F}PASTA_BOWL_PARAM_{idx}\u{001E}");
+        while output.contains(&marker) {
+            marker.push('_');
+        }
+        output = output.replace(&placeholder, &marker);
+
+        let default_value = parameter.default_value.trim().to_owned();
+        let target = if default_value.is_empty() {
+            placeholder.clone()
+        } else {
+            default_value.clone()
+        };
+        replacements.push((marker, target.clone()));
+        parameters.push(ClipboardParameter {
+            name: name.to_owned(),
+            target,
+        });
+    }
+
+    for (marker, replacement) in replacements {
+        output = output.replace(&marker, &replacement);
+    }
+
+    (output, parameters)
+}
+
+fn record_matches_bowl(record: &ClipboardRecord, bowl_query: &str) -> bool {
+    let Some(candidate) = bowl_name_from_tags(&record.tags) else {
+        return false;
     };
 
-    (effective_query, tag_only)
+    let normalized_candidate = candidate.to_ascii_lowercase();
+    if bowl_query.is_empty() {
+        return true;
+    }
+
+    normalized_candidate.contains(bowl_query)
+        || (bowl_query.len() >= 3
+            && bowl_query.contains(&normalized_candidate)
+            && normalized_candidate.len() >= 2)
+        || fuzzy_token_match(bowl_query, &normalized_candidate)
 }
 
 struct TagSearchAutocompleteContext {
@@ -890,12 +1300,16 @@ struct TagSearchAutocompleteContext {
 }
 
 fn tag_search_autocomplete_context(query: &str) -> Option<TagSearchAutocompleteContext> {
-    let normalized = query.trim_start().to_lowercase();
-    if !normalized.starts_with(TAG_ONLY_PREFIX) {
+    let trimmed_start = query.trim_start();
+    let effective_query = trimmed_start.strip_prefix(TAG_ONLY_PREFIX)?.trim_start();
+    let trimmed_end = effective_query.trim_end();
+    if trimmed_end == SEARCH_COMMAND_BOWL
+        || trimmed_end == SEARCH_COMMAND_EXPORT
+        || trimmed_end.starts_with(&format!("{SEARCH_COMMAND_BOWL} "))
+        || trimmed_end.starts_with(&format!("{SEARCH_COMMAND_EXPORT} "))
+    {
         return None;
     }
-
-    let effective_query = normalized.trim_start_matches(TAG_ONLY_PREFIX);
     let ends_with_whitespace = effective_query
         .chars()
         .last()
@@ -939,6 +1353,30 @@ fn tag_search_suggestion_match_rank(
         return Some(1);
     }
     if fuzzy_token_match(&context.fragment, candidate) {
+        return Some(2);
+    }
+
+    None
+}
+
+fn bowl_suggestion_match_rank(candidate: &str, fragment: &str) -> Option<u8> {
+    let normalized_candidate = candidate.to_ascii_lowercase();
+    if normalized_candidate.len() < 2 {
+        return None;
+    }
+    if fragment.is_empty() {
+        return Some(3);
+    }
+    if normalized_candidate == fragment {
+        return None;
+    }
+    if normalized_candidate.starts_with(fragment) {
+        return Some(0);
+    }
+    if normalized_candidate.contains(fragment) {
+        return Some(1);
+    }
+    if fuzzy_token_match(fragment, &normalized_candidate) {
         return Some(2);
     }
 
@@ -2126,6 +2564,7 @@ fn lexical_match_score(record: &ClipboardRecord, query: &str, query_terms: &[Str
     let tags: Vec<String> = record
         .tags
         .iter()
+        .filter(|tag| !is_bowl_tag(tag))
         .map(|tag| tag.to_ascii_lowercase())
         .collect();
     let mut score = 0.0_f32;
@@ -2510,6 +2949,9 @@ fn searchable_tag_terms(record: &ClipboardRecord) -> HashSet<String> {
     insert_item_type_aliases(record.item_type, &mut terms);
 
     for raw in &record.tags {
+        if is_bowl_tag(raw) {
+            continue;
+        }
         insert_tag_variants(raw, &mut terms);
     }
 
@@ -2552,7 +2994,7 @@ fn searchable_tag_terms(record: &ClipboardRecord) -> HashSet<String> {
 
 fn insert_tag_variants(raw: &str, terms: &mut HashSet<String>) {
     let normalized = raw.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
+    if normalized.is_empty() || normalized.starts_with(BOWL_TAG_PREFIX) {
         return;
     }
 
@@ -2932,12 +3374,88 @@ mod tests {
 
     #[test]
     fn normalize_search_query_uses_colon_for_tag_mode() {
-        assert_eq!(normalize_search_query(":rs"), ("rs".to_owned(), true));
         assert_eq!(
-            normalize_search_query(" : lang:rust command "),
-            ("lang:rust command".to_owned(), true)
+            parse_search_query(":rs"),
+            SearchQuery::TagOnly {
+                effective_query: "rs".to_owned()
+            }
         );
-        assert_eq!(normalize_search_query("/rs"), ("/rs".to_owned(), false));
+        assert_eq!(
+            parse_search_query(" : lang:rust command "),
+            SearchQuery::TagOnly {
+                effective_query: "lang:rust command".to_owned()
+            }
+        );
+        assert_eq!(
+            parse_search_query("/rs"),
+            SearchQuery::Default {
+                effective_query: "/rs".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn parse_search_query_routes_bowl_commands() {
+        assert_eq!(
+            parse_search_query(":b ops"),
+            SearchQuery::Bowl {
+                bowl_query: "ops".to_owned()
+            }
+        );
+        assert_eq!(
+            parse_search_query(":e ops"),
+            SearchQuery::ExportBowl {
+                bowl_query: "ops".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn rehydrate_bowl_export_item_restores_defaults_and_placeholders() {
+        let item = BowlExportItem {
+            item_type: "command".to_owned(),
+            content: "kubectl logs -f deployment/{{deployment}} -n {{namespace}} --tail={{lines}}"
+                .to_owned(),
+            description: "Stream logs from a deployment".to_owned(),
+            tags: vec!["k8s".to_owned()],
+            parameters: vec![
+                BowlExportParameter {
+                    name: "deployment".to_owned(),
+                    default_value: String::new(),
+                },
+                BowlExportParameter {
+                    name: "namespace".to_owned(),
+                    default_value: "default".to_owned(),
+                },
+                BowlExportParameter {
+                    name: "lines".to_owned(),
+                    default_value: "100".to_owned(),
+                },
+            ],
+        };
+
+        let (content, parameters) = rehydrate_bowl_export_item(&item);
+        assert_eq!(
+            content,
+            "kubectl logs -f deployment/{{deployment}} -n default --tail=100"
+        );
+        assert_eq!(
+            parameters,
+            vec![
+                ClipboardParameter {
+                    name: "deployment".to_owned(),
+                    target: "{{deployment}}".to_owned(),
+                },
+                ClipboardParameter {
+                    name: "namespace".to_owned(),
+                    target: "default".to_owned(),
+                },
+                ClipboardParameter {
+                    name: "lines".to_owned(),
+                    target: "100".to_owned(),
+                },
+            ]
+        );
     }
 
     #[test]

@@ -31,6 +31,7 @@ impl LauncherView {
             query_input_state: TextInputState::new(cx),
             info_editor_input_state: TextInputState::new(cx),
             tag_editor_input_state: TextInputState::new(cx),
+            bowl_editor_input_state: TextInputState::new(cx),
             parameter_name_input_state: TextInputState::new(cx),
             parameter_fill_input_state: TextInputState::new(cx),
             pending_text_input_focus: None,
@@ -60,6 +61,9 @@ impl LauncherView {
             tag_editor_input: String::new(),
             tag_editor_select_all: false,
             tag_editor_mode: TagEditorMode::Add,
+            bowl_editor_target_id: None,
+            bowl_editor_input: String::new(),
+            bowl_editor_select_all: false,
             parameter_editor_target_id: None,
             parameter_editor_stage: ParameterEditorStage::SelectValue,
             parameter_editor_force_full: true,
@@ -88,6 +92,7 @@ impl LauncherView {
         self.query_input_state.reset();
         self.info_editor_input_state.reset();
         self.tag_editor_input_state.reset();
+        self.bowl_editor_input_state.reset();
         self.parameter_name_input_state.reset();
         self.parameter_fill_input_state.reset();
         self.pending_text_input_focus = Some(TextInputTarget::Query);
@@ -105,6 +110,9 @@ impl LauncherView {
         self.tag_editor_input.clear();
         self.tag_editor_select_all = false;
         self.tag_editor_mode = TagEditorMode::Add;
+        self.bowl_editor_target_id = None;
+        self.bowl_editor_input.clear();
+        self.bowl_editor_select_all = false;
         self.parameter_editor_target_id = None;
         self.parameter_editor_stage = ParameterEditorStage::SelectValue;
         self.parameter_editor_force_full = true;
@@ -162,7 +170,7 @@ impl LauncherView {
     fn refresh_tag_search_suggestions(&mut self) {
         self.tag_search_suggestions = self
             .storage
-            .suggest_search_tags(&self.query, TAG_SEARCH_AUTOCOMPLETE_LIMIT);
+            .suggest_search_tokens(&self.query, TAG_SEARCH_AUTOCOMPLETE_LIMIT);
     }
 
     fn set_query_text(&mut self, query: String) {
@@ -177,7 +185,7 @@ impl LauncherView {
         let Some(suggestion) = self.tag_search_suggestions.get(index).cloned() else {
             return;
         };
-        let Some(next_query) = apply_tag_search_suggestion_to_query(&self.query, &suggestion) else {
+        let Some(next_query) = apply_search_suggestion_to_query(&self.query, &suggestion) else {
             return;
         };
         if next_query == self.query {
@@ -681,6 +689,295 @@ impl LauncherView {
         cx.notify();
     }
 
+    pub(crate) fn start_bowl_editor_for_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.items.get(self.selected_index).cloned() else {
+            return;
+        };
+
+        self.info_editor_target_id = None;
+        self.info_editor_input.clear();
+        self.info_editor_input_state.reset();
+        self.info_editor_select_all = false;
+        self.tag_editor_target_id = None;
+        self.tag_editor_input.clear();
+        self.tag_editor_input_state.reset();
+        self.tag_editor_select_all = false;
+        self.tag_editor_mode = TagEditorMode::Add;
+        self.bowl_editor_target_id = Some(item.id);
+        self.bowl_editor_input = bowl_name_from_tags(&item.tags).unwrap_or_default();
+        self.bowl_editor_input_state.reset();
+        if self.bowl_editor_input.is_empty() {
+            self.bowl_editor_input_state.selected_range = 0..0;
+            self.bowl_editor_select_all = false;
+        } else {
+            self.bowl_editor_input_state.selected_range = 0..self.bowl_editor_input.len();
+            self.bowl_editor_select_all = true;
+        }
+        self.bowl_editor_input_state.selection_reversed = false;
+        self.bowl_editor_input_state.marked_range = None;
+        self.parameter_editor_target_id = None;
+        self.parameter_editor_selected_targets.clear();
+        self.parameter_editor_name_inputs.clear();
+        self.parameter_name_input_state.reset();
+        self.parameter_editor_name_focus_index = 0;
+        self.parameter_editor_name_select_all = false;
+        self.parameter_editor_stage = ParameterEditorStage::SelectValue;
+        self.parameter_editor_force_full = true;
+        self.parameter_fill_target_id = None;
+        self.parameter_fill_values.clear();
+        self.parameter_fill_input_state.reset();
+        self.parameter_fill_focus_index = 0;
+        self.parameter_fill_select_all = false;
+        self.transform_menu_open = false;
+        self.queue_text_input_focus(TextInputTarget::BowlEditor);
+        cx.notify();
+    }
+
+    pub(crate) fn commit_bowl_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(item_id) = self.bowl_editor_target_id else {
+            return;
+        };
+
+        let parsed = parse_custom_tags_input(&self.bowl_editor_input);
+        let requested_bowl = match parsed.as_slice() {
+            [] => None,
+            [bowl] => Some(bowl.as_str()),
+            _ => {
+                show_macos_notification("Pasta", "Enter a single bowl name.");
+                return;
+            }
+        };
+
+        match self.storage.set_item_bowl(item_id, requested_bowl) {
+            Ok(changed) => {
+                let previous_index = self.selected_index;
+                self.refresh_items();
+                if let Some(ix) = self.items.iter().position(|entry| entry.id == item_id) {
+                    self.selected_index = ix;
+                    self.selection_changed_at = Instant::now();
+                    self.results_scroll.scroll_to_item(ix, ScrollStrategy::Center);
+                } else if !self.items.is_empty() {
+                    self.selected_index = previous_index.min(self.items.len().saturating_sub(1));
+                    self.selection_changed_at = Instant::now();
+                    self.results_scroll
+                        .scroll_to_item(self.selected_index, ScrollStrategy::Center);
+                }
+
+                self.bowl_editor_target_id = None;
+                self.bowl_editor_input.clear();
+                self.bowl_editor_input_state.reset();
+                self.bowl_editor_select_all = false;
+                self.queue_text_input_focus(TextInputTarget::Query);
+                if changed {
+                    show_macos_notification(
+                        "Pasta",
+                        if requested_bowl.is_some() {
+                            "Bowl saved."
+                        } else {
+                            "Bowl cleared."
+                        },
+                    );
+                } else {
+                    show_macos_notification(
+                        "Pasta",
+                        if requested_bowl.is_some() {
+                            "Bowl unchanged."
+                        } else {
+                            "No bowl to clear."
+                        },
+                    );
+                }
+                cx.notify();
+            }
+            Err(err) => {
+                eprintln!("warning: failed to update bowl: {err}");
+                show_macos_notification("Pasta", "Failed to update bowl.");
+            }
+        }
+    }
+
+    pub(crate) fn cancel_bowl_editor(&mut self, cx: &mut Context<Self>) {
+        self.bowl_editor_target_id = None;
+        self.bowl_editor_input.clear();
+        self.bowl_editor_input_state.reset();
+        self.bowl_editor_select_all = false;
+        self.queue_text_input_focus(TextInputTarget::Query);
+        cx.notify();
+    }
+
+    pub(crate) fn remove_bowl_from_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(item_id) = self.items.get(self.selected_index).map(|item| item.id) else {
+            return;
+        };
+
+        match self.storage.set_item_bowl(item_id, None) {
+            Ok(changed) => {
+                if changed {
+                    let previous_index = self.selected_index;
+                    self.refresh_items();
+                    if let Some(ix) = self.items.iter().position(|entry| entry.id == item_id) {
+                        self.selected_index = ix;
+                        self.selection_changed_at = Instant::now();
+                        self.results_scroll.scroll_to_item(ix, ScrollStrategy::Center);
+                    } else if !self.items.is_empty() {
+                        self.selected_index = previous_index.min(self.items.len().saturating_sub(1));
+                        self.selection_changed_at = Instant::now();
+                        self.results_scroll
+                            .scroll_to_item(self.selected_index, ScrollStrategy::Center);
+                    }
+                    show_macos_notification("Pasta", "Removed from bowl.");
+                    cx.notify();
+                } else {
+                    show_macos_notification("Pasta", "Snippet is not in a bowl.");
+                }
+            }
+            Err(err) => {
+                eprintln!("warning: failed to remove bowl: {err}");
+                show_macos_notification("Pasta", "Failed to remove bowl.");
+            }
+        }
+    }
+
+    pub(crate) fn export_bowl_from_query(&mut self) {
+        let SearchQuery::ExportBowl { bowl_query } = parse_search_query(&self.query) else {
+            return;
+        };
+        self.export_bowl_named(&bowl_query);
+    }
+
+    fn export_bowl_named(&mut self, bowl_name: &str) {
+        let bowl_name = bowl_name.trim();
+        if bowl_name.is_empty() {
+            show_macos_notification(
+                "Pasta",
+                "Export denied: enter a bowl name after :e so Pasta knows which bowl to export.",
+            );
+            return;
+        }
+
+        let items = self.storage.items_in_bowl(bowl_name);
+        if items.is_empty() {
+            show_macos_notification(
+                "Pasta",
+                &format!(
+                    "Export denied: bowl {bowl_name} has no snippets, so there is nothing to export."
+                ),
+            );
+            return;
+        }
+
+        if let Some(item) = items
+            .iter()
+            .find(|item| item.item_type != ClipboardItemType::Password && item.description.trim().is_empty())
+        {
+            show_macos_notification(
+                "Pasta",
+                &format!(
+                    "Export denied: snippet #{} doesn't have a description. Every non-secret snippet in a bowl needs a description before export.",
+                    item.id
+                ),
+            );
+            return;
+        }
+
+        let bundle = build_bowl_export_bundle(bowl_name, &items);
+        let Some(path) = choose_bowl_export_path(
+            "Export Pasta bowl",
+            &suggested_bowl_export_filename(&bundle.bowl),
+        ) else {
+            return;
+        };
+
+        let yaml = match serde_yaml::to_string(&bundle) {
+            Ok(yaml) => yaml,
+            Err(err) => {
+                eprintln!("warning: failed to serialize bowl export: {err}");
+                show_macos_notification("Pasta", "Failed to export bowl.");
+                return;
+            }
+        };
+
+        if let Err(err) = std::fs::write(&path, yaml) {
+            eprintln!("warning: failed to write bowl export file: {err}");
+            show_macos_notification("Pasta", "Failed to export bowl.");
+            return;
+        }
+
+        let excluded_secret_count = items
+            .iter()
+            .filter(|item| item.item_type == ClipboardItemType::Password)
+            .count();
+        show_macos_notification(
+            "Pasta",
+            &if excluded_secret_count == 0 {
+                format!("Exported {} snippets from {}.", bundle.items.len(), bundle.bowl)
+            } else {
+                format!(
+                    "Exported {} entries from {}. {} secret {} redacted.",
+                    bundle.items.len(),
+                    bundle.bowl,
+                    excluded_secret_count,
+                    if excluded_secret_count == 1 { "was" } else { "were" }
+                )
+            },
+        );
+    }
+
+    pub(crate) fn import_bowl_from_picker(&mut self, cx: &mut Context<Self>) {
+        self.suppress_auto_hide = true;
+        let Some(path) = choose_bowl_import_path("Import Pasta bowl") else {
+            self.suppress_auto_hide = false;
+            self.suppress_auto_hide_until = Some(Instant::now() + Duration::from_millis(350));
+            cx.activate(true);
+            self.queue_text_input_focus(TextInputTarget::Query);
+            cx.notify();
+            return;
+        };
+        self.suppress_auto_hide = false;
+        self.suppress_auto_hide_until = Some(Instant::now() + Duration::from_millis(350));
+        cx.activate(true);
+
+        let yaml = match std::fs::read_to_string(&path) {
+            Ok(yaml) => yaml,
+            Err(err) => {
+                eprintln!("warning: failed to read bowl import file: {err}");
+                show_macos_notification("Pasta", "Failed to read bowl file.");
+                self.queue_text_input_focus(TextInputTarget::Query);
+                cx.notify();
+                return;
+            }
+        };
+
+        let bundle = match serde_yaml::from_str::<BowlExportBundle>(&yaml) {
+            Ok(bundle) => bundle,
+            Err(err) => {
+                eprintln!("warning: failed to parse bowl import file: {err}");
+                show_macos_notification("Pasta", "Failed to parse bowl file.");
+                self.queue_text_input_focus(TextInputTarget::Query);
+                cx.notify();
+                return;
+            }
+        };
+
+        match self.storage.import_bowl_bundle(&bundle) {
+            Ok(summary) => {
+                self.set_query_text(format!(":b {}", summary.bowl));
+                self.queue_text_input_focus(TextInputTarget::Query);
+                self.query_did_change(cx);
+                show_macos_notification(
+                    "Pasta",
+                    &format!("Imported {} snippets into {}.", summary.imported_count, summary.bowl),
+                );
+            }
+            Err(err) => {
+                eprintln!("warning: failed to import bowl: {err}");
+                show_macos_notification("Pasta", "Failed to import bowl.");
+                self.queue_text_input_focus(TextInputTarget::Query);
+                cx.notify();
+            }
+        }
+    }
+
     pub(crate) fn add_custom_tags_to_selected(&mut self, cx: &mut Context<Self>) {
         let Some(item_id) = self.items.get(self.selected_index).map(|item| item.id) else {
             return;
@@ -689,6 +986,10 @@ impl LauncherView {
         self.info_editor_input.clear();
         self.info_editor_input_state.reset();
         self.info_editor_select_all = false;
+        self.bowl_editor_target_id = None;
+        self.bowl_editor_input.clear();
+        self.bowl_editor_input_state.reset();
+        self.bowl_editor_select_all = false;
         self.tag_editor_mode = TagEditorMode::Add;
         self.tag_editor_target_id = Some(item_id);
         self.tag_editor_input.clear();
@@ -706,6 +1007,10 @@ impl LauncherView {
         self.info_editor_input.clear();
         self.info_editor_input_state.reset();
         self.info_editor_select_all = false;
+        self.bowl_editor_target_id = None;
+        self.bowl_editor_input.clear();
+        self.bowl_editor_input_state.reset();
+        self.bowl_editor_select_all = false;
         self.tag_editor_mode = TagEditorMode::Remove;
         self.tag_editor_target_id = Some(item_id);
         self.tag_editor_input.clear();
@@ -1523,6 +1828,26 @@ impl LauncherView {
         }
     }
 
+    pub(crate) fn handle_bowl_editor_keystroke(
+        &mut self,
+        event: &KeystrokeEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+
+        match key {
+            "escape" | "esc" => {
+                self.cancel_bowl_editor(cx);
+                return;
+            }
+            "enter" | "return" => {
+                self.commit_bowl_editor(cx);
+                return;
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn toggle_transform_menu(&mut self, cx: &mut Context<Self>) {
         if self.items.get(self.selected_index).is_none() {
             show_macos_notification("Pasta", "No item selected to transform.");
@@ -1657,6 +1982,11 @@ impl LauncherView {
             return;
         }
 
+        if self.bowl_editor_target_id.is_some() {
+            self.handle_bowl_editor_keystroke(event, cx);
+            return;
+        }
+
         if self.transform_menu_open {
             self.handle_transform_keystroke(event, cx);
             return;
@@ -1700,6 +2030,10 @@ impl LauncherView {
                 return;
             }
             "enter" | "return" => {
+                if matches!(parse_search_query(&self.query), SearchQuery::ExportBowl { .. }) {
+                    self.export_bowl_from_query();
+                    return;
+                }
                 self.copy_selected_to_clipboard(cx);
                 return;
             }
@@ -1757,6 +2091,33 @@ impl LauncherView {
                 && !modifiers.function =>
             {
                 self.add_custom_tags_to_selected(cx);
+                return;
+            }
+            "b" if modifiers.platform
+                && modifiers.shift
+                && !modifiers.control
+                && !modifiers.alt
+                && !modifiers.function =>
+            {
+                self.remove_bowl_from_selected(cx);
+                return;
+            }
+            "b" if modifiers.platform
+                && !modifiers.shift
+                && !modifiers.control
+                && modifiers.alt
+                && !modifiers.function =>
+            {
+                self.import_bowl_from_picker(cx);
+                return;
+            }
+            "b" if modifiers.platform
+                && !modifiers.shift
+                && !modifiers.control
+                && !modifiers.alt
+                && !modifiers.function =>
+            {
+                self.start_bowl_editor_for_selected(cx);
                 return;
             }
             "p" if modifiers.platform
@@ -2400,38 +2761,158 @@ fn preview_for_parameter_candidate(value: &str, max_chars: usize) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn apply_tag_search_suggestion_to_query(query: &str, suggestion: &str) -> Option<String> {
-    let normalized_suggestion = suggestion.trim().to_ascii_lowercase();
+fn apply_search_suggestion_to_query(query: &str, suggestion: &str) -> Option<String> {
+    let normalized_suggestion = suggestion.trim();
     if normalized_suggestion.is_empty() {
         return None;
     }
 
-    let normalized_query = query.trim_start().to_ascii_lowercase();
-    if !normalized_query.starts_with(':') {
+    if let Some(effective_query) = raw_tag_search_effective_query(query) {
+        let normalized_suggestion = normalized_suggestion.to_ascii_lowercase();
+        let ends_with_whitespace = effective_query
+            .chars()
+            .last()
+            .is_some_and(|ch| ch.is_whitespace());
+        let mut terms: Vec<String> = effective_query
+            .split_whitespace()
+            .map(|term| term.trim_start_matches(':').trim().to_owned())
+            .filter(|term| !term.is_empty())
+            .collect();
+
+        if !ends_with_whitespace && !terms.is_empty() {
+            terms.pop();
+        }
+
+        if terms.iter().any(|term| term == &normalized_suggestion) {
+            return Some(format!(":{}", terms.join(" ")));
+        }
+
+        terms.push(normalized_suggestion);
+        Some(format!(":{}", terms.join(" ")))
+    } else {
+        match parse_search_query(query) {
+            SearchQuery::Bowl { .. } => Some(format!(":b {normalized_suggestion}")),
+            SearchQuery::ExportBowl { .. } => Some(format!(":e {normalized_suggestion}")),
+            SearchQuery::Default { .. } => None,
+            SearchQuery::TagOnly { .. } => None,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn raw_tag_search_effective_query(query: &str) -> Option<&str> {
+    let trimmed_start = query.trim_start();
+    let effective_query = trimmed_start.strip_prefix(':')?.trim_start();
+    let trimmed_end = effective_query.trim_end();
+    if trimmed_end == "b"
+        || trimmed_end == "e"
+        || trimmed_end.starts_with("b ")
+        || trimmed_end.starts_with("e ")
+    {
         return None;
     }
 
-    let effective_query = normalized_query.trim_start_matches(':');
-    let ends_with_whitespace = effective_query
+    Some(effective_query)
+}
+
+#[cfg(target_os = "macos")]
+fn build_bowl_export_bundle(bowl_name: &str, items: &[ClipboardRecord]) -> BowlExportBundle {
+    let bundle_bowl = items
+        .iter()
+        .find_map(|item| bowl_name_from_tags(&item.tags))
+        .unwrap_or_else(|| bowl_name.trim().to_ascii_uppercase());
+
+    BowlExportBundle {
+        kind: "pasta-bowl".to_owned(),
+        version: 1,
+        bowl: bundle_bowl,
+        exported_at: chrono::Utc::now().to_rfc3339(),
+        items: items.iter().map(build_bowl_export_item).collect(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn build_bowl_export_item(item: &ClipboardRecord) -> BowlExportItem {
+    if item.item_type == ClipboardItemType::Password {
+        return BowlExportItem {
+            item_type: item.item_type.as_str().to_owned(),
+            content: String::new(),
+            description: "Excluded: secrets are never exported".to_owned(),
+            tags: Vec::new(),
+            parameters: Vec::new(),
+        };
+    }
+
+    BowlExportItem {
+        item_type: item.item_type.as_str().to_owned(),
+        content: build_bowl_export_template_content(&item.content, &item.parameters),
+        description: item.description.clone(),
+        tags: tags_without_bowl(&item.tags),
+        parameters: item
+            .parameters
+            .iter()
+            .map(|parameter| BowlExportParameter {
+                name: parameter.name.clone(),
+                default_value: export_parameter_default_value(parameter),
+            })
+            .collect(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn build_bowl_export_template_content(content: &str, parameters: &[ClipboardParameter]) -> String {
+    if parameters.is_empty() {
+        return content.to_owned();
+    }
+
+    let mut ordered = parameters.to_vec();
+    ordered.sort_unstable_by(|left, right| right.target.len().cmp(&left.target.len()));
+
+    let mut output = content.to_owned();
+    let mut replacements = Vec::new();
+    for (idx, parameter) in ordered.iter().enumerate() {
+        if parameter.target.is_empty() {
+            continue;
+        }
+
+        let mut marker = format!("\u{001F}PASTA_BOWL_EXPORT_{idx}\u{001E}");
+        while output.contains(&marker) {
+            marker.push('_');
+        }
+        output = output.replace(&parameter.target, &marker);
+        replacements.push((marker, format!("{{{{{}}}}}", parameter.name.trim())));
+    }
+
+    for (marker, replacement) in replacements {
+        output = output.replace(&marker, &replacement);
+    }
+
+    output
+}
+
+#[cfg(target_os = "macos")]
+fn export_parameter_default_value(parameter: &ClipboardParameter) -> String {
+    let placeholder = format!("{{{{{}}}}}", parameter.name.trim());
+    if parameter.target.trim() == placeholder {
+        String::new()
+    } else {
+        parameter.target.clone()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn suggested_bowl_export_filename(bowl_name: &str) -> String {
+    let sanitized: String = bowl_name
+        .trim()
         .chars()
-        .last()
-        .is_some_and(|ch| ch.is_whitespace());
-    let mut terms: Vec<String> = effective_query
-        .split_whitespace()
-        .map(|term| term.trim_start_matches(':').trim().to_owned())
-        .filter(|term| !term.is_empty())
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '-' })
         .collect();
-
-    if !ends_with_whitespace && !terms.is_empty() {
-        terms.pop();
+    let sanitized = sanitized.trim_matches('-');
+    if sanitized.is_empty() {
+        "pasta-bowl.yaml".to_owned()
+    } else {
+        format!("{sanitized}.yaml")
     }
-
-    if terms.iter().any(|term| term == &normalized_suggestion) {
-        return Some(format!(":{}", terms.join(" ")));
-    }
-
-    terms.push(normalized_suggestion);
-    Some(format!(":{}", terms.join(" ")))
 }
 
 #[cfg(target_os = "macos")]
@@ -2574,17 +3055,99 @@ city = "New York"
     #[test]
     fn tag_search_suggestion_replaces_last_fragment() {
         assert_eq!(
-            apply_tag_search_suggestion_to_query(":rust com", "command"),
+            apply_search_suggestion_to_query(":rust com", "command"),
             Some(":rust command".to_owned())
         );
         assert_eq!(
-            apply_tag_search_suggestion_to_query(":rust ", "command"),
+            apply_search_suggestion_to_query(":rust ", "command"),
             Some(":rust command".to_owned())
         );
     }
 
     #[test]
     fn tag_search_suggestion_requires_tag_mode_query() {
-        assert_eq!(apply_tag_search_suggestion_to_query("rust", "command"), None);
+        assert_eq!(apply_search_suggestion_to_query("rust", "command"), None);
+    }
+
+    #[test]
+    fn search_suggestion_updates_bowl_queries() {
+        assert_eq!(
+            apply_search_suggestion_to_query(":b ops", "OPS"),
+            Some(":b OPS".to_owned())
+        );
+        assert_eq!(
+            apply_search_suggestion_to_query(":e op", "OPS"),
+            Some(":e OPS".to_owned())
+        );
+    }
+
+    #[test]
+    fn bowl_export_uses_template_content_and_default_values() {
+        let record = ClipboardRecord {
+            id: 9,
+            item_type: ClipboardItemType::Command,
+            content: "kubectl logs -f deployment/api -n default --tail=100".to_owned(),
+            description: "Stream logs from a deployment".to_owned(),
+            tags: vec!["k8s".to_owned(), "logs".to_owned(), "BOWL:K8S-OPS".to_owned()],
+            parameters: vec![
+                ClipboardParameter {
+                    name: "deployment".to_owned(),
+                    target: "api".to_owned(),
+                },
+                ClipboardParameter {
+                    name: "namespace".to_owned(),
+                    target: "default".to_owned(),
+                },
+                ClipboardParameter {
+                    name: "lines".to_owned(),
+                    target: "100".to_owned(),
+                },
+            ],
+            created_at: "2026-03-29T00:39:00Z".to_owned(),
+        };
+
+        let item = build_bowl_export_item(&record);
+        assert_eq!(
+            item.content,
+            "kubectl logs -f deployment/{{deployment}} -n {{namespace}} --tail={{lines}}"
+        );
+        assert_eq!(
+            item.parameters,
+            vec![
+                BowlExportParameter {
+                    name: "deployment".to_owned(),
+                    default_value: "api".to_owned(),
+                },
+                BowlExportParameter {
+                    name: "namespace".to_owned(),
+                    default_value: "default".to_owned(),
+                },
+                BowlExportParameter {
+                    name: "lines".to_owned(),
+                    default_value: "100".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(item.tags, vec!["k8s".to_owned(), "logs".to_owned()]);
+    }
+
+    #[test]
+    fn bowl_export_redacts_password_entries() {
+        let record = ClipboardRecord {
+            id: 11,
+            item_type: ClipboardItemType::Password,
+            content: "super-secret".to_owned(),
+            description: "root cluster token".to_owned(),
+            tags: vec!["secret".to_owned(), "BOWL:K8S-OPS".to_owned()],
+            parameters: Vec::new(),
+            created_at: "2026-03-29T00:39:00Z".to_owned(),
+        };
+
+        let item = build_bowl_export_item(&record);
+        assert_eq!(item.item_type, "password");
+        assert_eq!(item.content, "");
+        assert_eq!(item.description, "Excluded: secrets are never exported");
+        assert!(item.tags.is_empty());
+        assert!(item.parameters.is_empty());
     }
 }

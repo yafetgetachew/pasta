@@ -16,6 +16,7 @@ impl Render for LauncherView {
         let palette = palette_for(window.appearance(), self.surface_alpha);
         let info_editor_open = self.info_editor_target_id.is_some();
         let tag_editor_open = self.tag_editor_target_id.is_some();
+        let bowl_editor_open = self.bowl_editor_target_id.is_some();
         let parameter_editor_open = self.parameter_editor_target_id.is_some();
         let parameter_fill_open = self.parameter_fill_target_id.is_some();
         let transform_menu_open = self.transform_menu_open;
@@ -53,6 +54,7 @@ impl Render for LauncherView {
                                 palette,
                                 info_editor_open,
                                 tag_editor_open,
+                                bowl_editor_open,
                                 parameter_editor_open,
                                 parameter_fill_open,
                                 transform_menu_open,
@@ -366,6 +368,96 @@ impl Render for LauncherView {
                             .text_xs()
                             .text_color(palette.muted_text)
                             .child("comma-separated • ⌘V"),
+                    ),
+            );
+        }
+
+        if let Some(item_id) = self.bowl_editor_target_id {
+            let bowl_editor_focus_handle = self.text_input_focus_handle(TextInputTarget::BowlEditor);
+            let bowl_editor_focused = bowl_editor_focus_handle.is_focused(window);
+            let mut bowl_input = div()
+                .w_full()
+                .mt_1()
+                .px_1()
+                .rounded_md()
+                .line_height(px(24.0))
+                .text_sm()
+                .font_weight(FontWeight::NORMAL)
+                .key_context("PastaTextInput")
+                .track_focus(&bowl_editor_focus_handle)
+                .cursor(CursorStyle::IBeam)
+                .on_action(cx.listener(Self::query_backspace))
+                .on_action(cx.listener(Self::query_left))
+                .on_action(cx.listener(Self::query_right))
+                .on_action(cx.listener(Self::query_select_left))
+                .on_action(cx.listener(Self::query_select_right))
+                .on_action(cx.listener(Self::query_select_all))
+                .on_action(cx.listener(Self::query_home))
+                .on_action(cx.listener(Self::query_end))
+                .on_action(cx.listener(Self::query_show_character_palette))
+                .on_action(cx.listener(Self::query_paste))
+                .on_action(cx.listener(Self::query_cut))
+                .on_action(cx.listener(Self::query_copy))
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, event, window, cx| {
+                    this.text_input_on_mouse_down(TextInputTarget::BowlEditor, event, window, cx);
+                }))
+                .on_mouse_up(MouseButton::Left, cx.listener(|this, event, window, cx| {
+                    this.text_input_on_mouse_up(TextInputTarget::BowlEditor, event, window, cx);
+                }))
+                .on_mouse_up_out(MouseButton::Left, cx.listener(|this, event, window, cx| {
+                    this.text_input_on_mouse_up(TextInputTarget::BowlEditor, event, window, cx);
+                }))
+                .on_mouse_move(cx.listener(|this, event, window, cx| {
+                    this.text_input_on_mouse_move(TextInputTarget::BowlEditor, event, window, cx);
+                }));
+            if bowl_editor_focused {
+                bowl_input = bowl_input
+                    .bg(scale_alpha(
+                        palette.selected_bg,
+                        if palette.dark { 0.95 } else { 0.75 },
+                    ))
+                    .border_1()
+                    .border_color(palette.selected_border);
+            }
+
+            content = content.child(
+                div()
+                    .w_full()
+                    .p_2()
+                    .bg(scale_alpha(
+                        palette.row_hover_bg,
+                        if palette.dark { 0.95 } else { 1.0 },
+                    ))
+                    .border_1()
+                    .border_color(palette.selected_border)
+                    .rounded_lg()
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(palette.title_text)
+                                    .child(format!("Assign Bowl • Snippet #{item_id}")),
+                            ),
+                    )
+                    .child(bowl_input.child(TextInputElement::new(
+                        cx.entity(),
+                        TextInputTarget::BowlEditor,
+                        "BOWL-NAME",
+                        palette,
+                        true,
+                    )))
+                    .child(
+                        div()
+                            .w_full()
+                            .mt_1()
+                            .text_xs()
+                            .text_color(palette.muted_text)
+                            .child("single bowl • blank = remove • ⌘V"),
                     ),
             );
         }
@@ -1093,10 +1185,6 @@ impl Render for LauncherView {
             .child(workspace)
             .child(
                 if self.show_command_help {
-                    let help_chip_bg =
-                        scale_alpha(palette.row_hover_bg, if palette.dark { 0.9 } else { 1.0 });
-                    let help_chip_border =
-                        scale_alpha(palette.window_border, if palette.dark { 0.84 } else { 0.9 });
                     div()
                         .w_full()
                         .p_2()
@@ -1112,7 +1200,7 @@ impl Render for LauncherView {
                         .rounded_lg()
                         .flex()
                         .flex_col()
-                        .gap_1()
+                        .gap_2()
                         .child(
                             div()
                                 .text_xs()
@@ -1125,163 +1213,48 @@ impl Render for LauncherView {
                                 .flex()
                                 .flex_row()
                                 .flex_wrap()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(palette.muted_text)
-                                        .bg(help_chip_bg)
-                                        .border_1()
-                                        .border_color(help_chip_border)
-                                        .rounded_md()
-                                        .px_1()
-                                        .py(px(1.0))
-                                        .child("⏎ copy"),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(palette.muted_text)
-                                        .bg(help_chip_bg)
-                                        .border_1()
-                                        .border_color(help_chip_border)
-                                        .rounded_md()
-                                        .px_1()
-                                        .py(px(1.0))
-                                        .child("⌘R reveal secret"),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(palette.muted_text)
-                                        .bg(help_chip_bg)
-                                        .border_1()
-                                        .border_color(help_chip_border)
-                                        .rounded_md()
-                                        .px_1()
-                                        .py(px(1.0))
-                                        .child("⌘J / ⌘K / ⌘L / ⌘; navigate"),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(palette.muted_text)
-                                        .bg(help_chip_bg)
-                                        .border_1()
-                                        .border_color(help_chip_border)
-                                        .rounded_md()
-                                        .px_1()
-                                        .py(px(1.0))
-                                        .child("⌘I edit info"),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(palette.muted_text)
-                                        .bg(help_chip_bg)
-                                        .border_1()
-                                        .border_color(help_chip_border)
-                                        .rounded_md()
-                                        .px_1()
-                                        .py(px(1.0))
-                                        .child("⌘T add tags"),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(palette.muted_text)
-                                        .bg(help_chip_bg)
-                                        .border_1()
-                                        .border_color(help_chip_border)
-                                        .rounded_md()
-                                        .px_1()
-                                        .py(px(1.0))
-                                        .child("⌘⇧T remove tags"),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(palette.muted_text)
-                                        .bg(help_chip_bg)
-                                        .border_1()
-                                        .border_color(help_chip_border)
-                                        .rounded_md()
-                                        .px_1()
-                                        .py(px(1.0))
-                                        .child("⌘P parametrize"),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(palette.muted_text)
-                                        .bg(help_chip_bg)
-                                        .border_1()
-                                        .border_color(help_chip_border)
-                                        .rounded_md()
-                                        .px_1()
-                                        .py(px(1.0))
-                                        .child("Tab transforms"),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(palette.muted_text)
-                                        .bg(help_chip_bg)
-                                        .border_1()
-                                        .border_color(help_chip_border)
-                                        .rounded_md()
-                                        .px_1()
-                                        .py(px(1.0))
-                                        .child("⌘⇧S mark secret"),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(palette.muted_text)
-                                        .bg(help_chip_bg)
-                                        .border_1()
-                                        .border_color(help_chip_border)
-                                        .rounded_md()
-                                        .px_1()
-                                        .py(px(1.0))
-                                        .child("⌘D delete"),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(palette.muted_text)
-                                        .bg(help_chip_bg)
-                                        .border_1()
-                                        .border_color(help_chip_border)
-                                        .rounded_md()
-                                        .px_1()
-                                        .py(px(1.0))
-                                        .child("Esc close"),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(palette.muted_text)
-                                        .bg(help_chip_bg)
-                                        .border_1()
-                                        .border_color(help_chip_border)
-                                        .rounded_md()
-                                        .px_1()
-                                        .py(px(1.0))
-                                        .child("⌘Q quit"),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(palette.muted_text)
-                                        .bg(help_chip_bg)
-                                        .border_1()
-                                        .border_color(help_chip_border)
-                                        .rounded_md()
-                                        .px_1()
-                                        .py(px(1.0))
-                                        .child("⌘H hide help"),
-                                ),
+                                .items_start()
+                                .gap_2()
+                                .child(render_help_run(
+                                    &[
+                                        "⏎ copy",
+                                        "⌘R reveal secret",
+                                        "⌘J / ⌘K / ⌘L / ⌘; navigate",
+                                    ],
+                                    palette,
+                                ))
+                                .child(render_help_run(
+                                    &[
+                                        "⌘I edit info",
+                                        "⌘P parametrize",
+                                        "Tab transforms",
+                                    ],
+                                    palette,
+                                ))
+                                .child(render_help_run(
+                                    &[
+                                        "⌘T add tags",
+                                        "⌘⇧T remove tags",
+                                        "⌘B set bowl",
+                                        "⌘⇧B remove bowl",
+                                        "⌥⌘B import bowl",
+                                    ],
+                                    palette,
+                                ))
+                                .child(render_help_run(
+                                    &[":b search bowl", ":e export bowl", "↹ autocomplete"],
+                                    palette,
+                                ))
+                                .child(render_help_run(
+                                    &[
+                                        "⌘⇧S mark secret",
+                                        "⌘D delete",
+                                        "Esc close",
+                                        "⌘Q quit",
+                                        "⌘H hide help",
+                                    ],
+                                    palette,
+                                )),
                         )
                 } else {
                     div()
@@ -1335,7 +1308,7 @@ impl LauncherView {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.apply_tag_search_suggestion_index(ix, cx);
                     }))
-                    .child(format!(":{suggestion}")),
+                    .child(search_suggestion_label(&self.query, suggestion)),
             );
         }
 
@@ -1355,7 +1328,7 @@ impl LauncherView {
                         div()
                             .text_xs()
                             .text_color(palette.muted_text)
-                            .child("Tag suggestions"),
+                            .child(search_suggestion_heading(&self.query)),
                     )
                     .child(
                         div()
@@ -1604,6 +1577,7 @@ impl LauncherView {
         palette: Palette,
         info_editor_open: bool,
         tag_editor_open: bool,
+        bowl_editor_open: bool,
         parameter_editor_open: bool,
         parameter_fill_open: bool,
         transform_menu_open: bool,
@@ -1661,6 +1635,7 @@ impl LauncherView {
             });
         if !info_editor_open
             && !tag_editor_open
+            && !bowl_editor_open
             && !parameter_editor_open
             && !parameter_fill_open
             && !transform_menu_open
@@ -1676,36 +1651,52 @@ impl LauncherView {
                 }));
         }
 
-        let mut top_row = div().w_full().flex().justify_between().items_center();
-        if !item_tags.is_empty() {
-            let mut tags_row = div().flex().items_center().gap_1().overflow_hidden();
-            for tag in item_tags.iter() {
-                tags_row = tags_row.child(
-                    div()
-                        .text_xs()
-                        .text_color(tag_chip_color(tag, palette.dark))
-                        .bg(scale_alpha(
-                            palette.row_hover_bg,
-                            if palette.dark { 0.95 } else { 1.0 },
-                        ))
-                        .border_1()
-                        .border_color(scale_alpha(
-                            palette.window_border,
-                            if palette.dark { 0.85 } else { 1.0 },
-                        ))
-                        .rounded_md()
-                        .px_1()
-                        .child(tag.clone()),
-                );
-            }
-            top_row = top_row.child(tags_row);
+        let mut tag_row = div().flex().items_center().gap_1().overflow_hidden();
+        for tag in item_tags.iter() {
+            tag_row = tag_row.child(result_meta_chip(tag, palette));
         }
-        top_row = top_row.child(
+
+        let tag_lane = div()
+            .w(relative(0.5))
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .child(tag_row);
+
+        let mut right_meta = div().w_full().flex().items_center().justify_end().gap_1();
+        if let Some(bowl_name) = &row_data.bowl_name {
+            right_meta = right_meta.child(
+                div()
+                    .max_w(relative(0.68))
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .justify_end()
+                            .child(result_meta_chip(&format!("BOWL:{bowl_name}"), palette)),
+                    ),
+            );
+        }
+        right_meta = right_meta.child(
             div()
+                .flex_none()
                 .text_xs()
                 .text_color(palette.row_meta_text)
                 .child(row_data.created_label.clone()),
         );
+
+        let top_row = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .child(tag_lane)
+            .child(
+                div()
+                    .w(relative(0.5))
+                    .min_w(px(0.0))
+                    .child(right_meta),
+            );
         row = row.child(top_row);
 
         let preview_block = div()
@@ -1729,4 +1720,72 @@ impl LauncherView {
             .child(row)
             .into_any_element()
     }
+}
+
+#[cfg(target_os = "macos")]
+fn search_suggestion_heading(query: &str) -> &'static str {
+    match parse_search_query(query) {
+        SearchQuery::TagOnly { .. } => "Tag suggestions",
+        SearchQuery::Bowl { .. } | SearchQuery::ExportBowl { .. } => "Bowl suggestions",
+        SearchQuery::Default { .. } => "Suggestions",
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn search_suggestion_label(query: &str, suggestion: &str) -> String {
+    match parse_search_query(query) {
+        SearchQuery::TagOnly { .. } => format!(":{suggestion}"),
+        SearchQuery::Bowl { .. } => format!(":b {suggestion}"),
+        SearchQuery::ExportBowl { .. } => format!(":e {suggestion}"),
+        SearchQuery::Default { .. } => suggestion.to_owned(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn result_meta_chip(label: &str, palette: Palette) -> impl IntoElement {
+    div()
+        .flex_none()
+        .text_xs()
+        .text_color(tag_chip_color(label, palette.dark))
+        .bg(scale_alpha(
+            palette.row_hover_bg,
+            if palette.dark { 0.95 } else { 1.0 },
+        ))
+        .border_1()
+        .border_color(scale_alpha(
+            palette.window_border,
+            if palette.dark { 0.85 } else { 1.0 },
+        ))
+        .rounded_md()
+        .px_1()
+        .whitespace_nowrap()
+        .child(label.to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn render_help_run(tips: &[&str], palette: Palette) -> impl IntoElement {
+    let help_chip_bg = scale_alpha(palette.row_hover_bg, if palette.dark { 0.9 } else { 1.0 });
+    let help_chip_border =
+        scale_alpha(palette.window_border, if palette.dark { 0.84 } else { 0.9 });
+
+    let mut chips = div().flex().flex_row().flex_wrap().items_center().gap_1();
+    for tip in tips {
+        chips = chips.child(
+            div()
+                .text_xs()
+                .text_color(palette.muted_text)
+                .bg(help_chip_bg)
+                .border_1()
+                .border_color(help_chip_border)
+                .rounded_md()
+                .px_1()
+                .py(px(1.0))
+                .child((*tip).to_owned()),
+        );
+    }
+
+    div()
+        .flex_none()
+        .max_w_full()
+        .child(chips)
 }
