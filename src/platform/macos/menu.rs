@@ -85,6 +85,18 @@ pub(crate) fn menu_command_from_tag(tag: isize) -> Option<MenuCommand> {
         return Some(MenuCommand::SetSecretAutoClear(false));
     }
 
+    if tag == MENU_TAG_BRAIN_ON {
+        return Some(MenuCommand::SetPastaBrain(true));
+    }
+
+    if tag == MENU_TAG_BRAIN_OFF {
+        return Some(MenuCommand::SetPastaBrain(false));
+    }
+
+    if tag == MENU_TAG_BRAIN_DOWNLOAD {
+        return Some(MenuCommand::DownloadBrain);
+    }
+
     None
 }
 
@@ -213,6 +225,42 @@ pub(crate) fn setup_status_item(cx: &mut App) {
         secret_parent.setSubmenu_(secret_menu);
         menu.addItem_(secret_parent);
 
+        let brain_parent = menu_item("Pasta Brain", "", handler, selector("menuAction:"), -1);
+        let brain_menu = NSMenu::new(nil);
+        let brain_on = menu_item(
+            "Enabled",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_BRAIN_ON,
+        );
+        let brain_off = menu_item(
+            "Disabled",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_BRAIN_OFF,
+        );
+        let brain_download = menu_item(
+            "Download Model",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_BRAIN_DOWNLOAD,
+        );
+
+        // Set initial checkmark state
+        let brain_enabled = cx.global::<UiStyleState>().pasta_brain_enabled;
+        let _: () = msg_send![brain_on, setState: if brain_enabled { 1_isize } else { 0_isize }];
+        let _: () = msg_send![brain_off, setState: if brain_enabled { 0_isize } else { 1_isize }];
+
+        brain_menu.addItem_(brain_on);
+        brain_menu.addItem_(brain_off);
+        brain_menu.addItem_(NSMenuItem::separatorItem(nil));
+        brain_menu.addItem_(brain_download);
+        brain_parent.setSubmenu_(brain_menu);
+        menu.addItem_(brain_parent);
+
         menu.addItem_(NSMenuItem::separatorItem(nil));
 
         let close_item = menu_item(
@@ -235,6 +283,35 @@ pub(crate) fn setup_status_item(cx: &mut App) {
             _status_item: StrongPtr::retain(status_item as id),
             _menu: StrongPtr::retain(menu as id),
             _handler: StrongPtr::retain(handler as id),
+            brain_on_item: StrongPtr::retain(brain_on as id),
+            brain_off_item: StrongPtr::retain(brain_off as id),
+            brain_download_item: StrongPtr::retain(brain_download as id),
         });
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn update_brain_menu_state(cx: &App) {
+    let style = cx.global::<UiStyleState>();
+    let enabled = style.pasta_brain_enabled;
+    let reg = cx.global::<StatusItemRegistration>();
+    unsafe {
+        let _: () =
+            msg_send![*reg.brain_on_item, setState: if enabled { 1_isize } else { 0_isize }];
+        let _: () =
+            msg_send![*reg.brain_off_item, setState: if enabled { 0_isize } else { 1_isize }];
+
+        // Update download item title based on neural status
+        let neural_status = NEURAL_STATUS
+            .lock()
+            .map(|s| *s)
+            .unwrap_or(NeuralStatus::Failed);
+        let download_title = match neural_status {
+            NeuralStatus::Loading => "Downloading Model...",
+            NeuralStatus::Ready => "Model Ready ✓",
+            NeuralStatus::Failed => "Download Model (Retry)",
+        };
+        let title = NSString::alloc(nil).init_str(download_title);
+        let _: () = msg_send![*reg.brain_download_item, setTitle: title];
     }
 }

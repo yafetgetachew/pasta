@@ -1,5 +1,8 @@
 #[cfg(target_os = "macos")]
-use super::actions::{has_structured_parameter_candidates, parameter_clickable_candidates};
+use super::actions::{
+    expand_candidates_with_splits, has_structured_parameter_candidates,
+    parameter_clickable_candidates,
+};
 #[cfg(target_os = "macos")]
 use super::query_input::TextInputElement;
 #[cfg(target_os = "macos")]
@@ -137,12 +140,28 @@ impl Render for LauncherView {
                         .on_action(cx.listener(Self::query_paste))
                         .on_action(cx.listener(Self::query_cut))
                         .on_action(cx.listener(Self::query_copy))
-                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event, window, cx| {
-                            this.text_input_on_mouse_down(TextInputTarget::Query, event, window, cx);
-                        }))
-                        .on_mouse_up(MouseButton::Left, cx.listener(|this, event, window, cx| {
-                            this.text_input_on_mouse_up(TextInputTarget::Query, event, window, cx);
-                        }))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, event, window, cx| {
+                                this.text_input_on_mouse_down(
+                                    TextInputTarget::Query,
+                                    event,
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        )
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, event, window, cx| {
+                                this.text_input_on_mouse_up(
+                                    TextInputTarget::Query,
+                                    event,
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        )
                         .on_mouse_up_out(
                             MouseButton::Left,
                             cx.listener(|this, event, window, cx| {
@@ -155,7 +174,12 @@ impl Render for LauncherView {
                             }),
                         )
                         .on_mouse_move(cx.listener(|this, event, window, cx| {
-                            this.text_input_on_mouse_move(TextInputTarget::Query, event, window, cx);
+                            this.text_input_on_mouse_move(
+                                TextInputTarget::Query,
+                                event,
+                                window,
+                                cx,
+                            );
                         }));
                 }
 
@@ -187,7 +211,8 @@ impl Render for LauncherView {
         }
 
         if let Some(item_id) = self.info_editor_target_id {
-            let info_editor_focus_handle = self.text_input_focus_handle(TextInputTarget::InfoEditor);
+            let info_editor_focus_handle =
+                self.text_input_focus_handle(TextInputTarget::InfoEditor);
             let info_editor_focused = info_editor_focus_handle.is_focused(window);
             let mut info_input = div()
                 .w_full()
@@ -212,15 +237,29 @@ impl Render for LauncherView {
                 .on_action(cx.listener(Self::query_paste))
                 .on_action(cx.listener(Self::query_cut))
                 .on_action(cx.listener(Self::query_copy))
-                .on_mouse_down(MouseButton::Left, cx.listener(|this, event, window, cx| {
-                    this.text_input_on_mouse_down(TextInputTarget::InfoEditor, event, window, cx);
-                }))
-                .on_mouse_up(MouseButton::Left, cx.listener(|this, event, window, cx| {
-                    this.text_input_on_mouse_up(TextInputTarget::InfoEditor, event, window, cx);
-                }))
-                .on_mouse_up_out(MouseButton::Left, cx.listener(|this, event, window, cx| {
-                    this.text_input_on_mouse_up(TextInputTarget::InfoEditor, event, window, cx);
-                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event, window, cx| {
+                        this.text_input_on_mouse_down(
+                            TextInputTarget::InfoEditor,
+                            event,
+                            window,
+                            cx,
+                        );
+                    }),
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, event, window, cx| {
+                        this.text_input_on_mouse_up(TextInputTarget::InfoEditor, event, window, cx);
+                    }),
+                )
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(|this, event, window, cx| {
+                        this.text_input_on_mouse_up(TextInputTarget::InfoEditor, event, window, cx);
+                    }),
+                )
                 .on_mouse_move(cx.listener(|this, event, window, cx| {
                     this.text_input_on_mouse_move(TextInputTarget::InfoEditor, event, window, cx);
                 }));
@@ -303,15 +342,29 @@ impl Render for LauncherView {
                 .on_action(cx.listener(Self::query_paste))
                 .on_action(cx.listener(Self::query_cut))
                 .on_action(cx.listener(Self::query_copy))
-                .on_mouse_down(MouseButton::Left, cx.listener(|this, event, window, cx| {
-                    this.text_input_on_mouse_down(TextInputTarget::TagEditor, event, window, cx);
-                }))
-                .on_mouse_up(MouseButton::Left, cx.listener(|this, event, window, cx| {
-                    this.text_input_on_mouse_up(TextInputTarget::TagEditor, event, window, cx);
-                }))
-                .on_mouse_up_out(MouseButton::Left, cx.listener(|this, event, window, cx| {
-                    this.text_input_on_mouse_up(TextInputTarget::TagEditor, event, window, cx);
-                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event, window, cx| {
+                        this.text_input_on_mouse_down(
+                            TextInputTarget::TagEditor,
+                            event,
+                            window,
+                            cx,
+                        );
+                    }),
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, event, window, cx| {
+                        this.text_input_on_mouse_up(TextInputTarget::TagEditor, event, window, cx);
+                    }),
+                )
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(|this, event, window, cx| {
+                        this.text_input_on_mouse_up(TextInputTarget::TagEditor, event, window, cx);
+                    }),
+                )
                 .on_mouse_move(cx.listener(|this, event, window, cx| {
                     this.text_input_on_mouse_move(TextInputTarget::TagEditor, event, window, cx);
                 }));
@@ -373,7 +426,8 @@ impl Render for LauncherView {
         }
 
         if let Some(item_id) = self.bowl_editor_target_id {
-            let bowl_editor_focus_handle = self.text_input_focus_handle(TextInputTarget::BowlEditor);
+            let bowl_editor_focus_handle =
+                self.text_input_focus_handle(TextInputTarget::BowlEditor);
             let bowl_editor_focused = bowl_editor_focus_handle.is_focused(window);
             let mut bowl_input = div()
                 .w_full()
@@ -398,15 +452,29 @@ impl Render for LauncherView {
                 .on_action(cx.listener(Self::query_paste))
                 .on_action(cx.listener(Self::query_cut))
                 .on_action(cx.listener(Self::query_copy))
-                .on_mouse_down(MouseButton::Left, cx.listener(|this, event, window, cx| {
-                    this.text_input_on_mouse_down(TextInputTarget::BowlEditor, event, window, cx);
-                }))
-                .on_mouse_up(MouseButton::Left, cx.listener(|this, event, window, cx| {
-                    this.text_input_on_mouse_up(TextInputTarget::BowlEditor, event, window, cx);
-                }))
-                .on_mouse_up_out(MouseButton::Left, cx.listener(|this, event, window, cx| {
-                    this.text_input_on_mouse_up(TextInputTarget::BowlEditor, event, window, cx);
-                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event, window, cx| {
+                        this.text_input_on_mouse_down(
+                            TextInputTarget::BowlEditor,
+                            event,
+                            window,
+                            cx,
+                        );
+                    }),
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, event, window, cx| {
+                        this.text_input_on_mouse_up(TextInputTarget::BowlEditor, event, window, cx);
+                    }),
+                )
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(|this, event, window, cx| {
+                        this.text_input_on_mouse_up(TextInputTarget::BowlEditor, event, window, cx);
+                    }),
+                )
                 .on_mouse_move(cx.listener(|this, event, window, cx| {
                     this.text_input_on_mouse_move(TextInputTarget::BowlEditor, event, window, cx);
                 }));
@@ -420,46 +488,105 @@ impl Render for LauncherView {
                     .border_color(palette.selected_border);
             }
 
-            content = content.child(
+            let mut bowl_panel = div()
+                .w_full()
+                .p_2()
+                .bg(scale_alpha(
+                    palette.row_hover_bg,
+                    if palette.dark { 0.95 } else { 1.0 },
+                ))
+                .border_1()
+                .border_color(palette.selected_border)
+                .rounded_lg()
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .justify_between()
+                        .items_center()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(palette.title_text)
+                                .child(format!("Assign Bowl • Snippet #{item_id}")),
+                        ),
+                )
+                .child(bowl_input.child(TextInputElement::new(
+                    cx.entity(),
+                    TextInputTarget::BowlEditor,
+                    "BOWL-NAME",
+                    palette,
+                    true,
+                )));
+
+            if !self.bowl_editor_suggestions.is_empty() {
+                let mut chips = div().w_full().mt_1().flex().flex_row().flex_wrap().gap_1();
+                for (ix, suggestion) in self.bowl_editor_suggestions.iter().enumerate() {
+                    let is_primary = ix == 0;
+                    let chip_bg = if is_primary {
+                        scale_alpha(palette.selected_bg, if palette.dark { 0.92 } else { 0.72 })
+                    } else {
+                        scale_alpha(
+                            palette.row_hover_bg,
+                            if palette.dark { 0.9 } else { 1.0 },
+                        )
+                    };
+                    let chip_border = if is_primary {
+                        palette.selected_border
+                    } else {
+                        scale_alpha(
+                            palette.window_border,
+                            if palette.dark { 0.84 } else { 0.9 },
+                        )
+                    };
+                    let chip_text = if is_primary {
+                        palette.title_text
+                    } else {
+                        palette.muted_text
+                    };
+                    let suggestion_owned = suggestion.clone();
+                    chips = chips.child(
+                        div()
+                            .id(("bowl-editor-suggestion", ix))
+                            .text_xs()
+                            .text_color(chip_text)
+                            .bg(chip_bg)
+                            .border_1()
+                            .border_color(chip_border)
+                            .rounded_md()
+                            .px_1()
+                            .py(px(1.0))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.bowl_editor_input = suggestion_owned.clone();
+                                let len = this.bowl_editor_input.len();
+                                this.bowl_editor_input_state.selected_range = len..len;
+                                this.bowl_editor_input_state.selection_reversed = false;
+                                this.bowl_editor_input_state.marked_range = None;
+                                this.bowl_editor_suggestions =
+                                    this.storage.suggest_bowl_names(&this.bowl_editor_input, 6);
+                                cx.notify();
+                            }))
+                            .child(suggestion.clone()),
+                    );
+                }
+                bowl_panel = bowl_panel.child(chips);
+            }
+
+            let help_text = if self.bowl_editor_suggestions.is_empty() {
+                "single bowl • blank = remove • ⌘V"
+            } else {
+                "single bowl • ↹ autocomplete • blank = remove"
+            };
+            bowl_panel = bowl_panel.child(
                 div()
                     .w_full()
-                    .p_2()
-                    .bg(scale_alpha(
-                        palette.row_hover_bg,
-                        if palette.dark { 0.95 } else { 1.0 },
-                    ))
-                    .border_1()
-                    .border_color(palette.selected_border)
-                    .rounded_lg()
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .justify_between()
-                            .items_center()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(palette.title_text)
-                                    .child(format!("Assign Bowl • Snippet #{item_id}")),
-                            ),
-                    )
-                    .child(bowl_input.child(TextInputElement::new(
-                        cx.entity(),
-                        TextInputTarget::BowlEditor,
-                        "BOWL-NAME",
-                        palette,
-                        true,
-                    )))
-                    .child(
-                        div()
-                            .w_full()
-                            .mt_1()
-                            .text_xs()
-                            .text_color(palette.muted_text)
-                            .child("single bowl • blank = remove • ⌘V"),
-                    ),
+                    .mt_1()
+                    .text_xs()
+                    .text_color(palette.muted_text)
+                    .child(help_text),
             );
+            content = content.child(bowl_panel);
         }
 
         if let Some(item_id) = self.parameter_editor_target_id {
@@ -473,6 +600,10 @@ impl Render for LauncherView {
                 let has_structured_candidates = has_structured_parameter_candidates(&item_content);
                 let candidates =
                     parameter_clickable_candidates(&item_content, self.parameter_editor_force_full);
+                let candidates = expand_candidates_with_splits(
+                    candidates,
+                    &self.parameter_editor_split_tokens,
+                );
                 let auto_named_candidates =
                     has_structured_candidates && !self.parameter_editor_force_full;
                 let mut token_picker = div().w_full().mt_1().flex().flex_row().flex_wrap().gap_1();
@@ -493,10 +624,7 @@ impl Render for LauncherView {
                             rgb(0x0891b2)
                         }
                     } else {
-                        scale_alpha(
-                            palette.row_hover_bg,
-                            if palette.dark { 0.92 } else { 1.0 },
-                        )
+                        scale_alpha(palette.row_hover_bg, if palette.dark { 0.92 } else { 1.0 })
                     };
                     let chip_border = if is_selected {
                         if palette.dark {
@@ -505,10 +633,7 @@ impl Render for LauncherView {
                             rgb(0x0e7490)
                         }
                     } else {
-                        scale_alpha(
-                            palette.window_border,
-                            if palette.dark { 0.85 } else { 1.0 },
-                        )
+                        scale_alpha(palette.window_border, if palette.dark { 0.85 } else { 1.0 })
                     };
 
                     token_picker = token_picker.child(
@@ -676,12 +801,12 @@ impl Render for LauncherView {
                                     if auto_named_candidates {
                                         "pick one or more fields"
                                     } else {
-                                        "pick one or more values"
+                                        "pick values • ⌘+click to split"
                                     }
                                 } else if auto_named_candidates {
                                     "Enter saves • ⌘+click toggles"
                                 } else {
-                                    "Enter then name • ⌘+click toggles"
+                                    "Enter then name • ⌘+click splits or toggles"
                                 }),
                         ),
                 );
@@ -926,22 +1051,28 @@ impl Render for LauncherView {
                         .on_action(cx.listener(Self::query_paste))
                         .on_action(cx.listener(Self::query_cut))
                         .on_action(cx.listener(Self::query_copy))
-                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event, window, cx| {
-                            this.text_input_on_mouse_down(
-                                TextInputTarget::ParameterFill,
-                                event,
-                                window,
-                                cx,
-                            );
-                        }))
-                        .on_mouse_up(MouseButton::Left, cx.listener(|this, event, window, cx| {
-                            this.text_input_on_mouse_up(
-                                TextInputTarget::ParameterFill,
-                                event,
-                                window,
-                                cx,
-                            );
-                        }))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, event, window, cx| {
+                                this.text_input_on_mouse_down(
+                                    TextInputTarget::ParameterFill,
+                                    event,
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        )
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, event, window, cx| {
+                                this.text_input_on_mouse_up(
+                                    TextInputTarget::ParameterFill,
+                                    event,
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        )
                         .on_mouse_up_out(
                             MouseButton::Left,
                             cx.listener(|this, event, window, cx| {
@@ -978,10 +1109,7 @@ impl Render for LauncherView {
                         .bg(if is_focus {
                             scale_alpha(palette.selected_bg, if palette.dark { 0.78 } else { 0.48 })
                         } else {
-                            scale_alpha(
-                                palette.row_hover_bg,
-                                if palette.dark { 0.92 } else { 1.0 },
-                            )
+                            scale_alpha(palette.row_hover_bg, if palette.dark { 0.92 } else { 1.0 })
                         })
                         .border_1()
                         .border_color(if is_focus {
@@ -1079,10 +1207,16 @@ impl Render for LauncherView {
                 ("s  Shell quote", TransformAction::ShellQuote),
                 ("j  JSON encode", TransformAction::JsonEncode),
                 ("J  JSON decode", TransformAction::JsonDecode),
+                ("f  JSON pretty", TransformAction::JsonPretty),
+                ("F  JSON minify", TransformAction::JsonMinify),
                 ("u  URL encode", TransformAction::UrlEncode),
                 ("U  URL decode", TransformAction::UrlDecode),
                 ("b  Base64 encode", TransformAction::Base64Encode),
                 ("B  Base64 decode", TransformAction::Base64Decode),
+                ("t  JWT decode", TransformAction::JwtDecode),
+                ("e  Epoch decode", TransformAction::EpochDecode),
+                ("h  SHA256 hash", TransformAction::Sha256Hash),
+                ("c  Count stats", TransformAction::ContentStats),
                 ("p  Cert info", TransformAction::PublicCertPemInfo),
             ]
             .into_iter()
@@ -1183,87 +1317,77 @@ impl Render for LauncherView {
         content
             .child(div().w_full().h(px(1.0)).bg(palette.list_divider))
             .child(workspace)
-            .child(
-                if self.show_command_help {
-                    div()
-                        .w_full()
-                        .p_2()
-                        .bg(scale_alpha(
-                            palette.row_hover_bg,
-                            if palette.dark { 0.95 } else { 1.0 },
-                        ))
-                        .border_1()
-                        .border_color(scale_alpha(
-                            palette.window_border,
-                            if palette.dark { 0.9 } else { 1.0 },
-                        ))
-                        .rounded_lg()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(palette.title_text)
-                                .child("Commands"),
-                        )
-                        .child(
-                            div()
-                                .w_full()
-                                .flex()
-                                .flex_row()
-                                .flex_wrap()
-                                .items_start()
-                                .gap_2()
-                                .child(render_help_run(
-                                    &[
-                                        "⏎ copy",
-                                        "⌘R reveal secret",
-                                        "⌘J / ⌘K / ⌘L / ⌘; navigate",
-                                    ],
-                                    palette,
-                                ))
-                                .child(render_help_run(
-                                    &[
-                                        "⌘I edit info",
-                                        "⌘P parametrize",
-                                        "Tab transforms",
-                                    ],
-                                    palette,
-                                ))
-                                .child(render_help_run(
-                                    &[
-                                        "⌘T add tags",
-                                        "⌘⇧T remove tags",
-                                        "⌘B set bowl",
-                                        "⌘⇧B remove bowl",
-                                        "⌥⌘B import bowl",
-                                    ],
-                                    palette,
-                                ))
-                                .child(render_help_run(
-                                    &[":b search bowl", ":e export bowl", "↹ autocomplete"],
-                                    palette,
-                                ))
-                                .child(render_help_run(
-                                    &[
-                                        "⌘⇧S mark secret",
-                                        "⌘D delete",
-                                        "Esc close",
-                                        "⌘Q quit",
-                                        "⌘H hide help",
-                                    ],
-                                    palette,
-                                )),
-                        )
-                } else {
-                    div()
-                        .w_full()
-                        .text_xs()
-                        .text_color(palette.muted_text)
-                        .child("⌘H commands")
-                },
-            )
+            .child(if self.show_command_help {
+                div()
+                    .w_full()
+                    .p_2()
+                    .bg(scale_alpha(
+                        palette.row_hover_bg,
+                        if palette.dark { 0.95 } else { 1.0 },
+                    ))
+                    .border_1()
+                    .border_color(scale_alpha(
+                        palette.window_border,
+                        if palette.dark { 0.9 } else { 1.0 },
+                    ))
+                    .rounded_lg()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette.title_text)
+                            .child("Commands"),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_row()
+                            .flex_wrap()
+                            .items_start()
+                            .gap_2()
+                            .child(render_help_run(
+                                &["⏎ copy", "⌘R reveal secret", "⌘J / ⌘K / ⌘L / ⌘; navigate"],
+                                palette,
+                            ))
+                            .child(render_help_run(
+                                &["⌘I edit info", "⌘P parametrize", "Tab transforms"],
+                                palette,
+                            ))
+                            .child(render_help_run(
+                                &[
+                                    "⌘T add tags",
+                                    "⌘⇧T remove tags",
+                                    "⌘B set bowl",
+                                    "⌘⇧B remove bowl",
+                                    "⌥⌘B import bowl",
+                                ],
+                                palette,
+                            ))
+                            .child(render_help_run(
+                                &[":b search bowl", ":e export bowl", "↹ autocomplete"],
+                                palette,
+                            ))
+                            .child(render_help_run(
+                                &[
+                                    "⌘⇧S toggle secret",
+                                    "⌘D delete",
+                                    "Esc close",
+                                    "⌘Q quit",
+                                    "⌘H hide help",
+                                ],
+                                palette,
+                            )),
+                    )
+            } else {
+                div()
+                    .w_full()
+                    .text_xs()
+                    .text_color(palette.muted_text)
+                    .child("⌘H commands")
+            })
     }
 }
 
@@ -1367,16 +1491,13 @@ impl LauncherView {
                 .items_center()
                 .justify_center()
                 .text_center()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(palette.muted_text)
-                        .child(if self.query.is_empty() {
-                            "Nothing to inspect."
-                        } else {
-                            "No matches."
-                        }),
-                )
+                .child(div().text_sm().text_color(palette.muted_text).child(
+                    if self.query.is_empty() {
+                        "Nothing to inspect."
+                    } else {
+                        "No matches."
+                    },
+                ))
                 .into_any_element();
         };
 
@@ -1406,7 +1527,13 @@ impl LauncherView {
         } else {
             "⏎ Copy"
         };
+        let secret_action_hint = if item.item_type == ClipboardItemType::Password {
+            "⌘⇧S Unmark secret"
+        } else {
+            "⌘⇧S Mark secret"
+        };
         let preview_syntax_enabled = self.syntax_highlighting
+            && self.query.trim().is_empty()
             && !is_masked_secret
             && preview_settled
             && row_data.expanded_preview.len() <= PREVIEW_PANE_SYNTAX_MAX_CHARS
@@ -1453,14 +1580,12 @@ impl LauncherView {
                     .child(
                         div()
                             .flex()
-                            .flex_col()
+                            .flex_row()
+                            .flex_wrap()
+                            .items_center()
                             .gap_1()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(palette.title_text)
-                                    .child(primary_action_hint),
-                            ),
+                            .child(result_meta_chip(primary_action_hint, palette))
+                            .child(result_meta_chip(secret_action_hint, palette)),
                     )
                     .child(
                         div()
@@ -1481,12 +1606,7 @@ impl LauncherView {
                         if palette.dark { 0.65 } else { 0.38 },
                     ))
                     .rounded_md()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(palette.muted_text)
-                            .child("Info"),
-                    )
+                    .child(div().text_xs().text_color(palette.muted_text).child("Info"))
                     .child(
                         div()
                             .mt_1()
@@ -1526,10 +1646,7 @@ impl LauncherView {
                         div()
                             .text_xs()
                             .text_color(palette.muted_text)
-                            .child(format!(
-                                "Parameters ({})",
-                                item.parameters.len()
-                            )),
+                            .child(format!("Parameters ({})", item.parameters.len())),
                     )
                     .child(parameter_row),
             );
@@ -1553,18 +1670,14 @@ impl LauncherView {
                     .flex_1()
                     .overflow_y_scroll()
                     .pr_2()
-                    .child(
-                        div()
-                            .w_full()
-                            .text_sm()
-                            .text_color(palette.row_text)
-                            .child(syntax_styled_text(
-                                &preview_text,
-                                preview_language,
-                                preview_syntax_enabled,
-                                palette.dark,
-                            )),
-                    ),
+                    .child(div().w_full().text_sm().text_color(palette.row_text).child(
+                        syntax_styled_text(
+                            &preview_text,
+                            preview_language,
+                            preview_syntax_enabled,
+                            palette.dark,
+                        ),
+                    )),
             )
             .into_any_element()
     }
@@ -1606,10 +1719,8 @@ impl LauncherView {
         };
         let row_syntax_enabled = false;
 
-        let default_row_bg = scale_alpha(
-            palette.row_hover_bg,
-            if palette.dark { 0.62 } else { 0.92 },
-        );
+        let default_row_bg =
+            scale_alpha(palette.row_hover_bg, if palette.dark { 0.62 } else { 0.92 });
         let default_row_border = scale_alpha(
             palette.window_border,
             if palette.dark { 0.78 } else { 0.88 },
@@ -1691,12 +1802,7 @@ impl LauncherView {
             .flex()
             .items_center()
             .child(tag_lane)
-            .child(
-                div()
-                    .w(relative(0.5))
-                    .min_w(px(0.0))
-                    .child(right_meta),
-            );
+            .child(div().w(relative(0.5)).min_w(px(0.0)).child(right_meta));
         row = row.child(top_row);
 
         let preview_block = div()
@@ -1784,8 +1890,5 @@ fn render_help_run(tips: &[&str], palette: Palette) -> impl IntoElement {
         );
     }
 
-    div()
-        .flex_none()
-        .max_w_full()
-        .child(chips)
+    div().flex_none().max_w_full().child(chips)
 }

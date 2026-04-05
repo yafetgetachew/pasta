@@ -21,6 +21,7 @@ fn default_ui_style_state(default_family: SharedString) -> UiStyleState {
         surface_alpha: 0.72,
         syntax_highlighting: true,
         secret_auto_clear: true,
+        pasta_brain_enabled: true,
     }
 }
 
@@ -55,6 +56,7 @@ fn load_ui_style_state(default_family: SharedString) -> UiStyleState {
     style.surface_alpha = persisted.surface_alpha.clamp(0.45, 1.0);
     style.syntax_highlighting = persisted.syntax_highlighting;
     style.secret_auto_clear = persisted.secret_auto_clear;
+    style.pasta_brain_enabled = persisted.pasta_brain_enabled;
     style
 }
 
@@ -69,6 +71,7 @@ fn save_ui_style_state(style: &UiStyleState) {
         surface_alpha: style.surface_alpha.clamp(0.45, 1.0),
         syntax_highlighting: style.syntax_highlighting,
         secret_auto_clear: style.secret_auto_clear,
+        pasta_brain_enabled: style.pasta_brain_enabled,
     }) {
         Ok(serialized) => serialized,
         Err(err) => {

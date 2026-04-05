@@ -30,8 +30,9 @@ fn choose_path_with_script(script: &str) -> Option<PathBuf> {
 pub(crate) fn choose_bowl_export_path(prompt: &str, default_name: &str) -> Option<PathBuf> {
     let prompt = escape_applescript_string(prompt);
     let default_name = escape_applescript_string(default_name);
-    let script =
-        format!("POSIX path of (choose file name with prompt \"{prompt}\" default name \"{default_name}\")");
+    let script = format!(
+        "POSIX path of (choose file name with prompt \"{prompt}\" default name \"{default_name}\")"
+    );
     let mut path = choose_path_with_script(&script)?;
     if path.extension().is_none() {
         path.set_extension("yaml");

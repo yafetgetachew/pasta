@@ -2,7 +2,10 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use aes_gcm::{
@@ -17,13 +20,15 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::neural_embed::NeuralEmbedder;
+
 const KEYCHAIN_SERVICE: &str = "com.pasta.launcher";
 const KEYCHAIN_ACCOUNT: &str = "clipboard_encryption_key_v1";
 const SEMANTIC_VECTOR_DIM: usize = 192;
-const SEMANTIC_MIN_MATCH_SCORE: f32 = 0.36;
-const SEMANTIC_MIN_QUERY_CHARS: usize = 3;
+const SEMANTIC_MIN_MATCH_SCORE: f32 = 0.22;
+pub(crate) const SEMANTIC_MIN_QUERY_CHARS: usize = 3;
 const SEMANTIC_EMBEDDING_CACHE_MAX: usize = 12_000;
-const SEMANTIC_SOURCE_TEXT_LIMIT: usize = 4_096;
+pub(crate) const SEMANTIC_SOURCE_TEXT_LIMIT: usize = 4_096;
 const SEARCH_FUZZY_TEXT_LIMIT: usize = 4_096;
 const TAG_ONLY_PREFIX: char = ':';
 const BOWL_TAG_PREFIX: &str = "bowl:";
@@ -92,6 +97,20 @@ pub(crate) enum SearchQuery {
     ExportBowl { bowl_query: String },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum SearchExecution {
+    Fast,
+    Semantic,
+    Neural,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SecretClassificationMode {
+    Auto,
+    ForceSecret,
+    Ignore,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct BowlExportBundle {
     pub(crate) kind: String,
@@ -110,6 +129,12 @@ pub(crate) struct BowlExportItem {
     pub(crate) tags: Vec<String>,
     #[serde(default)]
     pub(crate) parameters: Vec<BowlExportParameter>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) hash_embedding: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) neural_embedding: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) embedding_model: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -129,6 +154,7 @@ pub(crate) struct BowlImportSummary {
 struct ScoredRecord {
     record: ClipboardRecord,
     semantic_score: f32,
+    neural_score: f32,
     lexical_score: f32,
 }
 
@@ -149,6 +175,8 @@ pub struct ClipboardStorage {
     db_path: PathBuf,
     crypto: CryptoBox,
     semantic_embedding_cache: Arc<Mutex<HashMap<String, Vec<f32>>>>,
+    neural_embedding_cache: Arc<Mutex<HashMap<String, Vec<f32>>>>,
+    neural_embedder: Arc<Mutex<Option<Arc<NeuralEmbedder>>>>,
     memory_index: Arc<Mutex<MemorySearchIndex>>,
 }
 
@@ -165,6 +193,8 @@ impl ClipboardStorage {
             db_path,
             crypto: CryptoBox::load_or_create()?,
             semantic_embedding_cache: Arc::new(Mutex::new(HashMap::new())),
+            neural_embedding_cache: Arc::new(Mutex::new(HashMap::new())),
+            neural_embedder: Arc::new(Mutex::new(None)),
             memory_index: Arc::new(Mutex::new(MemorySearchIndex::default())),
         };
         storage.init_schema()?;
@@ -186,6 +216,8 @@ impl ClipboardStorage {
             db_path,
             crypto: CryptoBox::ephemeral(),
             semantic_embedding_cache: Arc::new(Mutex::new(HashMap::new())),
+            neural_embedding_cache: Arc::new(Mutex::new(HashMap::new())),
+            neural_embedder: Arc::new(Mutex::new(None)),
             memory_index: Arc::new(Mutex::new(MemorySearchIndex::default())),
         };
         storage.init_schema()?;
@@ -281,7 +313,22 @@ impl ClipboardStorage {
         Ok(true)
     }
 
-    pub fn search_items(&self, query: &str, limit: usize) -> Result<Vec<ClipboardRecord>> {
+    pub fn search_items(
+        &self,
+        query: &str,
+        limit: usize,
+        pasta_brain: bool,
+        execution: SearchExecution,
+        query_generation: u64,
+        latest_query_generation: Option<&AtomicU64>,
+    ) -> Result<Vec<ClipboardRecord>> {
+        let is_canceled = || {
+            latest_query_generation
+                .is_some_and(|current| current.load(Ordering::Acquire) != query_generation)
+        };
+        if is_canceled() {
+            return Ok(Vec::new());
+        }
         let parsed_query = parse_search_query(query);
         let (effective_query, tag_only, bowl_only) = match &parsed_query {
             SearchQuery::Default { effective_query } => (effective_query.as_str(), false, false),
@@ -294,9 +341,13 @@ impl ClipboardStorage {
             return Ok(self.search_items_by_bowl(effective_query, limit));
         }
 
-        let use_semantic_search = !tag_only
+        let use_semantic_search = matches!(
+            execution,
+            SearchExecution::Semantic | SearchExecution::Neural
+        ) && !tag_only
             && effective_query.chars().count() >= SEMANTIC_MIN_QUERY_CHARS
             && !effective_query.is_empty();
+        let use_neural_search = matches!(execution, SearchExecution::Neural) && use_semantic_search;
         let query_terms = if effective_query.is_empty() {
             Vec::new()
         } else {
@@ -304,6 +355,21 @@ impl ClipboardStorage {
         };
         let query_embedding =
             use_semantic_search.then(|| semantic_embedding(effective_query, &query_terms));
+        let neural_embedder = if pasta_brain && use_neural_search {
+            self.neural_embedder
+                .lock()
+                .ok()
+                .and_then(|guard| guard.clone())
+        } else {
+            None
+        };
+        let query_neural_embedding = if use_neural_search {
+            neural_embedder
+                .as_ref()
+                .map(|embedder| embedder.embed(effective_query, &query_terms))
+        } else {
+            None
+        };
         let index = self
             .memory_index
             .lock()
@@ -313,6 +379,9 @@ impl ClipboardStorage {
         let mut lexical_hits = 0_usize;
 
         for id in &index.order_desc_ids {
+            if is_canceled() {
+                return Ok(Vec::new());
+            }
             let Some(indexed) = index.by_id.get(id) else {
                 continue;
             };
@@ -343,6 +412,7 @@ impl ClipboardStorage {
                 ranked.push(ScoredRecord {
                     record: record.clone(),
                     semantic_score: 0.0,
+                    neural_score: 0.0,
                     lexical_score,
                 });
                 continue;
@@ -362,6 +432,9 @@ impl ClipboardStorage {
             let Some(query_embedding) = query_embedding.as_ref() else {
                 continue;
             };
+            if is_canceled() {
+                return Ok(Vec::new());
+            }
             let fallback_cache_key;
             let cache_key = if indexed.content_hash.is_empty() {
                 fallback_cache_key = format!("id:{}", record.id);
@@ -374,10 +447,27 @@ impl ClipboardStorage {
                 self.cached_semantic_embedding(cache_key, &record.content, &semantic_seed_terms);
             let semantic_score = cosine_similarity(query_embedding, &record_embedding);
 
-            if semantic_score >= SEMANTIC_MIN_MATCH_SCORE {
+            let neural_score = if let Some(query_neural) = query_neural_embedding.as_ref() {
+                if is_canceled() {
+                    return Ok(Vec::new());
+                }
+                let record_neural = self.cached_neural_embedding(
+                    cache_key,
+                    &record.content,
+                    &semantic_seed_terms,
+                    neural_embedder.as_ref(),
+                );
+                cosine_similarity(query_neural, &record_neural)
+            } else {
+                0.0
+            };
+
+            let best_score = semantic_score.max(neural_score);
+            if best_score >= SEMANTIC_MIN_MATCH_SCORE {
                 ranked.push(ScoredRecord {
                     record: record.clone(),
                     semantic_score,
+                    neural_score,
                     lexical_score: 0.0,
                 });
             }
@@ -481,7 +571,7 @@ impl ClipboardStorage {
         output
     }
 
-    fn suggest_bowl_names(&self, bowl_query: &str, limit: usize) -> Vec<String> {
+    pub fn suggest_bowl_names(&self, bowl_query: &str, limit: usize) -> Vec<String> {
         let normalized_query = bowl_query.trim().to_ascii_lowercase();
         let index = self
             .memory_index
@@ -557,27 +647,11 @@ impl ClipboardStorage {
             stored_content
         };
 
-        let (forced_type, forced_tags) = classify_clipboard_text_with_hint(&plaintext, true);
+        let (forced_type, forced_tags) =
+            classify_clipboard_text_with_mode(&plaintext, SecretClassificationMode::ForceSecret);
         let existing_tags: Vec<String> =
             serde_json::from_str(&existing_tags_json).unwrap_or_default();
-
-        let mut merged = forced_tags;
-        let mut seen: HashSet<String> = merged.iter().map(|tag| tag.to_ascii_lowercase()).collect();
-
-        for tag in existing_tags {
-            let lower = tag.to_ascii_lowercase();
-            if matches!(
-                lower.as_str(),
-                "text" | "code" | "command" | "type:text" | "type:code" | "type:command"
-            ) {
-                continue;
-            }
-            if seen.insert(lower) {
-                merged.push(tag);
-            }
-        }
-
-        merged.sort_unstable_by_key(|tag| tag.to_ascii_lowercase());
+        let merged = merge_reclassified_tags(&existing_tags, forced_tags, false);
         let merged_tags_json = serde_json::to_string(&merged)?;
 
         let should_update = existing_item_type != forced_type.as_str() || is_encrypted != 1;
@@ -597,6 +671,55 @@ impl ClipboardStorage {
                 merged_tags_json,
                 id,
             ],
+        )?;
+
+        tx.commit()?;
+        self.sync_index_record_from_db(id)?;
+        Ok(true)
+    }
+
+    pub fn unmark_item_as_secret(&self, id: i64) -> Result<bool> {
+        let mut conn = self.open()?;
+        let tx = conn.transaction()?;
+
+        let existing: Option<(String, i64, String, String)> = tx
+            .query_row(
+                "SELECT content, is_encrypted, item_type, tags FROM clipboard_items WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+
+        let Some((stored_content, is_encrypted, existing_item_type, existing_tags_json)) = existing
+        else {
+            tx.rollback()?;
+            return Ok(false);
+        };
+
+        let plaintext = if is_encrypted == 1 {
+            self.crypto.decrypt(&stored_content)?
+        } else {
+            stored_content
+        };
+
+        let (restored_type, restored_tags) =
+            classify_clipboard_text_with_mode(&plaintext, SecretClassificationMode::Ignore);
+        let existing_tags: Vec<String> =
+            serde_json::from_str(&existing_tags_json).unwrap_or_default();
+        let merged = merge_reclassified_tags(&existing_tags, restored_tags, true);
+        let merged_tags_json = serde_json::to_string(&merged)?;
+
+        let should_update = existing_item_type != restored_type.as_str() || is_encrypted != 0;
+        if !should_update && existing_tags_json == merged_tags_json {
+            tx.rollback()?;
+            return Ok(false);
+        }
+
+        tx.execute(
+            "UPDATE clipboard_items
+             SET item_type = ?1, content = ?2, is_encrypted = 0, tags = ?3
+             WHERE id = ?4",
+            params![restored_type.as_str(), plaintext, merged_tags_json, id],
         )?;
 
         tx.commit()?;
@@ -1158,6 +1281,49 @@ impl ClipboardStorage {
         }
         embedding
     }
+
+    pub fn set_neural_embedder(&self, embedder: Arc<NeuralEmbedder>) {
+        if let Ok(mut guard) = self.neural_embedder.lock() {
+            *guard = Some(embedder);
+        }
+    }
+
+    pub fn get_neural_embedder(&self) -> Option<Arc<NeuralEmbedder>> {
+        self.neural_embedder
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    fn cached_neural_embedding(
+        &self,
+        cache_key: &str,
+        content: &str,
+        seed_terms: &[String],
+        embedder: Option<&Arc<NeuralEmbedder>>,
+    ) -> Vec<f32> {
+        if let Ok(cache) = self.neural_embedding_cache.lock()
+            && let Some(existing) = cache.get(cache_key)
+        {
+            return existing.clone();
+        }
+
+        let Some(embedder) = embedder else {
+            return NeuralEmbedder::zero_vector();
+        };
+
+        let embedding = embedder.embed(
+            bounded_text_prefix(content, SEMANTIC_SOURCE_TEXT_LIMIT),
+            seed_terms,
+        );
+        if let Ok(mut cache) = self.neural_embedding_cache.lock() {
+            if cache.len() >= SEMANTIC_EMBEDDING_CACHE_MAX {
+                cache.clear();
+            }
+            cache.insert(cache_key.to_owned(), embedding.clone());
+        }
+        embedding
+    }
 }
 
 pub(crate) fn parse_search_query(query: &str) -> SearchQuery {
@@ -1450,22 +1616,40 @@ impl CryptoBox {
 }
 
 fn classify_clipboard_text(text: &str) -> (ClipboardItemType, Vec<String>) {
-    classify_clipboard_text_with_hint(text, false)
+    classify_clipboard_text_with_mode(text, SecretClassificationMode::Auto)
 }
 
 fn classify_clipboard_text_with_hint(
     text: &str,
     force_secret: bool,
 ) -> (ClipboardItemType, Vec<String>) {
+    classify_clipboard_text_with_mode(
+        text,
+        if force_secret {
+            SecretClassificationMode::ForceSecret
+        } else {
+            SecretClassificationMode::Auto
+        },
+    )
+}
+
+fn classify_clipboard_text_with_mode(
+    text: &str,
+    mode: SecretClassificationMode,
+) -> (ClipboardItemType, Vec<String>) {
     let mut tags = Vec::new();
     let looks_base64 = looks_like_base64_blob(text);
+    let secret_detection_enabled = matches!(
+        mode,
+        SecretClassificationMode::Auto | SecretClassificationMode::ForceSecret
+    );
 
-    let item_type = if !looks_base64 && looks_like_password(text) {
+    let item_type = if secret_detection_enabled && !looks_base64 && looks_like_password(text) {
         tags.push("sensitive".to_owned());
         tags.push("secret".to_owned());
         tags.push("pass".to_owned());
         ClipboardItemType::Password
-    } else if !looks_base64 && looks_like_high_entropy_secret(text) {
+    } else if secret_detection_enabled && !looks_base64 && looks_like_high_entropy_secret(text) {
         tags.push("sensitive".to_owned());
         tags.push("secret".to_owned());
         tags.push("pass".to_owned());
@@ -1511,10 +1695,10 @@ fn classify_clipboard_text_with_hint(
         enriched.insert(format!("lang:{language}"));
     }
 
-    if force_secret {
+    if mode == SecretClassificationMode::ForceSecret {
         enriched.retain(|tag| {
             let lower = tag.to_ascii_lowercase();
-            !matches!(lower.as_str(), "text" | "code" | "command") && !lower.starts_with("type:")
+            !is_type_classification_tag(&lower)
         });
         enriched.insert("password".to_owned());
         enriched.insert("type:password".to_owned());
@@ -1526,13 +1710,50 @@ fn classify_clipboard_text_with_hint(
     let mut ordered: Vec<String> = enriched.into_iter().collect();
     ordered.sort_unstable();
     (
-        if force_secret {
+        if mode == SecretClassificationMode::ForceSecret {
             ClipboardItemType::Password
         } else {
             item_type
         },
         ordered,
     )
+}
+
+fn is_type_classification_tag(tag: &str) -> bool {
+    matches!(tag, "text" | "code" | "command" | "password") || tag.starts_with("type:")
+}
+
+fn is_secret_classification_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "sensitive" | "secret" | "pass" | "password" | "high_entropy" | "token"
+    )
+}
+
+fn merge_reclassified_tags(
+    existing_tags: &[String],
+    mut derived_tags: Vec<String>,
+    strip_secret_markers: bool,
+) -> Vec<String> {
+    let mut seen: HashSet<String> = derived_tags
+        .iter()
+        .map(|tag| tag.to_ascii_lowercase())
+        .collect();
+
+    for tag in existing_tags {
+        let lower = tag.to_ascii_lowercase();
+        if is_type_classification_tag(&lower)
+            || (strip_secret_markers && is_secret_classification_tag(&lower))
+        {
+            continue;
+        }
+        if seen.insert(lower) {
+            derived_tags.push(tag.clone());
+        }
+    }
+
+    derived_tags.sort_unstable_by_key(|tag| tag.to_ascii_lowercase());
+    derived_tags
 }
 
 fn looks_like_command(text: &str) -> bool {
@@ -2552,9 +2773,11 @@ fn content_hash(content: &str) -> String {
 
 fn combined_search_score(item: &ScoredRecord) -> f32 {
     if item.lexical_score > 0.0 {
-        2.0 + (item.lexical_score * 1.35) + (item.semantic_score * 0.45)
+        2.0 + (item.lexical_score * 1.2) + (item.semantic_score * 0.3) + (item.neural_score * 0.5)
+    } else if item.neural_score > 0.0 || item.semantic_score > 0.0 {
+        (item.semantic_score * 0.35) + (item.neural_score * 0.65)
     } else {
-        item.semantic_score
+        0.0
     }
 }
 
@@ -2611,7 +2834,7 @@ fn lexical_match_score(record: &ClipboardRecord, query: &str, query_terms: &[Str
     score
 }
 
-fn semantic_embedding(content: &str, seed_terms: &[String]) -> Vec<f32> {
+pub(crate) fn semantic_embedding(content: &str, seed_terms: &[String]) -> Vec<f32> {
     let normalized = content.trim().to_ascii_lowercase();
     let mut terms = semantic_tokenize(&normalized);
     for term in seed_terms {
@@ -2792,7 +3015,7 @@ fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
     (dot / norm).clamp(-1.0, 1.0)
 }
 
-fn bounded_text_prefix(value: &str, limit: usize) -> &str {
+pub(crate) fn bounded_text_prefix(value: &str, limit: usize) -> &str {
     if value.len() <= limit {
         return value;
     }
@@ -2803,6 +3026,25 @@ fn bounded_text_prefix(value: &str, limit: usize) -> &str {
     }
 
     &value[..end]
+}
+
+pub(crate) fn encode_f32_vec_base64(vec: &[f32]) -> String {
+    let bytes: Vec<u8> = vec.iter().flat_map(|f| f.to_le_bytes()).collect();
+    BASE64.encode(&bytes)
+}
+
+#[allow(dead_code)]
+pub(crate) fn decode_f32_vec_base64(encoded: &str) -> Option<Vec<f32>> {
+    let bytes = BASE64.decode(encoded).ok()?;
+    if bytes.len() % 4 != 0 {
+        return None;
+    }
+    Some(
+        bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect(),
+    )
 }
 
 pub(crate) fn record_matches_query(record: &ClipboardRecord, query: &str, tag_only: bool) -> bool {
@@ -2850,9 +3092,9 @@ pub(crate) fn record_matches_query(record: &ClipboardRecord, query: &str, tag_on
         )
     };
     let content_terms = tokenize_search_terms(&fuzzy_search_text);
-    query_terms.iter().all(|term| {
-        term_matches_record(record, term, &content, &description, &content_terms)
-    })
+    query_terms
+        .iter()
+        .all(|term| term_matches_record(record, term, &content, &description, &content_terms))
 }
 
 pub fn render_parameterized_content(
@@ -3210,6 +3452,38 @@ fn levenshtein_with_limit(a: &str, b: &str, limit: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        fs,
+        sync::{Arc, Mutex},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn test_storage(name: &str) -> ClipboardStorage {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the unix epoch")
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!(
+            "pasta-storage-{name}-{}-{unique}.db",
+            std::process::id()
+        ));
+
+        let storage = ClipboardStorage {
+            db_path,
+            crypto: CryptoBox::ephemeral(),
+            semantic_embedding_cache: Arc::new(Mutex::new(HashMap::new())),
+            neural_embedding_cache: Arc::new(Mutex::new(HashMap::new())),
+            neural_embedder: Arc::new(Mutex::new(None)),
+            memory_index: Arc::new(Mutex::new(MemorySearchIndex::default())),
+        };
+        storage
+            .init_schema()
+            .expect("test storage schema should initialize");
+        storage
+            .rebuild_memory_index()
+            .expect("test storage index should initialize");
+        storage
+    }
 
     #[test]
     fn semantic_similarity_prefers_related_content() {
@@ -3432,6 +3706,9 @@ mod tests {
                     default_value: "100".to_owned(),
                 },
             ],
+            hash_embedding: None,
+            neural_embedding: None,
+            embedding_model: None,
         };
 
         let (content, parameters) = rehydrate_bowl_export_item(&item);
@@ -3470,6 +3747,59 @@ mod tests {
             tag_search_autocomplete_context(":rust ").expect("expected tag context after space");
         assert!(context.completed_terms.contains("rust"));
         assert_eq!(context.fragment, "");
+    }
+
+    #[test]
+    fn unmark_item_as_secret_restores_plain_command_content() {
+        let storage = test_storage("unmark-secret");
+        let content = "kubectl get pods -n default -o wide";
+
+        storage
+            .upsert_clipboard_item(content)
+            .expect("seed command should insert");
+        let inserted = storage
+            .search_items("", 10, false, SearchExecution::Fast, 1, None)
+            .expect("should load inserted items");
+        let item_id = inserted.first().expect("expected inserted item").id;
+
+        assert!(
+            storage
+                .mark_item_as_secret(item_id)
+                .expect("mark secret should succeed")
+        );
+        assert!(
+            storage
+                .unmark_item_as_secret(item_id)
+                .expect("unmark secret should succeed")
+        );
+
+        let restored = storage
+            .search_items("", 10, false, SearchExecution::Fast, 2, None)
+            .expect("should load restored items")
+            .into_iter()
+            .find(|item| item.id == item_id)
+            .expect("restored item should still exist");
+
+        assert_eq!(restored.item_type, ClipboardItemType::Command);
+        assert_eq!(restored.content, content);
+        assert!(
+            restored
+                .tags
+                .iter()
+                .any(|tag| tag.eq_ignore_ascii_case("shell"))
+        );
+        assert!(
+            restored.tags.iter().all(|tag| {
+                !matches!(
+                    tag.to_ascii_lowercase().as_str(),
+                    "secret" | "sensitive" | "pass" | "password" | "high_entropy" | "token"
+                )
+            }),
+            "restored tags should not keep secret markers: {:?}",
+            restored.tags
+        );
+
+        let _ = fs::remove_file(&storage.db_path);
     }
 
     #[test]

@@ -1,0 +1,84 @@
+kind: pasta-bowl
+version: 1
+bowl: K8S-OPS
+exported_at: "2026-03-31T09:30:00Z"
+items:
+  - item_type: command
+    content: "kubectl get pods -n {{namespace}} -o wide"
+    description: "List all pods in a namespace with node placement info"
+    tags:
+      - k8s
+      - debug
+    parameters:
+      - name: namespace
+        default_value: default
+
+  - item_type: command
+    content: "kubectl logs -f deployment/{{deployment}} -n {{namespace}} --tail={{lines}}"
+    description: "Stream logs from a deployment"
+    tags:
+      - k8s
+      - logs
+    parameters:
+      - name: deployment
+        default_value: ""
+      - name: namespace
+        default_value: default
+      - name: lines
+        default_value: "100"
+
+  - item_type: command
+    content: "kubectl describe pod {{pod}} -n {{namespace}}"
+    description: "Inspect pod events and failure reasons"
+    tags:
+      - k8s
+      - debug
+    parameters:
+      - name: pod
+        default_value: ""
+      - name: namespace
+        default_value: default
+
+  - item_type: command
+    content: "kubectl get events -n {{namespace}} --sort-by=.lastTimestamp | tail -n {{count}}"
+    description: "Show the latest namespace events"
+    tags:
+      - k8s
+      - events
+    parameters:
+      - name: namespace
+        default_value: default
+      - name: count
+        default_value: "40"
+
+  - item_type: command
+    content: "kubectl rollout restart deployment/{{deployment}} -n {{namespace}}"
+    description: "Restart a deployment safely"
+    tags:
+      - k8s
+      - deploy
+    parameters:
+      - name: deployment
+        default_value: ""
+      - name: namespace
+        default_value: default
+
+  - item_type: code
+    content: |
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: {{name}}
+        namespace: {{namespace}}
+      data:
+        LOG_LEVEL: info
+        FEATURE_FLAG: "true"
+    description: "ConfigMap template"
+    tags:
+      - k8s
+      - yaml
+    parameters:
+      - name: name
+        default_value: my-config
+      - name: namespace
+        default_value: default

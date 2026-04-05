@@ -1,3 +1,20 @@
+# Build artifacts
 target/
+
+# macOS
 .DS_Store
+**/.DS_Store
+
+# Editor
 *.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Model cache (downloaded on first run)
+.fastembed_cache/
+
+# Environment
+.env
+.env.local

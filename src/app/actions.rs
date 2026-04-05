@@ -1,6 +1,9 @@
 #[cfg(target_os = "macos")]
-use super::state::{
-    CachedRowPresentation, SearchRequest, SearchResponse, TextInputState,
+use super::state::{CachedRowPresentation, SearchRequest, SearchResponse, TextInputState};
+#[cfg(target_os = "macos")]
+use crate::storage::{
+    SEMANTIC_MIN_QUERY_CHARS, SEMANTIC_SOURCE_TEXT_LIMIT, SearchExecution, bounded_text_prefix,
+    encode_f32_vec_base64, semantic_embedding,
 };
 #[cfg(target_os = "macos")]
 use crate::*;
@@ -9,10 +12,18 @@ use serde_json::Value;
 #[cfg(target_os = "macos")]
 use std::collections::{HashMap, HashSet};
 #[cfg(target_os = "macos")]
+use std::sync::atomic::Ordering;
+#[cfg(target_os = "macos")]
 use toml::Value as TomlValue;
 
 #[cfg(target_os = "macos")]
 const TAG_SEARCH_AUTOCOMPLETE_LIMIT: usize = 6;
+#[cfg(target_os = "macos")]
+const SEARCH_SEMANTIC_DELAY_MS: u64 = 90;
+#[cfg(target_os = "macos")]
+const SEARCH_NEURAL_DELAY_MS: u64 = 320;
+#[cfg(target_os = "macos")]
+const SEARCH_NEURAL_MIN_QUERY_CHARS: usize = 5;
 
 impl LauncherView {
     pub(crate) fn new(
@@ -20,7 +31,9 @@ impl LauncherView {
         font_family: SharedString,
         surface_alpha: f32,
         syntax_highlighting: bool,
+        pasta_brain_enabled: bool,
         search_request_tx: mpsc::Sender<SearchRequest>,
+        search_generation_token: Arc<std::sync::atomic::AtomicU64>,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut view = Self {
@@ -28,6 +41,7 @@ impl LauncherView {
             font_family,
             surface_alpha,
             syntax_highlighting,
+            pasta_brain_enabled,
             query_input_state: TextInputState::new(cx),
             info_editor_input_state: TextInputState::new(cx),
             tag_editor_input_state: TextInputState::new(cx),
@@ -37,8 +51,9 @@ impl LauncherView {
             pending_text_input_focus: None,
             results_scroll: UniformListScrollHandle::new(),
             search_request_tx,
-            next_search_request_id: 0,
-            latest_search_request_id: 0,
+            search_generation: 0,
+            search_generation_token,
+            latest_applied_search_execution: SearchExecution::Fast,
             query: String::new(),
             tag_search_suggestions: Vec::new(),
             items: Vec::new(),
@@ -64,6 +79,7 @@ impl LauncherView {
             bowl_editor_target_id: None,
             bowl_editor_input: String::new(),
             bowl_editor_select_all: false,
+            bowl_editor_suggestions: Vec::new(),
             parameter_editor_target_id: None,
             parameter_editor_stage: ParameterEditorStage::SelectValue,
             parameter_editor_force_full: true,
@@ -71,6 +87,7 @@ impl LauncherView {
             parameter_editor_name_inputs: Vec::new(),
             parameter_editor_name_focus_index: 0,
             parameter_editor_name_select_all: false,
+            parameter_editor_split_tokens: HashSet::new(),
             parameter_fill_target_id: None,
             parameter_fill_values: Vec::new(),
             parameter_fill_focus_index: 0,
@@ -82,7 +99,8 @@ impl LauncherView {
             show_command_help: false,
             last_window_appearance: None,
         };
-        view.request_search();
+        view.begin_search_generation();
+        view.request_search(SearchExecution::Fast);
         view
     }
 
@@ -113,6 +131,7 @@ impl LauncherView {
         self.bowl_editor_target_id = None;
         self.bowl_editor_input.clear();
         self.bowl_editor_select_all = false;
+        self.bowl_editor_suggestions.clear();
         self.parameter_editor_target_id = None;
         self.parameter_editor_stage = ParameterEditorStage::SelectValue;
         self.parameter_editor_force_full = true;
@@ -120,6 +139,7 @@ impl LauncherView {
         self.parameter_editor_name_inputs.clear();
         self.parameter_editor_name_focus_index = 0;
         self.parameter_editor_name_select_all = false;
+        self.parameter_editor_split_tokens.clear();
         self.parameter_fill_target_id = None;
         self.parameter_fill_values.clear();
         self.parameter_fill_focus_index = 0;
@@ -130,20 +150,25 @@ impl LauncherView {
         self.suppress_auto_hide_until = None;
         self.show_command_help = false;
         self.last_window_appearance = None;
-        self.request_search();
-    }
-
-    pub(crate) fn rebuild_row_presentations(&mut self) {
-        self.row_presentations = self
-            .items
-            .iter()
-            .map(CachedRowPresentation::from_record)
-            .collect();
+        self.begin_search_generation();
+        self.request_search(SearchExecution::Fast);
     }
 
     pub(crate) fn set_items(&mut self, items: Vec<ClipboardRecord>) {
         self.items = items;
-        self.rebuild_row_presentations();
+        self.row_presentations = CachedRowPresentation::collect(&self.items);
+        if self.selected_index >= self.items.len() {
+            self.selected_index = 0;
+        }
+    }
+
+    pub(crate) fn set_search_results(
+        &mut self,
+        items: Vec<ClipboardRecord>,
+        row_presentations: Vec<CachedRowPresentation>,
+    ) {
+        self.items = items;
+        self.row_presentations = row_presentations;
         if self.selected_index >= self.items.len() {
             self.selected_index = 0;
         }
@@ -164,6 +189,12 @@ impl LauncherView {
         self.reset_results_scroll_to_top();
         self.refresh_tag_search_suggestions();
         self.schedule_query_refresh();
+        self.schedule_delayed_query_refresh(
+            SearchExecution::Semantic,
+            SEARCH_SEMANTIC_DELAY_MS,
+            cx,
+        );
+        self.schedule_delayed_query_refresh(SearchExecution::Neural, SEARCH_NEURAL_DELAY_MS, cx);
         cx.notify();
     }
 
@@ -181,7 +212,11 @@ impl LauncherView {
         self.query_input_state.marked_range = None;
     }
 
-    pub(crate) fn apply_tag_search_suggestion_index(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub(crate) fn apply_tag_search_suggestion_index(
+        &mut self,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) {
         let Some(suggestion) = self.tag_search_suggestions.get(index).cloned() else {
             return;
         };
@@ -311,15 +346,10 @@ impl LauncherView {
         if item.item_type != ClipboardItemType::Password {
             return;
         }
-        self.suppress_auto_hide = true;
-        let authenticated = authenticate_with_touch_id("Reveal secret in Pasta");
-        self.suppress_auto_hide = false;
-        self.suppress_auto_hide_until = Some(Instant::now() + Duration::from_millis(250));
-        if !authenticated {
+        if !self.authenticate_secret_action("Reveal secret in Pasta", cx) {
             return;
         }
 
-        cx.activate(true);
         self.revealed_secret_id = Some(item.id);
         self.reveal_until = Some(Instant::now() + Duration::from_secs(12));
 
@@ -409,38 +439,47 @@ impl LauncherView {
         true
     }
 
-    pub(crate) fn refresh_items(&mut self) {
+    pub(crate) fn refresh_items(&mut self, execution: SearchExecution) {
         let items = self
             .storage
-            .search_items(&self.query, 48)
+            .search_items(
+                &self.query,
+                48,
+                self.pasta_brain_enabled,
+                execution,
+                self.search_generation,
+                None,
+            )
             .unwrap_or_else(|_| Vec::new());
         self.set_items(items);
     }
 
-    pub(crate) fn request_search(&mut self) {
-        self.next_search_request_id = self.next_search_request_id.wrapping_add(1);
-        let request_id = self.next_search_request_id;
-        self.latest_search_request_id = request_id;
-
+    pub(crate) fn request_search(&mut self, execution: SearchExecution) {
         if self
             .search_request_tx
             .send(SearchRequest {
-                request_id,
+                query_generation: self.search_generation,
                 query: self.query.clone(),
+                pasta_brain: self.pasta_brain_enabled,
+                execution,
             })
             .is_err()
         {
             // Fallback for environments where the worker thread is unavailable.
-            self.refresh_items();
+            self.refresh_items(execution);
         }
     }
 
     pub(crate) fn apply_search_response(&mut self, response: SearchResponse) -> bool {
-        if response.request_id < self.latest_search_request_id {
+        if response.query_generation != self.search_generation {
+            return false;
+        }
+        if response.execution < self.latest_applied_search_execution {
             return false;
         }
 
-        self.set_items(response.items);
+        self.set_search_results(response.items, response.row_presentations);
+        self.latest_applied_search_execution = response.execution;
         if self.selected_index == 0 {
             self.reset_results_scroll_to_top();
         }
@@ -448,7 +487,59 @@ impl LauncherView {
     }
 
     pub(crate) fn schedule_query_refresh(&mut self) {
-        self.request_search();
+        self.begin_search_generation();
+        self.request_search(SearchExecution::Fast);
+    }
+
+    pub(crate) fn preferred_refresh_execution(&self) -> SearchExecution {
+        if should_schedule_delayed_search(
+            &self.query,
+            self.pasta_brain_enabled,
+            SearchExecution::Neural,
+        ) {
+            SearchExecution::Neural
+        } else if should_schedule_delayed_search(
+            &self.query,
+            self.pasta_brain_enabled,
+            SearchExecution::Semantic,
+        ) {
+            SearchExecution::Semantic
+        } else {
+            SearchExecution::Fast
+        }
+    }
+
+    fn begin_search_generation(&mut self) {
+        self.search_generation = self.search_generation.wrapping_add(1);
+        self.search_generation_token
+            .store(self.search_generation, Ordering::Release);
+        self.latest_applied_search_execution = SearchExecution::Fast;
+    }
+
+    fn schedule_delayed_query_refresh(
+        &self,
+        execution: SearchExecution,
+        delay_ms: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if !should_schedule_delayed_search(&self.query, self.pasta_brain_enabled, execution) {
+            return;
+        }
+
+        let expected_generation = self.search_generation;
+        let expected_query = self.query.clone();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(delay_ms))
+                .await;
+            let _ = this.update(cx, |view, _cx| {
+                if view.search_generation != expected_generation || view.query != expected_query {
+                    return;
+                }
+                view.request_search(execution);
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn move_selection(&mut self, direction: i32, cx: &mut Context<Self>) {
@@ -542,7 +633,7 @@ impl LauncherView {
 
         match self.storage.delete_item(item_id) {
             Ok(_) => {
-                self.refresh_items();
+                self.refresh_items(self.preferred_refresh_execution());
                 if !self.items.is_empty() {
                     self.results_scroll
                         .scroll_to_item(self.selected_index, ScrollStrategy::Center);
@@ -563,24 +654,8 @@ impl LauncherView {
 
         match self.storage.mark_item_as_secret(item_id) {
             Ok(true) => {
-                self.revealed_secret_id = None;
-                self.reveal_until = None;
-                self.last_reveal_second_bucket = None;
-
-                let previous_index = self.selected_index;
-                self.refresh_items();
-                if let Some(ix) = self.items.iter().position(|entry| entry.id == item_id) {
-                    self.selected_index = ix;
-                } else if !self.items.is_empty() {
-                    self.selected_index = previous_index.min(self.items.len().saturating_sub(1));
-                } else {
-                    self.selected_index = 0;
-                }
-                if !self.items.is_empty() {
-                    self.results_scroll
-                        .scroll_to_item(self.selected_index, ScrollStrategy::Center);
-                }
-                self.selection_changed_at = Instant::now();
+                self.reset_secret_reveal_state();
+                self.refresh_after_selected_item_update(item_id);
                 show_macos_notification("Pasta", "Item marked as secret.");
                 cx.notify();
             }
@@ -592,6 +667,83 @@ impl LauncherView {
                 show_macos_notification("Pasta", "Failed to mark item as secret.");
             }
         }
+    }
+
+    pub(crate) fn unmark_selected_item_as_secret(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.items.get(self.selected_index).cloned() else {
+            return;
+        };
+        if item.item_type != ClipboardItemType::Password {
+            show_macos_notification("Pasta", "Item is already unprotected.");
+            return;
+        }
+        if !self.authenticate_secret_action("Remove secret protection in Pasta", cx) {
+            return;
+        }
+
+        match self.storage.unmark_item_as_secret(item.id) {
+            Ok(true) => {
+                self.reset_secret_reveal_state();
+                self.refresh_after_selected_item_update(item.id);
+                show_macos_notification("Pasta", "Secret protection removed.");
+                cx.notify();
+            }
+            Ok(false) => {
+                show_macos_notification("Pasta", "Item is already unprotected.");
+            }
+            Err(err) => {
+                eprintln!("warning: failed to unmark item as secret: {err}");
+                show_macos_notification("Pasta", "Failed to remove secret protection.");
+            }
+        }
+    }
+
+    pub(crate) fn toggle_selected_item_secret_state(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.items.get(self.selected_index) else {
+            return;
+        };
+
+        if item.item_type == ClipboardItemType::Password {
+            self.unmark_selected_item_as_secret(cx);
+        } else {
+            self.mark_selected_item_as_secret(cx);
+        }
+    }
+
+    fn reset_secret_reveal_state(&mut self) {
+        self.revealed_secret_id = None;
+        self.reveal_until = None;
+        self.last_reveal_second_bucket = None;
+    }
+
+    fn authenticate_secret_action(&mut self, reason: &str, cx: &mut Context<Self>) -> bool {
+        self.suppress_auto_hide = true;
+        let authenticated = authenticate_with_touch_id(reason);
+        self.suppress_auto_hide = false;
+        self.suppress_auto_hide_until = Some(Instant::now() + Duration::from_millis(250));
+        if !authenticated {
+            return false;
+        }
+
+        cx.activate(true);
+        true
+    }
+
+    fn refresh_after_selected_item_update(&mut self, item_id: i64) {
+        let previous_index = self.selected_index;
+        self.refresh_items(self.preferred_refresh_execution());
+        if let Some(ix) = self.items.iter().position(|entry| entry.id == item_id) {
+            self.selected_index = ix;
+        } else if !self.items.is_empty() {
+            self.selected_index = previous_index.min(self.items.len().saturating_sub(1));
+        } else {
+            self.selected_index = 0;
+        }
+        if !self.items.is_empty() {
+            self.results_scroll
+                .scroll_to_item(self.selected_index, ScrollStrategy::Center);
+        }
+        self.selection_changed_at = Instant::now();
     }
 
     pub(crate) fn start_info_editor_for_selected(&mut self, cx: &mut Context<Self>) {
@@ -636,7 +788,7 @@ impl LauncherView {
         match self.storage.upsert_item_description(item_id, &normalized) {
             Ok(true) => {
                 let previous_index = self.selected_index;
-                self.refresh_items();
+                self.refresh_items(self.preferred_refresh_execution());
                 if let Some(ix) = self.items.iter().position(|entry| entry.id == item_id) {
                     self.selected_index = ix;
                 } else if !self.items.is_empty() {
@@ -715,6 +867,7 @@ impl LauncherView {
         }
         self.bowl_editor_input_state.selection_reversed = false;
         self.bowl_editor_input_state.marked_range = None;
+        self.bowl_editor_suggestions = self.storage.suggest_bowl_names(&self.bowl_editor_input, 6);
         self.parameter_editor_target_id = None;
         self.parameter_editor_selected_targets.clear();
         self.parameter_editor_name_inputs.clear();
@@ -751,11 +904,12 @@ impl LauncherView {
         match self.storage.set_item_bowl(item_id, requested_bowl) {
             Ok(changed) => {
                 let previous_index = self.selected_index;
-                self.refresh_items();
+                self.refresh_items(self.preferred_refresh_execution());
                 if let Some(ix) = self.items.iter().position(|entry| entry.id == item_id) {
                     self.selected_index = ix;
                     self.selection_changed_at = Instant::now();
-                    self.results_scroll.scroll_to_item(ix, ScrollStrategy::Center);
+                    self.results_scroll
+                        .scroll_to_item(ix, ScrollStrategy::Center);
                 } else if !self.items.is_empty() {
                     self.selected_index = previous_index.min(self.items.len().saturating_sub(1));
                     self.selection_changed_at = Instant::now();
@@ -767,6 +921,7 @@ impl LauncherView {
                 self.bowl_editor_input.clear();
                 self.bowl_editor_input_state.reset();
                 self.bowl_editor_select_all = false;
+                self.bowl_editor_suggestions.clear();
                 self.queue_text_input_focus(TextInputTarget::Query);
                 if changed {
                     show_macos_notification(
@@ -801,6 +956,7 @@ impl LauncherView {
         self.bowl_editor_input.clear();
         self.bowl_editor_input_state.reset();
         self.bowl_editor_select_all = false;
+        self.bowl_editor_suggestions.clear();
         self.queue_text_input_focus(TextInputTarget::Query);
         cx.notify();
     }
@@ -814,13 +970,15 @@ impl LauncherView {
             Ok(changed) => {
                 if changed {
                     let previous_index = self.selected_index;
-                    self.refresh_items();
+                    self.refresh_items(self.preferred_refresh_execution());
                     if let Some(ix) = self.items.iter().position(|entry| entry.id == item_id) {
                         self.selected_index = ix;
                         self.selection_changed_at = Instant::now();
-                        self.results_scroll.scroll_to_item(ix, ScrollStrategy::Center);
+                        self.results_scroll
+                            .scroll_to_item(ix, ScrollStrategy::Center);
                     } else if !self.items.is_empty() {
-                        self.selected_index = previous_index.min(self.items.len().saturating_sub(1));
+                        self.selected_index =
+                            previous_index.min(self.items.len().saturating_sub(1));
                         self.selection_changed_at = Instant::now();
                         self.results_scroll
                             .scroll_to_item(self.selected_index, ScrollStrategy::Center);
@@ -838,14 +996,14 @@ impl LauncherView {
         }
     }
 
-    pub(crate) fn export_bowl_from_query(&mut self) {
+    pub(crate) fn export_bowl_from_query(&mut self, cx: &mut Context<Self>) {
         let SearchQuery::ExportBowl { bowl_query } = parse_search_query(&self.query) else {
             return;
         };
-        self.export_bowl_named(&bowl_query);
+        self.export_bowl_named(&bowl_query, cx);
     }
 
-    fn export_bowl_named(&mut self, bowl_name: &str) {
+    fn export_bowl_named(&mut self, bowl_name: &str, cx: &mut Context<Self>) {
         let bowl_name = bowl_name.trim();
         if bowl_name.is_empty() {
             show_macos_notification(
@@ -866,10 +1024,9 @@ impl LauncherView {
             return;
         }
 
-        if let Some(item) = items
-            .iter()
-            .find(|item| item.item_type != ClipboardItemType::Password && item.description.trim().is_empty())
-        {
+        if let Some(item) = items.iter().find(|item| {
+            item.item_type != ClipboardItemType::Password && item.description.trim().is_empty()
+        }) {
             show_macos_notification(
                 "Pasta",
                 &format!(
@@ -880,13 +1037,22 @@ impl LauncherView {
             return;
         }
 
-        let bundle = build_bowl_export_bundle(bowl_name, &items);
+        let bundle = build_bowl_export_bundle(bowl_name, &items, &self.storage);
+        self.suppress_auto_hide = true;
         let Some(path) = choose_bowl_export_path(
             "Export Pasta bowl",
             &suggested_bowl_export_filename(&bundle.bowl),
         ) else {
+            self.suppress_auto_hide = false;
+            self.suppress_auto_hide_until = Some(Instant::now() + Duration::from_millis(350));
+            cx.activate(true);
+            cx.notify();
             return;
         };
+
+        self.suppress_auto_hide = false;
+        self.suppress_auto_hide_until = Some(Instant::now() + Duration::from_millis(350));
+        cx.activate(true);
 
         let yaml = match serde_yaml::to_string(&bundle) {
             Ok(yaml) => yaml,
@@ -910,14 +1076,22 @@ impl LauncherView {
         show_macos_notification(
             "Pasta",
             &if excluded_secret_count == 0 {
-                format!("Exported {} snippets from {}.", bundle.items.len(), bundle.bowl)
+                format!(
+                    "Exported {} snippets from {}.",
+                    bundle.items.len(),
+                    bundle.bowl
+                )
             } else {
                 format!(
                     "Exported {} entries from {}. {} secret {} redacted.",
                     bundle.items.len(),
                     bundle.bowl,
                     excluded_secret_count,
-                    if excluded_secret_count == 1 { "was" } else { "were" }
+                    if excluded_secret_count == 1 {
+                        "was"
+                    } else {
+                        "were"
+                    }
                 )
             },
         );
@@ -966,7 +1140,10 @@ impl LauncherView {
                 self.query_did_change(cx);
                 show_macos_notification(
                     "Pasta",
-                    &format!("Imported {} snippets into {}.", summary.imported_count, summary.bowl),
+                    &format!(
+                        "Imported {} snippets into {}.",
+                        summary.imported_count, summary.bowl
+                    ),
                 );
             }
             Err(err) => {
@@ -1038,11 +1215,12 @@ impl LauncherView {
         match result {
             Ok(true) => {
                 let previous_index = self.selected_index;
-                self.refresh_items();
+                self.refresh_items(self.preferred_refresh_execution());
                 if let Some(ix) = self.items.iter().position(|entry| entry.id == item_id) {
                     self.selected_index = ix;
                     self.selection_changed_at = Instant::now();
-                    self.results_scroll.scroll_to_item(ix, ScrollStrategy::Center);
+                    self.results_scroll
+                        .scroll_to_item(ix, ScrollStrategy::Center);
                 } else if !self.items.is_empty() {
                     self.selected_index = previous_index.min(self.items.len().saturating_sub(1));
                     self.selection_changed_at = Instant::now();
@@ -1119,6 +1297,7 @@ impl LauncherView {
         self.parameter_name_input_state.reset();
         self.parameter_editor_name_focus_index = 0;
         self.parameter_editor_name_select_all = false;
+        self.parameter_editor_split_tokens.clear();
         self.parameter_editor_stage = ParameterEditorStage::SelectValue;
         self.parameter_editor_force_full = true;
         self.parameter_fill_target_id = None;
@@ -1140,6 +1319,7 @@ impl LauncherView {
         self.parameter_name_input_state.reset();
         self.parameter_editor_name_focus_index = 0;
         self.parameter_editor_name_select_all = false;
+        self.parameter_editor_split_tokens.clear();
         self.parameter_editor_stage = ParameterEditorStage::SelectValue;
         self.parameter_editor_force_full = true;
         self.queue_text_input_focus(TextInputTarget::Query);
@@ -1153,6 +1333,7 @@ impl LauncherView {
         self.parameter_name_input_state.reset();
         self.parameter_editor_name_focus_index = 0;
         self.parameter_editor_name_select_all = false;
+        self.parameter_editor_split_tokens.clear();
     }
 
     pub(crate) fn set_parameter_editor_full_mode(
@@ -1459,7 +1640,7 @@ impl LauncherView {
 
         if changed {
             let previous_index = self.selected_index;
-            self.refresh_items();
+            self.refresh_items(self.preferred_refresh_execution());
             if let Some(ix) = self.items.iter().position(|entry| entry.id == item_id) {
                 self.selected_index = ix;
             } else if !self.items.is_empty() {
@@ -1505,8 +1686,44 @@ impl LauncherView {
         else {
             return;
         };
-        let candidates = parameter_clickable_candidates(&content, self.parameter_editor_force_full);
-        let Some(candidate) = candidates.get(range_index) else {
+        let raw_candidates =
+            parameter_clickable_candidates(&content, self.parameter_editor_force_full);
+
+        if additive {
+            // Cmd+click: if the clicked token is sub-splittable, toggle its expansion.
+            let Some(raw_candidate) = raw_candidates.get(range_index) else {
+                // range_index maps into expanded list — resolve from there.
+                let expanded = expand_candidates_with_splits(
+                    raw_candidates,
+                    &self.parameter_editor_split_tokens,
+                );
+                if let Some(candidate) = expanded.get(range_index) {
+                    self.toggle_parameter_target(
+                        &candidate.target,
+                        candidate.suggested_name.as_deref(),
+                    );
+                }
+                cx.notify();
+                return;
+            };
+            if token_is_sub_splittable(&raw_candidate.target)
+                && !self
+                    .parameter_editor_split_tokens
+                    .contains(&raw_candidate.target)
+            {
+                // First Cmd+click: expand this token into sub-tokens.
+                self.parameter_editor_split_tokens
+                    .insert(raw_candidate.target.clone());
+                cx.notify();
+                return;
+            }
+            // Token is already expanded or not splittable — fall through to toggle.
+        }
+
+        // Use expanded candidates for resolving the actual index.
+        let expanded =
+            expand_candidates_with_splits(raw_candidates, &self.parameter_editor_split_tokens);
+        let Some(candidate) = expanded.get(range_index) else {
             return;
         };
         let target = candidate.target.as_str();
@@ -1643,7 +1860,10 @@ impl LauncherView {
             return;
         }
         self.parameter_fill_focus_index = index.min(self.parameter_fill_values.len() - 1);
-        if let Some(active_value) = self.parameter_fill_values.get(self.parameter_fill_focus_index) {
+        if let Some(active_value) = self
+            .parameter_fill_values
+            .get(self.parameter_fill_focus_index)
+        {
             let cursor = active_value.len();
             self.parameter_fill_input_state.selected_range = cursor..cursor;
         }
@@ -1844,6 +2064,18 @@ impl LauncherView {
                 self.commit_bowl_editor(cx);
                 return;
             }
+            "tab" if !event.keystroke.modifiers.modified() => {
+                if let Some(suggestion) = self.bowl_editor_suggestions.first().cloned() {
+                    self.bowl_editor_input = suggestion;
+                    let len = self.bowl_editor_input.len();
+                    self.bowl_editor_input_state.selected_range = len..len;
+                    self.bowl_editor_input_state.selection_reversed = false;
+                    self.bowl_editor_input_state.marked_range = None;
+                    self.bowl_editor_suggestions = self.storage.suggest_bowl_names(&self.bowl_editor_input, 6);
+                    cx.notify();
+                }
+                return;
+            }
             _ => {}
         }
     }
@@ -1910,10 +2142,16 @@ impl LauncherView {
             )),
             TransformAction::JsonEncode => json_encode_transform(&item.content),
             TransformAction::JsonDecode => json_decode_transform(&item.content),
+            TransformAction::JsonPretty => json_pretty_transform(&item.content),
+            TransformAction::JsonMinify => json_minify_transform(&item.content),
             TransformAction::UrlEncode => url_encode_transform(&item.content),
             TransformAction::UrlDecode => url_decode_transform(&item.content),
             TransformAction::Base64Encode => base64_encode_transform(&item.content),
             TransformAction::Base64Decode => base64_decode_transform(&item.content),
+            TransformAction::JwtDecode => jwt_decode_transform(&item.content),
+            TransformAction::EpochDecode => epoch_decode_transform(&item.content),
+            TransformAction::Sha256Hash => sha256_hash_transform(&item.content),
+            TransformAction::ContentStats => content_stats_transform(&item.content),
             TransformAction::PublicCertPemInfo => public_cert_pem_info_transform(&item.content),
         };
 
@@ -1943,7 +2181,7 @@ impl LauncherView {
         self.transform_menu_open = false;
         self.selected_index = 0;
         self.selection_changed_at = Instant::now();
-        self.refresh_items();
+        self.refresh_items(self.preferred_refresh_execution());
         if !self.items.is_empty() {
             self.results_scroll.scroll_to_item(0, ScrollStrategy::Top);
         }
@@ -2030,8 +2268,11 @@ impl LauncherView {
                 return;
             }
             "enter" | "return" => {
-                if matches!(parse_search_query(&self.query), SearchQuery::ExportBowl { .. }) {
-                    self.export_bowl_from_query();
+                if matches!(
+                    parse_search_query(&self.query),
+                    SearchQuery::ExportBowl { .. }
+                ) {
+                    self.export_bowl_from_query(cx);
                     return;
                 }
                 self.copy_selected_to_clipboard(cx);
@@ -2063,7 +2304,7 @@ impl LauncherView {
                 && !modifiers.alt
                 && !modifiers.function =>
             {
-                self.mark_selected_item_as_secret(cx);
+                self.toggle_selected_item_secret_state(cx);
                 return;
             }
             "h" if modifiers.platform
@@ -2191,6 +2432,68 @@ pub(super) struct ParameterClickableCandidate {
     pub(super) target: String,
     pub(super) label: String,
     pub(super) suggested_name: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+fn is_sub_split_delimiter(ch: char) -> bool {
+    matches!(ch, '/' | '.' | ':')
+}
+
+#[cfg(target_os = "macos")]
+fn token_is_sub_splittable(target: &str) -> bool {
+    target.chars().any(is_sub_split_delimiter)
+        && target.chars().filter(|ch| is_sub_split_delimiter(*ch)).count() <= 8
+}
+
+#[cfg(target_os = "macos")]
+fn sub_split_token(target: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+
+    for ch in target.chars() {
+        if is_sub_split_delimiter(ch) {
+            if !current.is_empty() {
+                parts.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn expand_candidates_with_splits(
+    candidates: Vec<ParameterClickableCandidate>,
+    split_tokens: &HashSet<String>,
+) -> Vec<ParameterClickableCandidate> {
+    if split_tokens.is_empty() {
+        return candidates;
+    }
+
+    let mut expanded = Vec::new();
+    for candidate in candidates {
+        if split_tokens.contains(&candidate.target) && token_is_sub_splittable(&candidate.target) {
+            let sub_parts = sub_split_token(&candidate.target);
+            for part in sub_parts {
+                if part.is_empty() {
+                    continue;
+                }
+                let label = preview_for_parameter_candidate(&part, 28);
+                expanded.push(ParameterClickableCandidate {
+                    target: part,
+                    label,
+                    suggested_name: None,
+                });
+            }
+        } else {
+            expanded.push(candidate);
+        }
+    }
+    expanded
 }
 
 #[cfg(target_os = "macos")]
@@ -2800,6 +3103,32 @@ fn apply_search_suggestion_to_query(query: &str, suggestion: &str) -> Option<Str
 }
 
 #[cfg(target_os = "macos")]
+fn should_schedule_delayed_search(
+    query: &str,
+    pasta_brain_enabled: bool,
+    execution: SearchExecution,
+) -> bool {
+    match parse_search_query(query) {
+        SearchQuery::Default { effective_query } => {
+            if effective_query.is_empty() {
+                return false;
+            }
+            let char_count = effective_query.chars().count();
+            match execution {
+                SearchExecution::Fast => true,
+                SearchExecution::Semantic => char_count >= SEMANTIC_MIN_QUERY_CHARS,
+                SearchExecution::Neural => {
+                    pasta_brain_enabled && char_count >= SEARCH_NEURAL_MIN_QUERY_CHARS
+                }
+            }
+        }
+        SearchQuery::TagOnly { .. } | SearchQuery::Bowl { .. } | SearchQuery::ExportBowl { .. } => {
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn raw_tag_search_effective_query(query: &str) -> Option<&str> {
     let trimmed_start = query.trim_start();
     let effective_query = trimmed_start.strip_prefix(':')?.trim_start();
@@ -2816,7 +3145,11 @@ fn raw_tag_search_effective_query(query: &str) -> Option<&str> {
 }
 
 #[cfg(target_os = "macos")]
-fn build_bowl_export_bundle(bowl_name: &str, items: &[ClipboardRecord]) -> BowlExportBundle {
+fn build_bowl_export_bundle(
+    bowl_name: &str,
+    items: &[ClipboardRecord],
+    storage: &ClipboardStorage,
+) -> BowlExportBundle {
     let bundle_bowl = items
         .iter()
         .find_map(|item| bowl_name_from_tags(&item.tags))
@@ -2827,12 +3160,18 @@ fn build_bowl_export_bundle(bowl_name: &str, items: &[ClipboardRecord]) -> BowlE
         version: 1,
         bowl: bundle_bowl,
         exported_at: chrono::Utc::now().to_rfc3339(),
-        items: items.iter().map(build_bowl_export_item).collect(),
+        items: items
+            .iter()
+            .map(|item| build_bowl_export_item(item, Some(storage)))
+            .collect(),
     }
 }
 
 #[cfg(target_os = "macos")]
-fn build_bowl_export_item(item: &ClipboardRecord) -> BowlExportItem {
+fn build_bowl_export_item(
+    item: &ClipboardRecord,
+    storage: Option<&ClipboardStorage>,
+) -> BowlExportItem {
     if item.item_type == ClipboardItemType::Password {
         return BowlExportItem {
             item_type: item.item_type.as_str().to_owned(),
@@ -2840,8 +3179,37 @@ fn build_bowl_export_item(item: &ClipboardRecord) -> BowlExportItem {
             description: "Excluded: secrets are never exported".to_owned(),
             tags: Vec::new(),
             parameters: Vec::new(),
+            hash_embedding: None,
+            neural_embedding: None,
+            embedding_model: None,
         };
     }
+
+    let (hash_embedding, neural_embedding, embedding_model) = if let Some(storage) = storage {
+        let seed_terms = tags_without_bowl(&item.tags);
+        let hash_vec = semantic_embedding(
+            bounded_text_prefix(&item.content, SEMANTIC_SOURCE_TEXT_LIMIT),
+            &seed_terms,
+        );
+        let hash_emb = Some(encode_f32_vec_base64(&hash_vec));
+
+        let neural_embedder = storage.get_neural_embedder();
+        let (neural_emb, model) = if let Some(embedder) = neural_embedder.as_ref() {
+            let neural_vec = embedder.embed(
+                bounded_text_prefix(&item.content, SEMANTIC_SOURCE_TEXT_LIMIT),
+                &seed_terms,
+            );
+            (
+                Some(encode_f32_vec_base64(&neural_vec)),
+                Some("all-MiniLM-L6-v2".to_owned()),
+            )
+        } else {
+            (None, None)
+        };
+        (hash_emb, neural_emb, model)
+    } else {
+        (None, None, None)
+    };
 
     BowlExportItem {
         item_type: item.item_type.as_str().to_owned(),
@@ -2856,6 +3224,9 @@ fn build_bowl_export_item(item: &ClipboardRecord) -> BowlExportItem {
                 default_value: export_parameter_default_value(parameter),
             })
             .collect(),
+        hash_embedding,
+        neural_embedding,
+        embedding_model,
     }
 }
 
@@ -2905,7 +3276,13 @@ fn suggested_bowl_export_filename(bowl_name: &str) -> String {
     let sanitized: String = bowl_name
         .trim()
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '-' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
     let sanitized = sanitized.trim_matches('-');
     if sanitized.is_empty() {
@@ -3082,13 +3459,66 @@ city = "New York"
     }
 
     #[test]
+    fn delayed_search_stages_gate_by_query_mode_and_length() {
+        assert!(!should_schedule_delayed_search(
+            "",
+            true,
+            SearchExecution::Semantic
+        ));
+        assert!(!should_schedule_delayed_search(
+            "ya",
+            true,
+            SearchExecution::Semantic
+        ));
+        assert!(should_schedule_delayed_search(
+            "yaf",
+            true,
+            SearchExecution::Semantic
+        ));
+        assert!(!should_schedule_delayed_search(
+            "yaf",
+            true,
+            SearchExecution::Neural
+        ));
+        assert!(should_schedule_delayed_search(
+            "yafet",
+            true,
+            SearchExecution::Neural
+        ));
+        assert!(!should_schedule_delayed_search(
+            "yafet",
+            false,
+            SearchExecution::Neural
+        ));
+        assert!(!should_schedule_delayed_search(
+            ":ya",
+            true,
+            SearchExecution::Semantic
+        ));
+        assert!(!should_schedule_delayed_search(
+            ":b ops",
+            true,
+            SearchExecution::Semantic
+        ));
+        assert!(!should_schedule_delayed_search(
+            ":e ops",
+            true,
+            SearchExecution::Neural
+        ));
+    }
+
+    #[test]
     fn bowl_export_uses_template_content_and_default_values() {
         let record = ClipboardRecord {
             id: 9,
             item_type: ClipboardItemType::Command,
             content: "kubectl logs -f deployment/api -n default --tail=100".to_owned(),
             description: "Stream logs from a deployment".to_owned(),
-            tags: vec!["k8s".to_owned(), "logs".to_owned(), "BOWL:K8S-OPS".to_owned()],
+            tags: vec![
+                "k8s".to_owned(),
+                "logs".to_owned(),
+                "BOWL:K8S-OPS".to_owned(),
+            ],
             parameters: vec![
                 ClipboardParameter {
                     name: "deployment".to_owned(),
@@ -3106,7 +3536,7 @@ city = "New York"
             created_at: "2026-03-29T00:39:00Z".to_owned(),
         };
 
-        let item = build_bowl_export_item(&record);
+        let item = build_bowl_export_item(&record, None);
         assert_eq!(
             item.content,
             "kubectl logs -f deployment/{{deployment}} -n {{namespace}} --tail={{lines}}"
@@ -3143,7 +3573,7 @@ city = "New York"
             created_at: "2026-03-29T00:39:00Z".to_owned(),
         };
 
-        let item = build_bowl_export_item(&record);
+        let item = build_bowl_export_item(&record, None);
         assert_eq!(item.item_type, "password");
         assert_eq!(item.content, "");
         assert_eq!(item.description, "Excluded: secrets are never exported");

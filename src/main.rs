@@ -1,5 +1,6 @@
 #![allow(unexpected_cfgs)]
 
+mod neural_embed;
 mod storage;
 
 #[cfg(target_os = "macos")]
@@ -37,8 +38,8 @@ use gpui::{
     App, Application, Bounds, ClickEvent, ClipboardItem, Context, CursorStyle,
     Element as GpuiElement, ElementId, ElementInputHandler, Entity, EntityInputHandler,
     FocusHandle, Focusable, FontWeight, Global, GlobalElementId, InspectorElementId, KeyBinding,
-    KeystrokeEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PaintQuad, Pixels, Point, Render, ScrollStrategy, ShapedLine, SharedString, Style, TextRun,
+    KeystrokeEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
+    Pixels, Point, Render, ScrollStrategy, ShapedLine, SharedString, Style, TextRun,
     UTF16Selection, UnderlineStyle, UniformListScrollHandle, Window, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions, actions,
     div, fill, point, prelude::*, px, relative, rgb, rgba, size, uniform_list,
@@ -142,6 +143,7 @@ struct UiStyleState {
     surface_alpha: f32,
     syntax_highlighting: bool,
     secret_auto_clear: bool,
+    pasta_brain_enabled: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -154,6 +156,13 @@ struct PersistedUiStyleState {
     surface_alpha: f32,
     syntax_highlighting: bool,
     secret_auto_clear: bool,
+    #[serde(default = "default_pasta_brain_enabled")]
+    pasta_brain_enabled: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn default_pasta_brain_enabled() -> bool {
+    true
 }
 
 #[cfg(target_os = "macos")]
@@ -174,6 +183,15 @@ const MENU_TAG_SECRET_CLEAR_ON: isize = 302;
 const MENU_TAG_SECRET_CLEAR_OFF: isize = 303;
 
 #[cfg(target_os = "macos")]
+const MENU_TAG_BRAIN_ON: isize = 304;
+
+#[cfg(target_os = "macos")]
+const MENU_TAG_BRAIN_OFF: isize = 305;
+
+#[cfg(target_os = "macos")]
+const MENU_TAG_BRAIN_DOWNLOAD: isize = 306;
+
+#[cfg(target_os = "macos")]
 const TRANSPARENCY_LEVELS: [f32; 6] = [0.50, 0.60, 0.70, 0.80, 0.90, 1.00];
 
 #[cfg(target_os = "macos")]
@@ -188,7 +206,21 @@ enum MenuCommand {
     SetTransparency(f32),
     SetSyntaxHighlighting(bool),
     SetSecretAutoClear(bool),
+    SetPastaBrain(bool),
+    DownloadBrain,
 }
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NeuralStatus {
+    Loading,
+    Ready,
+    Failed,
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) static NEURAL_STATUS: std::sync::Mutex<NeuralStatus> =
+    std::sync::Mutex::new(NeuralStatus::Loading);
 
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
@@ -295,10 +327,16 @@ enum TransformAction {
     ShellQuote,
     JsonEncode,
     JsonDecode,
+    JsonPretty,
+    JsonMinify,
     UrlEncode,
     UrlDecode,
     Base64Encode,
     Base64Decode,
+    JwtDecode,
+    EpochDecode,
+    Sha256Hash,
+    ContentStats,
     PublicCertPemInfo,
 }
 
@@ -318,6 +356,11 @@ fn transform_action_for_shortcut(
         } else {
             TransformAction::JsonEncode
         }),
+        "f" => Some(if decode_requested {
+            TransformAction::JsonMinify
+        } else {
+            TransformAction::JsonPretty
+        }),
         "u" => Some(if decode_requested {
             TransformAction::UrlDecode
         } else {
@@ -329,6 +372,10 @@ fn transform_action_for_shortcut(
             TransformAction::Base64Encode
         }),
         "p" => Some(TransformAction::PublicCertPemInfo),
+        "t" => Some(TransformAction::JwtDecode),
+        "e" => Some(TransformAction::EpochDecode),
+        "h" => Some(TransformAction::Sha256Hash),
+        "c" => Some(TransformAction::ContentStats),
         _ => None,
     }
 }
@@ -452,6 +499,35 @@ mod tests {
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) fn spawn_neural_init(storage: Arc<ClipboardStorage>) {
+    if let Ok(mut status) = NEURAL_STATUS.lock() {
+        *status = NeuralStatus::Loading;
+    }
+    std::thread::Builder::new()
+        .name("pasta-neural-init".into())
+        .spawn(move || {
+            eprintln!("info: initializing neural embedder (may download model on first run)...");
+            match neural_embed::NeuralEmbedder::try_new() {
+                Ok(embedder) => {
+                    storage.set_neural_embedder(Arc::new(embedder));
+                    if let Ok(mut status) = NEURAL_STATUS.lock() {
+                        *status = NeuralStatus::Ready;
+                    }
+                    eprintln!("info: neural embedder ready");
+                }
+                Err(err) => {
+                    if let Ok(mut status) = NEURAL_STATUS.lock() {
+                        *status = NeuralStatus::Failed;
+                    }
+                    eprintln!("warning: neural embedder unavailable: {err}");
+                    eprintln!("warning: semantic search will use feature-hash only");
+                }
+            }
+        })
+        .ok();
+}
+
+#[cfg(target_os = "macos")]
 fn main() {
     Application::new().run(|cx: &mut App| {
         ensure_launch_agent_registered();
@@ -497,6 +573,12 @@ fn main() {
         cx.set_global(StorageState {
             storage: storage.clone(),
         });
+
+        // Initialize neural embedder on a background thread to avoid blocking the UI.
+        // If this fails (e.g. no internet on first launch), search degrades gracefully
+        // to the existing feature-hash approach.
+        spawn_neural_init(storage.clone());
+
         load_embedded_ui_font(cx);
         cx.bind_keys([
             KeyBinding::new("backspace", QueryBackspace, Some("PastaTextInput")),

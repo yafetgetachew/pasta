@@ -57,6 +57,9 @@ pub(crate) struct StatusItemRegistration {
     pub(crate) _status_item: StrongPtr,
     pub(crate) _menu: StrongPtr,
     pub(crate) _handler: StrongPtr,
+    pub(crate) brain_on_item: StrongPtr,
+    pub(crate) brain_off_item: StrongPtr,
+    pub(crate) brain_download_item: StrongPtr,
 }
 
 #[cfg(target_os = "macos")]
@@ -118,6 +121,16 @@ fn handle_menu_command(command: MenuCommand, cx: &mut App) {
         MenuCommand::SetSecretAutoClear(enabled) => {
             cx.global_mut::<UiStyleState>().secret_auto_clear = enabled;
             persist_ui_style_state(cx);
+        }
+        MenuCommand::SetPastaBrain(enabled) => {
+            cx.global_mut::<UiStyleState>().pasta_brain_enabled = enabled;
+            persist_ui_style_state(cx);
+            update_brain_menu_state(cx);
+        }
+        MenuCommand::DownloadBrain => {
+            let storage = cx.global::<StorageState>().storage.clone();
+            spawn_neural_init(storage);
+            update_brain_menu_state(cx);
         }
     }
 }
@@ -238,6 +251,7 @@ pub(crate) fn show_launcher(cx: &mut App) {
             view.font_family = style.family.clone();
             view.surface_alpha = style.surface_alpha;
             view.syntax_highlighting = style.syntax_highlighting;
+            view.pasta_brain_enabled = style.pasta_brain_enabled;
             view.reset_for_show();
             window.resize(size(px(LAUNCHER_WIDTH), px(LAUNCHER_HEIGHT)));
             set_window_move_to_active_space(window);
@@ -254,6 +268,7 @@ pub(crate) fn show_launcher(cx: &mut App) {
             view.font_family = style.family.clone();
             view.surface_alpha = style.surface_alpha;
             view.syntax_highlighting = style.syntax_highlighting;
+            view.pasta_brain_enabled = style.pasta_brain_enabled;
             view.reset_for_show();
             window.resize(size(px(LAUNCHER_WIDTH), px(LAUNCHER_HEIGHT)));
             set_window_move_to_active_space(window);
@@ -334,7 +349,7 @@ pub(crate) fn spawn_clipboard_watcher(cx: &mut App) {
                                 .and_then(|state| state.window)
                             {
                                 let _ = window.update(cx, |view, _window, cx| {
-                                    view.refresh_items();
+                                    view.refresh_items(view.preferred_refresh_execution());
                                     cx.notify();
                                 });
                             }

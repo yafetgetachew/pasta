@@ -9,10 +9,12 @@ anyhow = "1.0.100"
 base64 = "0.22.1"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 dirs = "5.0.1"
+fastembed = { version = "4", default-features = false, features = ["hf-hub"] }
 futures = "0.3.31"
 global-hotkey = "0.7.0"
 gpui = { version = "0.2.2", default-features = false, features = ["font-kit"] }
 keyring = { version = "3.6.2", default-features = false, features = ["apple-native"] }
+ort = { version = "2.0.0-rc.9", features = ["download-binaries"] }
 raw-window-handle = "0.6.2"
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }

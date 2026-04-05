@@ -1,15 +1,23 @@
 #[cfg(target_os = "macos")]
+use crate::storage::SearchExecution;
+#[cfg(target_os = "macos")]
 use crate::*;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) struct SearchRequest {
-    pub(crate) request_id: u64,
+    pub(crate) query_generation: u64,
     pub(crate) query: String,
+    pub(crate) pasta_brain: bool,
+    pub(crate) execution: SearchExecution,
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) struct SearchResponse {
-    pub(crate) request_id: u64,
+    pub(crate) query_generation: u64,
+    pub(crate) execution: SearchExecution,
     pub(crate) items: Vec<ClipboardRecord>,
+    pub(crate) row_presentations: Vec<CachedRowPresentation>,
 }
 
 #[cfg(target_os = "macos")]
@@ -103,6 +111,10 @@ impl CachedRowPresentation {
             masked_preview: masked_secret_preview(&item.content),
         }
     }
+
+    pub(crate) fn collect(items: &[ClipboardRecord]) -> Vec<Self> {
+        items.iter().map(Self::from_record).collect()
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -111,10 +123,13 @@ pub(crate) fn start_search_worker(
 ) -> (
     mpsc::Sender<SearchRequest>,
     futures::channel::mpsc::UnboundedReceiver<SearchResponse>,
+    Arc<AtomicU64>,
 ) {
     let (request_tx, request_rx) = mpsc::channel::<SearchRequest>();
     let (result_tx, result_rx) = futures::channel::mpsc::unbounded::<SearchResponse>();
+    let latest_query_generation = Arc::new(AtomicU64::new(0));
 
+    let cancel_generation = latest_query_generation.clone();
     let spawn_result = std::thread::Builder::new()
         .name("pasta-search-worker".to_owned())
         .spawn(move || {
@@ -124,16 +139,29 @@ pub(crate) fn start_search_worker(
                 }
 
                 let items = storage
-                    .search_items(&request.query, 48)
+                    .search_items(
+                        &request.query,
+                        48,
+                        request.pasta_brain,
+                        request.execution,
+                        request.query_generation,
+                        Some(cancel_generation.as_ref()),
+                    )
                     .unwrap_or_else(|err| {
                         eprintln!("warning: search worker failed to query clipboard items: {err}");
                         Vec::new()
                     });
+                if cancel_generation.load(Ordering::Acquire) != request.query_generation {
+                    continue;
+                }
+                let row_presentations = CachedRowPresentation::collect(&items);
 
                 if result_tx
                     .unbounded_send(SearchResponse {
-                        request_id: request.request_id,
+                        query_generation: request.query_generation,
+                        execution: request.execution,
                         items,
+                        row_presentations,
                     })
                     .is_err()
                 {
@@ -145,7 +173,7 @@ pub(crate) fn start_search_worker(
         eprintln!("warning: failed to start search worker thread: {err}");
     }
 
-    (request_tx, result_rx)
+    (request_tx, result_rx, latest_query_generation)
 }
 
 #[cfg(target_os = "macos")]
@@ -154,6 +182,7 @@ pub(crate) struct LauncherView {
     pub(crate) font_family: SharedString,
     pub(crate) surface_alpha: f32,
     pub(crate) syntax_highlighting: bool,
+    pub(crate) pasta_brain_enabled: bool,
     pub(crate) query_input_state: TextInputState,
     pub(crate) info_editor_input_state: TextInputState,
     pub(crate) tag_editor_input_state: TextInputState,
@@ -163,8 +192,9 @@ pub(crate) struct LauncherView {
     pub(crate) pending_text_input_focus: Option<TextInputTarget>,
     pub(crate) results_scroll: UniformListScrollHandle,
     pub(crate) search_request_tx: mpsc::Sender<SearchRequest>,
-    pub(crate) next_search_request_id: u64,
-    pub(crate) latest_search_request_id: u64,
+    pub(crate) search_generation: u64,
+    pub(crate) search_generation_token: Arc<AtomicU64>,
+    pub(crate) latest_applied_search_execution: SearchExecution,
     pub(crate) query: String,
     pub(crate) tag_search_suggestions: Vec<String>,
     pub(crate) items: Vec<ClipboardRecord>,
@@ -190,6 +220,7 @@ pub(crate) struct LauncherView {
     pub(crate) bowl_editor_target_id: Option<i64>,
     pub(crate) bowl_editor_input: String,
     pub(crate) bowl_editor_select_all: bool,
+    pub(crate) bowl_editor_suggestions: Vec<String>,
     pub(crate) parameter_editor_target_id: Option<i64>,
     pub(crate) parameter_editor_stage: ParameterEditorStage,
     pub(crate) parameter_editor_force_full: bool,
@@ -197,6 +228,7 @@ pub(crate) struct LauncherView {
     pub(crate) parameter_editor_name_inputs: Vec<String>,
     pub(crate) parameter_editor_name_focus_index: usize,
     pub(crate) parameter_editor_name_select_all: bool,
+    pub(crate) parameter_editor_split_tokens: HashSet<String>,
     pub(crate) parameter_fill_target_id: Option<i64>,
     pub(crate) parameter_fill_values: Vec<String>,
     pub(crate) parameter_fill_focus_index: usize,

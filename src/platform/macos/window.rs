@@ -53,7 +53,8 @@ pub(crate) fn create_launcher_window(cx: &mut App) -> Option<WindowHandle<Launch
     let (bounds, display_id) = launcher_window_bounds(cx);
     let storage = cx.global::<StorageState>().storage.clone();
     let style = cx.global::<UiStyleState>().clone();
-    let (search_request_tx, search_result_rx) = start_search_worker(storage.clone());
+    let (search_request_tx, search_result_rx, search_generation_token) =
+        start_search_worker(storage.clone());
 
     match cx.open_window(
         WindowOptions {
@@ -73,6 +74,7 @@ pub(crate) fn create_launcher_window(cx: &mut App) -> Option<WindowHandle<Launch
             let storage = storage.clone();
             let style = style.clone();
             let search_request_tx = search_request_tx.clone();
+            let search_generation_token = search_generation_token.clone();
             set_window_move_to_active_space(window);
             window.on_window_should_close(cx, |_, cx| {
                 cx.hide();
@@ -85,7 +87,9 @@ pub(crate) fn create_launcher_window(cx: &mut App) -> Option<WindowHandle<Launch
                     style.family.clone(),
                     style.surface_alpha,
                     style.syntax_highlighting,
+                    style.pasta_brain_enabled,
                     search_request_tx,
+                    search_generation_token,
                     cx,
                 );
                 cx.observe_window_activation(window, |_view: &mut LauncherView, window, cx| {

@@ -96,7 +96,10 @@ impl GpuiElement for TextInputElement {
         let style = window.text_style();
 
         let (display_text, text_color): (SharedString, gpui::Hsla) = if content.is_empty() {
-            (self.placeholder.clone(), self.palette.query_placeholder.into())
+            (
+                self.placeholder.clone(),
+                self.palette.query_placeholder.into(),
+            )
         } else {
             (content.clone().into(), self.palette.query_active.into())
         };
@@ -428,7 +431,9 @@ impl LauncherView {
                 if self.parameter_fill_focus_index > max_ix {
                     self.parameter_fill_focus_index = max_ix;
                 }
-                if let Some(active) = self.parameter_fill_values.get_mut(self.parameter_fill_focus_index)
+                if let Some(active) = self
+                    .parameter_fill_values
+                    .get_mut(self.parameter_fill_focus_index)
                 {
                     *active = content;
                 }
@@ -464,7 +469,8 @@ impl LauncherView {
         ]
         .into_iter()
         .find(|target| {
-            self.text_input_is_visible(*target) && self.text_input_focus_handle(*target).is_focused(window)
+            self.text_input_is_visible(*target)
+                && self.text_input_focus_handle(*target).is_focused(window)
         })
     }
 
@@ -479,7 +485,12 @@ impl LauncherView {
         input_state.marked_range = None;
     }
 
-    fn text_input_move_to(&mut self, target: TextInputTarget, offset: usize, cx: &mut Context<Self>) {
+    fn text_input_move_to(
+        &mut self,
+        target: TextInputTarget,
+        offset: usize,
+        cx: &mut Context<Self>,
+    ) {
         self.set_cursor_to(target, offset);
         cx.notify();
     }
@@ -545,6 +556,9 @@ impl LauncherView {
     fn text_input_change_did_commit(&mut self, target: TextInputTarget, cx: &mut Context<Self>) {
         if target == TextInputTarget::Query {
             self.query_did_change(cx);
+        } else if target == TextInputTarget::BowlEditor {
+            self.bowl_editor_suggestions = self.storage.suggest_bowl_names(&self.bowl_editor_input, 6);
+            cx.notify();
         } else {
             cx.notify();
         }
@@ -603,13 +617,19 @@ impl LauncherView {
             return;
         };
         if self.text_input_state(target).selected_range.is_empty() {
-            let previous = self.text_input_previous_boundary(target, self.text_input_cursor_offset(target));
+            let previous =
+                self.text_input_previous_boundary(target, self.text_input_cursor_offset(target));
             self.set_select_to(target, previous);
         }
         self.replace_text_in_range(None, "", window, cx);
     }
 
-    pub(super) fn query_left(&mut self, _: &QueryLeft, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn query_left(
+        &mut self,
+        _: &QueryLeft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(target) = self.active_text_input_target(window) else {
             return;
         };
@@ -620,11 +640,20 @@ impl LauncherView {
                 cx,
             );
         } else {
-            self.text_input_move_to(target, self.text_input_state(target).selected_range.start, cx);
+            self.text_input_move_to(
+                target,
+                self.text_input_state(target).selected_range.start,
+                cx,
+            );
         }
     }
 
-    pub(super) fn query_right(&mut self, _: &QueryRight, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn query_right(
+        &mut self,
+        _: &QueryRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(target) = self.active_text_input_target(window) else {
             return;
         };
@@ -648,7 +677,8 @@ impl LauncherView {
         let Some(target) = self.active_text_input_target(window) else {
             return;
         };
-        let previous = self.text_input_previous_boundary(target, self.text_input_cursor_offset(target));
+        let previous =
+            self.text_input_previous_boundary(target, self.text_input_cursor_offset(target));
         self.text_input_select_to(target, previous, cx);
     }
 
@@ -690,12 +720,7 @@ impl LauncherView {
         }
     }
 
-    pub(super) fn query_end(
-        &mut self,
-        _: &QueryEnd,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn query_end(&mut self, _: &QueryEnd, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(target) = self.active_text_input_target(window) {
             self.text_input_move_to(target, self.text_input_content(target).len(), cx);
         }
@@ -742,12 +767,7 @@ impl LauncherView {
         }
     }
 
-    pub(super) fn query_cut(
-        &mut self,
-        _: &QueryCut,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn query_cut(&mut self, _: &QueryCut, window: &mut Window, cx: &mut Context<Self>) {
         let Some(target) = self.active_text_input_target(window) else {
             return;
         };
@@ -905,8 +925,14 @@ impl EntityInputHandler for LauncherView {
         let last_layout = self.text_input_state(target).last_layout.as_ref()?;
         let range = text_range_from_utf16(&content, &range_utf16);
         Some(Bounds::from_corners(
-            point(bounds.left() + last_layout.x_for_index(range.start), bounds.top()),
-            point(bounds.left() + last_layout.x_for_index(range.end), bounds.bottom()),
+            point(
+                bounds.left() + last_layout.x_for_index(range.start),
+                bounds.top(),
+            ),
+            point(
+                bounds.left() + last_layout.x_for_index(range.end),
+                bounds.bottom(),
+            ),
         ))
     }
 

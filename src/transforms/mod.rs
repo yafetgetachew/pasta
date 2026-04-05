@@ -1,7 +1,15 @@
 #[cfg(target_os = "macos")]
-use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use base64::{
+    Engine,
+    engine::general_purpose::{
+        STANDARD as BASE64_STANDARD, URL_SAFE as BASE64_URL_SAFE,
+        URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD,
+    },
+};
 #[cfg(target_os = "macos")]
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
+#[cfg(target_os = "macos")]
+use sha2::{Digest, Sha256};
 
 #[cfg(target_os = "macos")]
 pub(crate) fn shell_quote_escape(input: &str) -> String {
@@ -141,12 +149,263 @@ pub(crate) fn base64_encode_transform(input: &str) -> Result<(String, &'static s
 #[cfg(target_os = "macos")]
 pub(crate) fn base64_decode_transform(input: &str) -> Result<(String, &'static str), String> {
     let compact: String = input.chars().filter(|ch| !ch.is_whitespace()).collect();
-    let decoded_bytes = BASE64_STANDARD
+
+    // Try standard base64 first (alphabet: A-Z, a-z, 0-9, +, /, =).
+    if let Ok(decoded_bytes) = BASE64_STANDARD.decode(compact.as_bytes()) {
+        let decoded = String::from_utf8(decoded_bytes)
+            .map_err(|_| "decoded base64 is binary (non UTF-8)".to_owned())?;
+        return Ok((decoded, "Base64-decoded to clipboard."));
+    }
+
+    // If the input contains URL-safe characters (- or _), try URL-safe engines.
+    if compact.contains('-') || compact.contains('_') {
+        if let Ok(decoded_bytes) = BASE64_URL_SAFE.decode(compact.as_bytes()) {
+            let decoded = String::from_utf8(decoded_bytes)
+                .map_err(|_| "decoded base64 is binary (non UTF-8)".to_owned())?;
+            return Ok((decoded, "Base64-decoded (URL-safe) to clipboard."));
+        }
+        if let Ok(decoded_bytes) = BASE64_URL_SAFE_NO_PAD.decode(compact.as_bytes()) {
+            let decoded = String::from_utf8(decoded_bytes)
+                .map_err(|_| "decoded base64 is binary (non UTF-8)".to_owned())?;
+            return Ok((decoded, "Base64-decoded (URL-safe) to clipboard."));
+        }
+    }
+
+    // All engines failed — return the standard error for diagnostics.
+    let err = BASE64_STANDARD
         .decode(compact.as_bytes())
-        .map_err(|err| format!("base64 decode error: {err}"))?;
-    let decoded = String::from_utf8(decoded_bytes)
-        .map_err(|_| "decoded base64 is binary (non UTF-8)".to_owned())?;
-    Ok((decoded, "Base64-decoded to clipboard."))
+        .unwrap_err();
+    Err(format!("base64 decode error: {err}"))
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn jwt_decode_transform(input: &str) -> Result<(String, &'static str), String> {
+    let trimmed = input.trim();
+    let parts: Vec<&str> = trimmed.split('.').collect();
+    if parts.len() != 3 {
+        return Err("not a JWT: expected 3 dot-separated segments".to_owned());
+    }
+
+    let decode_segment = |segment: &str| -> Result<serde_json::Value, String> {
+        // JWT uses base64url without padding.
+        let decoded_bytes = BASE64_URL_SAFE_NO_PAD
+            .decode(segment.as_bytes())
+            .or_else(|_| BASE64_URL_SAFE.decode(segment.as_bytes()))
+            .map_err(|err| format!("base64 decode error: {err}"))?;
+        serde_json::from_slice(&decoded_bytes)
+            .map_err(|err| format!("JSON parse error: {err}"))
+    };
+
+    let header = decode_segment(parts[0])?;
+    let payload = decode_segment(parts[1])?;
+
+    let header_pretty = serde_json::to_string_pretty(&header)
+        .unwrap_or_else(|_| header.to_string());
+    let payload_pretty = serde_json::to_string_pretty(&payload)
+        .unwrap_or_else(|_| payload.to_string());
+
+    let mut summary = Vec::new();
+    summary.push("JWT DECODED".to_owned());
+    summary.push(String::new());
+
+    // Extract useful claims.
+    if let Some(alg) = header.get("alg").and_then(|v| v.as_str()) {
+        summary.push(format!("Algorithm: {alg}"));
+    }
+    if let Some(typ) = header.get("typ").and_then(|v| v.as_str()) {
+        summary.push(format!("Type: {typ}"));
+    }
+    if let Some(kid) = header.get("kid").and_then(|v| v.as_str()) {
+        summary.push(format!("Key ID: {kid}"));
+    }
+    if let Some(sub) = payload.get("sub").and_then(|v| v.as_str()) {
+        summary.push(format!("Subject: {sub}"));
+    }
+    if let Some(iss) = payload.get("iss").and_then(|v| v.as_str()) {
+        summary.push(format!("Issuer: {iss}"));
+    }
+    if let Some(aud) = payload.get("aud") {
+        let aud_str = match aud {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Array(arr) => arr
+                .iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            other => other.to_string(),
+        };
+        summary.push(format!("Audience: {aud_str}"));
+    }
+    if let Some(iat) = payload.get("iat").and_then(|v| v.as_i64()) {
+        let dt = DateTime::from_timestamp(iat, 0)
+            .map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+            .unwrap_or_else(|| iat.to_string());
+        summary.push(format!("Issued At: {dt}"));
+    }
+    if let Some(exp) = payload.get("exp").and_then(|v| v.as_i64()) {
+        let dt = DateTime::from_timestamp(exp, 0)
+            .map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+            .unwrap_or_else(|| exp.to_string());
+        let now = Utc::now().timestamp();
+        let status = if exp < now {
+            let ago = (now - exp) / 86400;
+            format!(" (EXPIRED {} days ago)", ago)
+        } else {
+            let left = (exp - now) / 86400;
+            format!(" ({left} days remaining)")
+        };
+        summary.push(format!("Expires: {dt}{status}"));
+    }
+
+    summary.push(String::new());
+    summary.push("─── Header ───".to_owned());
+    summary.push(header_pretty);
+    summary.push(String::new());
+    summary.push("─── Payload ───".to_owned());
+    summary.push(payload_pretty);
+
+    Ok((summary.join("\n"), "JWT decoded to clipboard."))
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn json_pretty_transform(input: &str) -> Result<(String, &'static str), String> {
+    let value: serde_json::Value =
+        serde_json::from_str(input.trim()).map_err(|err| format!("JSON parse error: {err}"))?;
+    let pretty =
+        serde_json::to_string_pretty(&value).map_err(|err| format!("JSON format error: {err}"))?;
+    Ok((pretty, "JSON prettified to clipboard."))
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn json_minify_transform(input: &str) -> Result<(String, &'static str), String> {
+    let value: serde_json::Value =
+        serde_json::from_str(input.trim()).map_err(|err| format!("JSON parse error: {err}"))?;
+    let compact =
+        serde_json::to_string(&value).map_err(|err| format!("JSON format error: {err}"))?;
+    Ok((compact, "JSON minified to clipboard."))
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn epoch_decode_transform(input: &str) -> Result<(String, &'static str), String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("clipboard item is empty".to_owned());
+    }
+
+    // Try parsing as a unix timestamp (seconds or milliseconds).
+    if let Ok(ts) = trimmed.parse::<i64>() {
+        // Heuristic: if the number is > 1e12, treat as milliseconds.
+        let (seconds, millis) = if ts > 1_000_000_000_000 {
+            (ts / 1000, Some(ts % 1000))
+        } else {
+            (ts, None)
+        };
+        if let Some(dt) = DateTime::from_timestamp(seconds, 0) {
+            let utc = dt.format("%Y-%m-%d %H:%M:%S UTC").to_string();
+            let local_offset = *chrono::Local::now().offset();
+            let local = dt.with_timezone(&local_offset).format("%Y-%m-%d %H:%M:%S %:z").to_string();
+            let now = Utc::now().timestamp();
+            let diff = seconds - now;
+            let age = if diff < 0 {
+                format_duration_ago(-diff)
+            } else if diff > 0 {
+                format_duration_from_now(diff)
+            } else {
+                "just now".to_owned()
+            };
+            let mut result = format!("UTC:   {utc}\nLocal: {local}\n({age})");
+            if let Some(ms) = millis {
+                result = format!("Epoch: {seconds}s + {ms}ms\n{result}");
+            }
+            return Ok((result, "Epoch decoded to clipboard."));
+        }
+    }
+
+    // Try parsing as a float (fractional seconds).
+    if let Ok(ts) = trimmed.parse::<f64>() {
+        let seconds = ts as i64;
+        let nanos = ((ts - seconds as f64) * 1_000_000_000.0) as u32;
+        if let Some(dt) = DateTime::from_timestamp(seconds, nanos) {
+            let utc = dt.format("%Y-%m-%d %H:%M:%S%.3f UTC").to_string();
+            return Ok((utc, "Epoch decoded to clipboard."));
+        }
+    }
+
+    // Try parsing a human-readable date string → epoch.
+    let formats = [
+        "%Y-%m-%dT%H:%M:%S%.fZ",
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+    ];
+    for fmt in &formats {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(trimmed, fmt) {
+            let epoch = dt.and_utc().timestamp();
+            return Ok((epoch.to_string(), "Date converted to epoch in clipboard."));
+        }
+    }
+    // Try the last format which is date-only.
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
+        let epoch = date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+        return Ok((epoch.to_string(), "Date converted to epoch in clipboard."));
+    }
+
+    Err("not a recognized timestamp or date format".to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn format_duration_ago(seconds: i64) -> String {
+    if seconds < 60 { return format!("{seconds}s ago"); }
+    if seconds < 3600 { return format!("{}m ago", seconds / 60); }
+    if seconds < 86400 { return format!("{}h {}m ago", seconds / 3600, (seconds % 3600) / 60); }
+    let days = seconds / 86400;
+    if days < 365 { return format!("{days}d ago"); }
+    format!("{}y {}d ago", days / 365, days % 365)
+}
+
+#[cfg(target_os = "macos")]
+fn format_duration_from_now(seconds: i64) -> String {
+    if seconds < 60 { return format!("in {seconds}s"); }
+    if seconds < 3600 { return format!("in {}m", seconds / 60); }
+    if seconds < 86400 { return format!("in {}h {}m", seconds / 3600, (seconds % 3600) / 60); }
+    let days = seconds / 86400;
+    if days < 365 { return format!("in {days}d"); }
+    format!("in {}y {}d", days / 365, days % 365)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn sha256_hash_transform(input: &str) -> Result<(String, &'static str), String> {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    let result = hasher.finalize();
+    let hex: String = result.iter().map(|b| format!("{b:02x}")).collect();
+    Ok((hex, "SHA256 hash copied to clipboard."))
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn content_stats_transform(input: &str) -> Result<(String, &'static str), String> {
+    let lines = input.lines().count();
+    let words = input.split_whitespace().count();
+    let chars = input.chars().count();
+    let bytes = input.len();
+
+    let mut stats = vec![
+        format!("Lines: {lines}"),
+        format!("Words: {words}"),
+        format!("Chars: {chars}"),
+        format!("Bytes: {bytes}"),
+    ];
+
+    if bytes >= 1024 {
+        let kb = bytes as f64 / 1024.0;
+        if kb >= 1024.0 {
+            stats.push(format!("Size:  {:.1} MB", kb / 1024.0));
+        } else {
+            stats.push(format!("Size:  {kb:.1} KB"));
+        }
+    }
+
+    Ok((stats.join("\n"), "Content stats copied to clipboard."))
 }
 
 #[cfg(target_os = "macos")]
