@@ -42,6 +42,15 @@ mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}" "${INSTALL_DIR}"
 cp "${BIN_PATH}" "${MACOS_DIR}/${BIN_NAME}"
 chmod +x "${MACOS_DIR}/${BIN_NAME}"
 
+# Copy app icon if available
+ICON_PATH="${ROOT_DIR}/assets/AppIcon.icns"
+if [[ -f "${ICON_PATH}" ]]; then
+  cp "${ICON_PATH}" "${RESOURCES_DIR}/AppIcon.icns"
+else
+  echo "warning: AppIcon.icns not found — app will use default icon"
+  echo "  Run: ./scripts/make-icon.sh path/to/icon.png"
+fi
+
 cat > "${PLIST_PATH}" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -65,6 +74,8 @@ cat > "${PLIST_PATH}" <<PLIST
   <string>${APP_VERSION}</string>
   <key>CFBundleVersion</key>
   <string>${APP_VERSION}</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>LSUIElement</key>
   <true/>
   <key>NSHighResolutionCapable</key>

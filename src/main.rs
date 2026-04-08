@@ -110,8 +110,7 @@ const WINDOW_CLOSE_DURATION_MS: u64 = 95;
 const WINDOW_CLOSE_EARLY_EXIT_ALPHA: f32 = 0.08;
 #[cfg(target_os = "macos")]
 const MAX_VISIBLE_TAG_CHIPS: usize = 4;
-#[cfg(target_os = "macos")]
-const RESULTS_HEIGHT_NORMAL: f32 = 446.0;
+
 #[cfg(target_os = "macos")]
 const RESULT_ROW_HEIGHT: f32 = 118.0;
 #[cfg(target_os = "macos")]
@@ -172,7 +171,7 @@ const MENU_TAG_QUIT: isize = 2;
 #[cfg(target_os = "macos")]
 const MENU_TAG_FONT_BASE: isize = 100;
 #[cfg(target_os = "macos")]
-const MENU_TAG_ALPHA_BASE: isize = 200;
+const MENU_TAG_ABOUT: isize = 200;
 #[cfg(target_os = "macos")]
 const MENU_TAG_SYNTAX_ON: isize = 300;
 #[cfg(target_os = "macos")]
@@ -191,11 +190,10 @@ const MENU_TAG_BRAIN_OFF: isize = 305;
 #[cfg(target_os = "macos")]
 const MENU_TAG_BRAIN_DOWNLOAD: isize = 306;
 
-#[cfg(target_os = "macos")]
-const TRANSPARENCY_LEVELS: [f32; 6] = [0.50, 0.60, 0.70, 0.80, 0.90, 1.00];
 
 #[cfg(target_os = "macos")]
 static MENU_COMMAND_TX: OnceLock<mpsc::Sender<MenuCommand>> = OnceLock::new();
+
 
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
@@ -203,7 +201,7 @@ enum MenuCommand {
     ShowLauncher,
     QuitApp,
     SetFont(FontChoice),
-    SetTransparency(f32),
+    ShowAbout,
     SetSyntaxHighlighting(bool),
     SetSecretAutoClear(bool),
     SetPastaBrain(bool),

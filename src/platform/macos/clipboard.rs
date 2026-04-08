@@ -21,22 +21,28 @@ pub(crate) struct ClipboardSnapshot {
 pub(crate) fn read_clipboard_snapshot() -> Option<ClipboardSnapshot> {
     unsafe {
         let pasteboard = NSPasteboard::generalPasteboard(nil);
-        let text = pasteboard.stringForType(NSPasteboardTypeString);
-        if text == nil {
-            return None;
-        }
-
-        let utf8_ptr = text.UTF8String();
-        if utf8_ptr.is_null() {
-            return None;
-        }
-
-        let text = CStr::from_ptr(utf8_ptr).to_string_lossy().into_owned();
         let type_names = pasteboard_type_names(pasteboard);
         let type_names_lower: Vec<String> = type_names
             .iter()
             .map(|value| value.to_ascii_lowercase())
             .collect();
+
+        // When files are copied (e.g. Cmd+C in Finder), prefer the full file path(s)
+        // over the plain string, which is typically just the filename.
+        let file_paths = read_file_urls_from_pasteboard(pasteboard, &type_names_lower);
+        let text = if let Some(paths) = file_paths {
+            paths
+        } else {
+            let ns_text = pasteboard.stringForType(NSPasteboardTypeString);
+            if ns_text == nil {
+                return None;
+            }
+            let utf8_ptr = ns_text.UTF8String();
+            if utf8_ptr.is_null() {
+                return None;
+            }
+            CStr::from_ptr(utf8_ptr).to_string_lossy().into_owned()
+        };
 
         let is_transient = type_names_lower.iter().any(|kind| {
             kind == "org.nspasteboard.transienttype"
@@ -55,6 +61,75 @@ pub(crate) fn read_clipboard_snapshot() -> Option<ClipboardSnapshot> {
             is_concealed,
             is_transient,
         })
+    }
+}
+
+/// Reads file URLs from the pasteboard when files are copied (e.g. Cmd+C in Finder).
+/// Returns the file path(s) as a newline-separated string, or None if no file URLs are present.
+///
+/// Finder often uses file reference URLs (`file:///.file/id=...`) rather than literal paths,
+/// so we resolve them via NSURL which handles both forms.
+#[cfg(target_os = "macos")]
+fn read_file_urls_from_pasteboard(pasteboard: id, type_names_lower: &[String]) -> Option<String> {
+    let has_file_urls = type_names_lower.iter().any(|kind| {
+        kind == "public.file-url" || kind.contains("public.file-url")
+    });
+
+    if !has_file_urls {
+        return None;
+    }
+
+    unsafe {
+        // Read all items from the pasteboard — each file is a separate pasteboard item.
+        let items: id = msg_send![pasteboard, pasteboardItems];
+        if items == nil {
+            return None;
+        }
+
+        let count: usize = msg_send![items, count];
+        if count == 0 {
+            return None;
+        }
+
+        let file_url_type = NSString::alloc(nil).init_str("public.file-url");
+        let nsurl_class = class!(NSURL);
+        let mut paths = Vec::with_capacity(count);
+
+        for ix in 0..count {
+            let item: id = msg_send![items, objectAtIndex: ix];
+            if item == nil {
+                continue;
+            }
+            let url_string: id = msg_send![item, stringForType: file_url_type];
+            if url_string == nil {
+                continue;
+            }
+
+            // Use NSURL to resolve the URL — this handles file reference URLs
+            // (file:///.file/id=...) and regular file URLs (file:///Users/...) alike.
+            let nsurl: id = msg_send![nsurl_class, URLWithString: url_string];
+            if nsurl == nil {
+                continue;
+            }
+            let ns_path: id = msg_send![nsurl, path];
+            if ns_path == nil {
+                continue;
+            }
+            let utf8_ptr = ns_path.UTF8String();
+            if utf8_ptr.is_null() {
+                continue;
+            }
+            let path = CStr::from_ptr(utf8_ptr).to_string_lossy().into_owned();
+            if !path.is_empty() {
+                paths.push(path);
+            }
+        }
+
+        if paths.is_empty() {
+            return None;
+        }
+
+        Some(paths.join("\n"))
     }
 }
 

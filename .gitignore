@@ -15,6 +15,9 @@ target/
 # Model cache (downloaded on first run)
 .fastembed_cache/
 
+# Plans (local only)
+.plan/
+
 # Environment
 .env
 .env.local

@@ -1,6 +1,8 @@
 <div align="center">
 
-# 🍝 Pasta
+<img src="assets/pasta.png" width="128" alt="Pasta icon" />
+
+# Pasta
 
 **The clipboard manager for devs and devops.**
 

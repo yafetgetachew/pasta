@@ -59,14 +59,8 @@ pub(crate) fn menu_command_from_tag(tag: isize) -> Option<MenuCommand> {
             .map(MenuCommand::SetFont);
     }
 
-    if (MENU_TAG_ALPHA_BASE..MENU_TAG_ALPHA_BASE + TRANSPARENCY_LEVELS.len() as isize)
-        .contains(&tag)
-    {
-        let index = (tag - MENU_TAG_ALPHA_BASE) as usize;
-        return TRANSPARENCY_LEVELS
-            .get(index)
-            .copied()
-            .map(MenuCommand::SetTransparency);
+    if tag == MENU_TAG_ABOUT {
+        return Some(MenuCommand::ShowAbout);
     }
 
     if tag == MENU_TAG_SYNTAX_ON {
@@ -114,10 +108,7 @@ fn menu_item(title: &str, key: &str, target: id, action: Sel, tag: isize) -> id 
     }
 }
 
-#[cfg(target_os = "macos")]
-fn transparency_label(level: f32) -> String {
-    format!("{}%", (level * 100.0).round() as i32)
-}
+
 
 #[cfg(target_os = "macos")]
 pub(crate) fn setup_status_item(cx: &mut App) {
@@ -149,6 +140,17 @@ pub(crate) fn setup_status_item(cx: &mut App) {
 
         menu.addItem_(NSMenuItem::separatorItem(nil));
 
+        let about_item = menu_item(
+            "About Pasta",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_ABOUT,
+        );
+        menu.addItem_(about_item);
+
+        menu.addItem_(NSMenuItem::separatorItem(nil));
+
         let font_parent = menu_item("Font", "", handler, selector("menuAction:"), -1);
         let font_menu = NSMenu::new(nil);
         for (ix, choice) in FontChoice::ALL.into_iter().enumerate() {
@@ -158,18 +160,6 @@ pub(crate) fn setup_status_item(cx: &mut App) {
         }
         font_parent.setSubmenu_(font_menu);
         menu.addItem_(font_parent);
-
-        let transparency_parent =
-            menu_item("Transparency", "", handler, selector("menuAction:"), -1);
-        let transparency_menu = NSMenu::new(nil);
-        for (ix, level) in TRANSPARENCY_LEVELS.into_iter().enumerate() {
-            let tag = MENU_TAG_ALPHA_BASE + ix as isize;
-            let label = transparency_label(level);
-            let item = menu_item(&label, "", handler, selector("menuAction:"), tag);
-            transparency_menu.addItem_(item);
-        }
-        transparency_parent.setSubmenu_(transparency_menu);
-        menu.addItem_(transparency_parent);
 
         let syntax_parent = menu_item(
             "Syntax Highlighting",
