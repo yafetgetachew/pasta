@@ -26,7 +26,7 @@ impl Render for LauncherView {
         let query_input_enabled = self.query_input_enabled();
         let query_focus_handle = self.text_input_focus_handle(TextInputTarget::Query);
         let query_focused = query_focus_handle.is_focused(window);
-        let results_height = RESULTS_HEIGHT_NORMAL;
+
 
         let results = if self.items.is_empty() {
             div()
@@ -1234,13 +1234,14 @@ impl Render for LauncherView {
                         .flex_none()
                         .flex_shrink_0()
                         .whitespace_nowrap()
-                        .px_1()
-                        .py(px(2.0))
-                        .rounded_md()
+                        .px(px(4.0))
+                        .py(px(1.0))
+                        .rounded_sm()
                         .bg(button_bg)
                         .border_1()
                         .border_color(button_border)
-                        .text_xs()
+                        .text_size(px(10.0))
+                        .line_height(px(14.0))
                         .text_color(palette.row_text)
                         .hover(move |style| style.bg(button_hover))
                         .cursor_pointer()
@@ -1294,7 +1295,9 @@ impl Render for LauncherView {
 
         let workspace = div()
             .w_full()
-            .h(px(results_height))
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_hidden()
             .flex()
             .gap_2()
             .child(
@@ -1320,6 +1323,7 @@ impl Render for LauncherView {
             .child(if self.show_command_help {
                 div()
                     .w_full()
+                    .flex_none()
                     .p_2()
                     .bg(scale_alpha(
                         palette.row_hover_bg,
@@ -1552,7 +1556,8 @@ impl LauncherView {
         for tag in item_tags.iter() {
             tag_row = tag_row.child(
                 div()
-                    .text_xs()
+                    .text_size(px(10.0))
+                    .line_height(px(14.0))
                     .text_color(tag_chip_color(tag, palette.dark))
                     .bg(scale_alpha(
                         palette.row_hover_bg,
@@ -1563,8 +1568,8 @@ impl LauncherView {
                         palette.window_border,
                         if palette.dark { 0.9 } else { 1.0 },
                     ))
-                    .rounded_md()
-                    .px_1()
+                    .rounded_sm()
+                    .px(px(4.0))
                     .child(tag.clone()),
             );
         }
@@ -1851,7 +1856,8 @@ fn search_suggestion_label(query: &str, suggestion: &str) -> String {
 fn result_meta_chip(label: &str, palette: Palette) -> impl IntoElement {
     div()
         .flex_none()
-        .text_xs()
+        .text_size(px(10.0))
+        .line_height(px(14.0))
         .text_color(tag_chip_color(label, palette.dark))
         .bg(scale_alpha(
             palette.row_hover_bg,
@@ -1862,8 +1868,8 @@ fn result_meta_chip(label: &str, palette: Palette) -> impl IntoElement {
             palette.window_border,
             if palette.dark { 0.85 } else { 1.0 },
         ))
-        .rounded_md()
-        .px_1()
+        .rounded_sm()
+        .px(px(4.0))
         .whitespace_nowrap()
         .child(label.to_owned())
 }

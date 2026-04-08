@@ -108,10 +108,22 @@ fn handle_menu_command(command: MenuCommand, cx: &mut App) {
                 );
             }
         }
-        MenuCommand::SetTransparency(alpha) => {
-            cx.global_mut::<UiStyleState>().surface_alpha = alpha.clamp(0.45, 1.0);
-            apply_style_to_open_window(cx);
-            persist_ui_style_state(cx);
+        MenuCommand::ShowAbout => {
+            let _ = std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(concat!(
+                    "set result to display dialog ",
+                    "\"Pasta — v0.1.0\\n\\n",
+                    "The clipboard manager for devs and devops.\\n",
+                    "Blazing-fast, Spotlight-style clipboard launcher\\n",
+                    "built with Rust and GPUI.\" ",
+                    "with title \"About Pasta\" ",
+                    "buttons {\"GitHub\", \"OK\"} default button 2 with icon note\n",
+                    "if button returned of result is \"GitHub\" then\n",
+                    "  open location \"https://github.com/yafetgetachew/pasta\"\n",
+                    "end if",
+                ))
+                .spawn();
         }
         MenuCommand::SetSyntaxHighlighting(enabled) => {
             cx.global_mut::<UiStyleState>().syntax_highlighting = enabled;

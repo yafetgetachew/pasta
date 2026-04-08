@@ -14,7 +14,7 @@ use aes_gcm::{
 };
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use keyring::{Entry, Error as KeyringError};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -442,7 +442,12 @@ impl ClipboardStorage {
             } else {
                 indexed.content_hash.as_str()
             };
-            let semantic_seed_terms = tags_without_bowl(&record.tags);
+            let mut semantic_seed_terms = tags_without_bowl(&record.tags);
+            if !record.description.is_empty() {
+                semantic_seed_terms.extend(
+                    semantic_tokenize(&record.description.to_ascii_lowercase()),
+                );
+            }
             let record_embedding =
                 self.cached_semantic_embedding(cache_key, &record.content, &semantic_seed_terms);
             let semantic_score = cosine_similarity(query_embedding, &record_embedding);
@@ -2772,13 +2777,41 @@ fn content_hash(content: &str) -> String {
 }
 
 fn combined_search_score(item: &ScoredRecord) -> f32 {
-    if item.lexical_score > 0.0 {
+    let base = if item.lexical_score > 0.0 {
         2.0 + (item.lexical_score * 1.2) + (item.semantic_score * 0.3) + (item.neural_score * 0.5)
     } else if item.neural_score > 0.0 || item.semantic_score > 0.0 {
         (item.semantic_score * 0.35) + (item.neural_score * 0.65)
     } else {
         0.0
+    };
+
+    // Recency boost: recent items get up to +0.3, decaying with half-life ~30 days.
+    let recency = recency_boost(&item.record.created_at);
+
+    base + recency
+}
+
+/// Returns a recency boost between 0.0 and 0.3 based on how recently the item
+/// was created. Uses exponential decay with a half-life of approximately 30 days
+/// (720 hours).
+fn recency_boost(created_at: &str) -> f32 {
+    const DECAY_HALF_LIFE_HOURS: f64 = 720.0;
+    const MAX_BOOST: f32 = 0.3;
+
+    let Ok(timestamp) = DateTime::parse_from_rfc3339(created_at) else {
+        return 0.0;
+    };
+
+    let age_hours = Utc::now()
+        .signed_duration_since(timestamp)
+        .num_minutes() as f64
+        / 60.0;
+
+    if age_hours <= 0.0 {
+        return MAX_BOOST;
     }
+
+    MAX_BOOST * (-age_hours / DECAY_HALF_LIFE_HOURS).exp() as f32
 }
 
 fn lexical_match_score(record: &ClipboardRecord, query: &str, query_terms: &[String]) -> f32 {
@@ -2919,18 +2952,89 @@ fn push_semantic_token(token: &str, output: &mut Vec<String>) {
 
 fn canonical_semantic_term(term: &str) -> &str {
     match term {
+        // Secrets & credentials
         "pass" | "passwd" | "password" | "pwd" | "secret" | "token" | "apikey" | "api_key"
         | "credential" | "credentials" => "secret",
-        "cmd" | "command" | "shell" | "terminal" | "bash" | "zsh" => "command",
+
+        // Shell & CLI
+        "cmd" | "command" | "shell" | "terminal" | "bash" | "zsh" | "fish" | "sh" => "command",
+
+        // URLs & networking
         "link" | "url" | "uri" | "http" | "https" | "website" | "web" => "url",
+        "dns" | "nameserver" | "resolve" => "dns",
+        "ssh" | "scp" | "sftp" => "ssh",
+        "fw" | "firewall" | "iptables" | "nftables" | "ufw" => "firewall",
+        "lb" | "loadbalancer" | "load-balancer" => "loadbalancer",
+
+        // Clipboard / snippet
         "snippet" | "snippets" | "clipboard" | "clip" | "copy" | "paste" => "snippet",
+
+        // Languages
         "javascript" | "nodejs" | "node" | "js" => "javascript",
         "typescript" | "ts" | "tsx" => "typescript",
         "python" | "py" => "python",
         "golang" | "go" => "go",
-        "postgres" | "postgresql" | "psql" => "sql",
+        "rb" | "ruby" => "ruby",
+        "rs" | "rust" => "rust",
+        "java" | "jvm" | "jdk" => "java",
+        "csharp" | "cs" | "dotnet" => "csharp",
+
+        // Data formats
+        "yml" | "yaml" => "yaml",
+        "toml" => "toml",
+        "xml" | "html" | "htm" => "markup",
+        "csv" | "tsv" => "tabular",
+        "md" | "markdown" => "markdown",
+        "regex" | "regexp" => "regex",
+
+        // Databases
+        "postgres" | "postgresql" | "psql" | "sql" | "mysql" | "sqlite" | "mariadb" => "sql",
+        "redis" => "redis",
+        "mongo" | "mongodb" => "mongodb",
+
+        // Environment
         "env" | "dotenv" | "environment" => "env",
+
+        // Kubernetes core
         "k8s" | "kubernetes" => "kubernetes",
+        "deploy" | "deployment" | "deployments" | "rollout" => "deployment",
+        "svc" | "service" | "services" => "service",
+        "ns" | "namespace" | "namespaces" => "namespace",
+        "pod" | "pods" | "po" => "pod",
+        "cm" | "configmap" | "configmaps" => "configmap",
+        "pv" | "pvc" | "volume" | "volumes" | "persistentvolume" => "volume",
+        "ing" | "ingress" => "ingress",
+        "hpa" | "autoscale" | "autoscaler" => "autoscaler",
+        "sts" | "statefulset" | "statefulsets" => "statefulset",
+        "ds" | "daemonset" | "daemonsets" => "daemonset",
+        "cj" | "cronjob" | "cronjobs" => "cronjob",
+        "sa" | "serviceaccount" => "serviceaccount",
+        "netpol" | "networkpolicy" => "networkpolicy",
+
+        // Containers & images
+        "container" | "containers" | "ctr" => "container",
+        "img" | "image" | "images" => "image",
+
+        // Infrastructure & security
+        "cert" | "certificate" | "certificates" | "tls" | "ssl" => "certificate",
+        "cfg" | "config" | "configuration" | "conf" => "config",
+        "db" | "database" | "databases" => "database",
+        "repo" | "repository" | "repositories" => "repository",
+
+        // Cloud & IaC
+        "aws" | "amazon" => "aws",
+        "gcp" | "gcloud" | "google-cloud" => "gcp",
+        "az" | "azure" => "azure",
+        "tf" | "terraform" | "hcl" => "terraform",
+        "ansible" | "playbook" => "ansible",
+        "helm" | "chart" | "charts" => "helm",
+
+        // DevOps concepts
+        "ci" | "cd" | "cicd" | "ci/cd" | "pipeline" | "pipelines" => "cicd",
+        "prod" | "production" => "production",
+        "stg" | "staging" => "staging",
+        "dev" | "development" => "development",
+
         _ => term,
     }
 }
