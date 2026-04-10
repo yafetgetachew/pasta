@@ -1695,9 +1695,48 @@ fn classify_clipboard_text_with_mode(
     if has_env_reference(text) {
         enriched.insert("env".to_owned());
     }
+    if looks_like_ip_address(text) {
+        enriched.insert("ip".to_owned());
+    }
     if let Some(language) = detect_language_tag(item_type, text) {
         enriched.insert(language.to_owned());
         enriched.insert(format!("lang:{language}"));
+
+        // Domain-specific structural tags derived from detected language.
+        match language {
+            "dockerfile" => {
+                enriched.insert("docker".to_owned());
+            }
+            "yaml" => {
+                let lower = text.to_ascii_lowercase();
+                if (lower.contains("apiversion:") || lower.contains("apiversion :"))
+                    && (lower.contains("kind:") || lower.contains("kind :"))
+                {
+                    enriched.insert("k8s".to_owned());
+                    enriched.insert("kubernetes".to_owned());
+                }
+                if lower.contains("ansible") || (lower.contains("hosts:") && lower.contains("tasks:")) {
+                    enriched.insert("ansible".to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    // Terraform / HCL detection.
+    {
+        let lower = text.to_ascii_lowercase();
+        if (lower.contains("resource \"") && lower.contains("provider \""))
+            || (lower.contains("resource \"") && lower.contains("terraform {"))
+            || (lower.contains("variable \"") && lower.contains("type ="))
+        {
+            enriched.insert("terraform".to_owned());
+            enriched.insert("hcl".to_owned());
+        }
+    }
+    // JWT token detection.
+    if looks_like_jwt(text) {
+        enriched.insert("jwt".to_owned());
+        enriched.insert("token".to_owned());
     }
 
     if mode == SecretClassificationMode::ForceSecret {
@@ -1924,6 +1963,48 @@ fn has_env_reference(text: &str) -> bool {
         }
 
         has_name
+    })
+}
+
+fn looks_like_ip_address(text: &str) -> bool {
+    let value = text.trim();
+    if value.contains('\n') || value.is_empty() {
+        return false;
+    }
+    // Strip optional port suffix for matching (e.g., "192.168.1.1:8080").
+    let host = value.split(':').next().unwrap_or(value);
+    // IPv4: four octets separated by dots, each 0-255.
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() == 4 {
+        return parts
+            .iter()
+            .all(|p| p.parse::<u8>().is_ok());
+    }
+    // IPv6: contains at least two colons and only hex digits, colons, dots (for mapped v4).
+    if value.contains("::") || value.matches(':').count() >= 2 {
+        let stripped = value.trim_start_matches('[').trim_end_matches(']');
+        return stripped
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() || ch == ':' || ch == '.');
+    }
+    false
+}
+
+fn looks_like_jwt(text: &str) -> bool {
+    let value = text.trim();
+    if value.contains('\n') || value.contains(' ') {
+        return false;
+    }
+    let parts: Vec<&str> = value.split('.').collect();
+    if parts.len() != 3 {
+        return false;
+    }
+    // Each part must be non-empty and look like base64url.
+    parts.iter().all(|part| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '=')
     })
 }
 
