@@ -1,11 +1,7 @@
-#[cfg(target_os = "macos")]
 use super::state::TextInputState;
-#[cfg(target_os = "macos")]
 use crate::*;
-#[cfg(target_os = "macos")]
 use unicode_segmentation::UnicodeSegmentation;
 
-#[cfg(target_os = "macos")]
 pub(super) struct TextInputElement {
     pub(super) input: Entity<LauncherView>,
     pub(super) target: TextInputTarget,
@@ -14,14 +10,12 @@ pub(super) struct TextInputElement {
     pub(super) enabled: bool,
 }
 
-#[cfg(target_os = "macos")]
 pub(super) struct TextInputPrepaintState {
     line: Option<ShapedLine>,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
 }
 
-#[cfg(target_os = "macos")]
 impl TextInputElement {
     pub(super) fn new(
         input: Entity<LauncherView>,
@@ -40,7 +34,6 @@ impl TextInputElement {
     }
 }
 
-#[cfg(target_os = "macos")]
 impl IntoElement for TextInputElement {
     type Element = Self;
 
@@ -49,7 +42,6 @@ impl IntoElement for TextInputElement {
     }
 }
 
-#[cfg(target_os = "macos")]
 impl GpuiElement for TextInputElement {
     type RequestLayoutState = ();
     type PrepaintState = TextInputPrepaintState;
@@ -227,7 +219,6 @@ impl GpuiElement for TextInputElement {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn text_offset_from_utf16(text: &str, offset: usize) -> usize {
     let mut utf8_offset = 0;
     let mut utf16_count = 0;
@@ -243,7 +234,6 @@ fn text_offset_from_utf16(text: &str, offset: usize) -> usize {
     utf8_offset
 }
 
-#[cfg(target_os = "macos")]
 fn text_offset_to_utf16(text: &str, offset: usize) -> usize {
     let mut utf16_offset = 0;
     let mut utf8_count = 0;
@@ -259,7 +249,6 @@ fn text_offset_to_utf16(text: &str, offset: usize) -> usize {
     utf16_offset
 }
 
-#[cfg(target_os = "macos")]
 fn clamp_text_offset(text: &str, offset: usize) -> usize {
     let mut clamped = offset.min(text.len());
     while clamped > 0 && !text.is_char_boundary(clamped) {
@@ -268,7 +257,6 @@ fn clamp_text_offset(text: &str, offset: usize) -> usize {
     clamped
 }
 
-#[cfg(target_os = "macos")]
 fn clamp_text_range(text: &str, range: &Range<usize>) -> Range<usize> {
     let start = clamp_text_offset(text, range.start);
     let end = clamp_text_offset(text, range.end);
@@ -279,13 +267,11 @@ fn clamp_text_range(text: &str, range: &Range<usize>) -> Range<usize> {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn text_range_to_utf16(text: &str, range: &Range<usize>) -> Range<usize> {
     let range = clamp_text_range(text, range);
     text_offset_to_utf16(text, range.start)..text_offset_to_utf16(text, range.end)
 }
 
-#[cfg(target_os = "macos")]
 fn text_range_from_utf16(text: &str, range_utf16: &Range<usize>) -> Range<usize> {
     clamp_text_range(
         text,
@@ -294,7 +280,6 @@ fn text_range_from_utf16(text: &str, range_utf16: &Range<usize>) -> Range<usize>
     )
 }
 
-#[cfg(target_os = "macos")]
 fn previous_boundary(text: &str, offset: usize) -> usize {
     text.grapheme_indices(true)
         .rev()
@@ -302,14 +287,12 @@ fn previous_boundary(text: &str, offset: usize) -> usize {
         .unwrap_or(0)
 }
 
-#[cfg(target_os = "macos")]
 fn next_boundary(text: &str, offset: usize) -> usize {
     text.grapheme_indices(true)
         .find_map(|(idx, _)| (idx > offset).then_some(idx))
         .unwrap_or(text.len())
 }
 
-#[cfg(target_os = "macos")]
 impl LauncherView {
     pub(super) fn query_input_enabled(&self) -> bool {
         self.info_editor_target_id.is_none()
@@ -823,14 +806,12 @@ impl LauncherView {
     }
 }
 
-#[cfg(target_os = "macos")]
 impl Focusable for LauncherView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.query_input_state.focus_handle.clone()
     }
 }
 
-#[cfg(target_os = "macos")]
 impl EntityInputHandler for LauncherView {
     fn text_for_range(
         &mut self,
@@ -956,7 +937,7 @@ impl EntityInputHandler for LauncherView {
     }
 }
 
-#[cfg(all(target_os = "macos", test))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

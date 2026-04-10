@@ -1,28 +1,17 @@
-#[cfg(target_os = "macos")]
 use super::state::{CachedRowPresentation, SearchRequest, SearchResponse, TextInputState};
-#[cfg(target_os = "macos")]
 use crate::storage::{
     SEMANTIC_MIN_QUERY_CHARS, SEMANTIC_SOURCE_TEXT_LIMIT, SearchExecution, bounded_text_prefix,
     encode_f32_vec_base64, semantic_embedding,
 };
-#[cfg(target_os = "macos")]
 use crate::*;
-#[cfg(target_os = "macos")]
 use serde_json::Value;
-#[cfg(target_os = "macos")]
 use std::collections::{HashMap, HashSet};
-#[cfg(target_os = "macos")]
 use std::sync::atomic::Ordering;
-#[cfg(target_os = "macos")]
 use toml::Value as TomlValue;
 
-#[cfg(target_os = "macos")]
 const TAG_SEARCH_AUTOCOMPLETE_LIMIT: usize = 6;
-#[cfg(target_os = "macos")]
 const SEARCH_SEMANTIC_DELAY_MS: u64 = 90;
-#[cfg(target_os = "macos")]
 const SEARCH_NEURAL_DELAY_MS: u64 = 320;
-#[cfg(target_os = "macos")]
 const SEARCH_NEURAL_MIN_QUERY_CHARS: usize = 5;
 
 impl LauncherView {
@@ -2402,12 +2391,10 @@ impl LauncherView {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn is_parameter_word_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':')
 }
 
-#[cfg(target_os = "macos")]
 fn first_parameter_name_issue_index(names: &[String]) -> usize {
     let mut seen = HashSet::new();
 
@@ -2426,7 +2413,6 @@ fn first_parameter_name_issue_index(names: &[String]) -> usize {
     0
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Clone)]
 pub(super) struct ParameterClickableCandidate {
     pub(super) target: String,
@@ -2434,18 +2420,15 @@ pub(super) struct ParameterClickableCandidate {
     pub(super) suggested_name: Option<String>,
 }
 
-#[cfg(target_os = "macos")]
 fn is_sub_split_delimiter(ch: char) -> bool {
     matches!(ch, '/' | '.' | ':')
 }
 
-#[cfg(target_os = "macos")]
 fn token_is_sub_splittable(target: &str) -> bool {
     target.chars().any(is_sub_split_delimiter)
         && target.chars().filter(|ch| is_sub_split_delimiter(*ch)).count() <= 8
 }
 
-#[cfg(target_os = "macos")]
 fn sub_split_token(target: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
@@ -2465,7 +2448,6 @@ fn sub_split_token(target: &str) -> Vec<String> {
     parts
 }
 
-#[cfg(target_os = "macos")]
 pub(super) fn expand_candidates_with_splits(
     candidates: Vec<ParameterClickableCandidate>,
     split_tokens: &HashSet<String>,
@@ -2496,7 +2478,6 @@ pub(super) fn expand_candidates_with_splits(
     expanded
 }
 
-#[cfg(target_os = "macos")]
 pub(super) fn parameter_clickable_candidates(
     content: &str,
     force_full: bool,
@@ -2518,12 +2499,10 @@ pub(super) fn parameter_clickable_candidates(
     dedupe_parameter_candidates(parameter_word_candidates(content))
 }
 
-#[cfg(target_os = "macos")]
 pub(super) fn has_structured_parameter_candidates(content: &str) -> bool {
     !parameter_structured_candidates(content).is_empty()
 }
 
-#[cfg(target_os = "macos")]
 fn parameter_structured_candidates(content: &str) -> Vec<ParameterClickableCandidate> {
     let trimmed = content.trim();
     if trimmed.is_empty() {
@@ -2556,7 +2535,6 @@ fn parameter_structured_candidates(content: &str) -> Vec<ParameterClickableCandi
     Vec::new()
 }
 
-#[cfg(target_os = "macos")]
 fn collect_json_parameter_candidates(
     value: &Value,
     path: String,
@@ -2605,7 +2583,6 @@ fn collect_json_parameter_candidates(
     }
 }
 
-#[cfg(target_os = "macos")]
 fn parameter_toml_scalar_candidates(content: &str) -> Vec<ParameterClickableCandidate> {
     let Ok(toml_value) = toml::from_str::<TomlValue>(content) else {
         return Vec::new();
@@ -2616,7 +2593,6 @@ fn parameter_toml_scalar_candidates(content: &str) -> Vec<ParameterClickableCand
     candidates
 }
 
-#[cfg(target_os = "macos")]
 fn collect_toml_parameter_candidates(
     value: &TomlValue,
     path: String,
@@ -2670,7 +2646,6 @@ fn collect_toml_parameter_candidates(
     }
 }
 
-#[cfg(target_os = "macos")]
 fn parameter_yaml_scalar_candidates(content: &str) -> Vec<ParameterClickableCandidate> {
     if !looks_like_yaml_document(content) {
         return Vec::new();
@@ -2738,7 +2713,6 @@ fn parameter_yaml_scalar_candidates(content: &str) -> Vec<ParameterClickableCand
     candidates
 }
 
-#[cfg(target_os = "macos")]
 fn normalize_yaml_scalar(raw: &str) -> Option<String> {
     let mut value = raw.trim();
     if value.is_empty() {
@@ -2772,7 +2746,6 @@ fn normalize_yaml_scalar(raw: &str) -> Option<String> {
     Some(stripped.to_owned())
 }
 
-#[cfg(target_os = "macos")]
 fn looks_like_yaml_document(content: &str) -> bool {
     let mut yamlish_lines = 0_usize;
     let mut other_lines = 0_usize;
@@ -2815,7 +2788,6 @@ fn looks_like_yaml_document(content: &str) -> bool {
     yamlish_lines >= 2 && yamlish_lines >= other_lines
 }
 
-#[cfg(target_os = "macos")]
 fn parameter_xml_scalar_candidates(content: &str) -> Vec<ParameterClickableCandidate> {
     let trimmed = content.trim();
     if !trimmed.starts_with('<') || !trimmed.contains("</") {
@@ -2838,7 +2810,6 @@ fn parameter_xml_scalar_candidates(content: &str) -> Vec<ParameterClickableCandi
     candidates
 }
 
-#[cfg(target_os = "macos")]
 fn parse_xml_tag_value(line: &str) -> Option<(String, String)> {
     let open_end = line.find('>')?;
     if open_end <= 1 {
@@ -2871,7 +2842,6 @@ fn parse_xml_tag_value(line: &str) -> Option<(String, String)> {
     Some((tag.to_owned(), value.to_owned()))
 }
 
-#[cfg(target_os = "macos")]
 fn parameter_assignment_line_candidates(content: &str) -> Vec<ParameterClickableCandidate> {
     let mut candidates = Vec::new();
     for line in content.lines().take(700) {
@@ -2909,7 +2879,6 @@ fn parameter_assignment_line_candidates(content: &str) -> Vec<ParameterClickable
     candidates
 }
 
-#[cfg(target_os = "macos")]
 fn parameter_word_candidates(content: &str) -> Vec<ParameterClickableCandidate> {
     let mut candidates = Vec::new();
     let mut current_start: Option<usize> = None;
@@ -2934,7 +2903,6 @@ fn parameter_word_candidates(content: &str) -> Vec<ParameterClickableCandidate> 
     candidates
 }
 
-#[cfg(target_os = "macos")]
 fn dedupe_parameter_candidates(
     candidates: Vec<ParameterClickableCandidate>,
 ) -> Vec<ParameterClickableCandidate> {
@@ -2960,7 +2928,6 @@ fn dedupe_parameter_candidates(
     deduped
 }
 
-#[cfg(target_os = "macos")]
 fn push_structured_parameter_candidate(
     candidates: &mut Vec<ParameterClickableCandidate>,
     key_or_path: String,
@@ -2984,7 +2951,6 @@ fn push_structured_parameter_candidate(
     });
 }
 
-#[cfg(target_os = "macos")]
 fn push_freetext_parameter_candidate(
     candidates: &mut Vec<ParameterClickableCandidate>,
     key: Option<&str>,
@@ -3008,7 +2974,6 @@ fn push_freetext_parameter_candidate(
     });
 }
 
-#[cfg(target_os = "macos")]
 fn parameter_name_from_path(path: &str) -> Option<String> {
     let mut output = String::new();
     let mut previous_was_separator = false;
@@ -3047,7 +3012,6 @@ fn parameter_name_from_path(path: &str) -> Option<String> {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn preview_for_parameter_candidate(value: &str, max_chars: usize) -> String {
     let collapsed = value
         .replace(['\n', '\r', '\t'], " ")
@@ -3063,7 +3027,6 @@ fn preview_for_parameter_candidate(value: &str, max_chars: usize) -> String {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn apply_search_suggestion_to_query(query: &str, suggestion: &str) -> Option<String> {
     let normalized_suggestion = suggestion.trim();
     if normalized_suggestion.is_empty() {
@@ -3102,7 +3065,6 @@ fn apply_search_suggestion_to_query(query: &str, suggestion: &str) -> Option<Str
     }
 }
 
-#[cfg(target_os = "macos")]
 fn should_schedule_delayed_search(
     query: &str,
     pasta_brain_enabled: bool,
@@ -3128,7 +3090,6 @@ fn should_schedule_delayed_search(
     }
 }
 
-#[cfg(target_os = "macos")]
 fn raw_tag_search_effective_query(query: &str) -> Option<&str> {
     let trimmed_start = query.trim_start();
     let effective_query = trimmed_start.strip_prefix(':')?.trim_start();
@@ -3144,7 +3105,6 @@ fn raw_tag_search_effective_query(query: &str) -> Option<&str> {
     Some(effective_query)
 }
 
-#[cfg(target_os = "macos")]
 fn build_bowl_export_bundle(
     bowl_name: &str,
     items: &[ClipboardRecord],
@@ -3167,7 +3127,6 @@ fn build_bowl_export_bundle(
     }
 }
 
-#[cfg(target_os = "macos")]
 fn build_bowl_export_item(
     item: &ClipboardRecord,
     storage: Option<&ClipboardStorage>,
@@ -3230,7 +3189,6 @@ fn build_bowl_export_item(
     }
 }
 
-#[cfg(target_os = "macos")]
 fn build_bowl_export_template_content(content: &str, parameters: &[ClipboardParameter]) -> String {
     if parameters.is_empty() {
         return content.to_owned();
@@ -3261,7 +3219,6 @@ fn build_bowl_export_template_content(content: &str, parameters: &[ClipboardPara
     output
 }
 
-#[cfg(target_os = "macos")]
 fn export_parameter_default_value(parameter: &ClipboardParameter) -> String {
     let placeholder = format!("{{{{{}}}}}", parameter.name.trim());
     if parameter.target.trim() == placeholder {
@@ -3271,7 +3228,6 @@ fn export_parameter_default_value(parameter: &ClipboardParameter) -> String {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn suggested_bowl_export_filename(bowl_name: &str) -> String {
     let sanitized: String = bowl_name
         .trim()
@@ -3292,7 +3248,6 @@ fn suggested_bowl_export_filename(bowl_name: &str) -> String {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn is_parameter_key_token(value: &str) -> bool {
     let trimmed = value.trim();
     !trimmed.is_empty()
@@ -3302,7 +3257,6 @@ fn is_parameter_key_token(value: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
-#[cfg(target_os = "macos")]
 fn is_valid_parameter_name(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
@@ -3314,7 +3268,7 @@ fn is_valid_parameter_name(name: &str) -> bool {
     chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
-#[cfg(all(target_os = "macos", test))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

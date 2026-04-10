@@ -17,7 +17,7 @@ target/
 
 # Plans (local only)
 .plan/
-
+.plan
 # Environment
 .env
 .env.local

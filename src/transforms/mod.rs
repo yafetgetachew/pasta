@@ -1,4 +1,3 @@
-#[cfg(target_os = "macos")]
 use base64::{
     Engine,
     engine::general_purpose::{
@@ -6,24 +5,19 @@ use base64::{
         URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD,
     },
 };
-#[cfg(target_os = "macos")]
 use chrono::{DateTime, NaiveDateTime, Utc};
-#[cfg(target_os = "macos")]
 use sha2::{Digest, Sha256};
 
-#[cfg(target_os = "macos")]
 pub(crate) fn shell_quote_escape(input: &str) -> String {
     format!("'{}'", input.replace('\'', "'\"'\"'"))
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn json_encode_transform(input: &str) -> Result<(String, &'static str), String> {
     let encoded =
         serde_json::to_string(input).map_err(|err| format!("json encode error: {err}"))?;
     Ok((encoded, "JSON-escaped to clipboard."))
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn json_decode_transform(input: &str) -> Result<(String, &'static str), String> {
     let trimmed = input.trim();
     if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
@@ -36,7 +30,6 @@ pub(crate) fn json_decode_transform(input: &str) -> Result<(String, &'static str
     Ok((decoded, "JSON-unescaped to clipboard."))
 }
 
-#[cfg(target_os = "macos")]
 fn decode_json_escaped_string(input: &str) -> Result<String, String> {
     if input.is_empty() {
         return Err("empty string".to_owned());
@@ -54,7 +47,6 @@ fn decode_json_escaped_string(input: &str) -> Result<String, String> {
     serde_json::from_str::<String>(&wrapped).map_err(|err| err.to_string())
 }
 
-#[cfg(target_os = "macos")]
 fn has_json_escape_markers(input: &str) -> bool {
     input.contains("\\n")
         || input.contains("\\t")
@@ -63,18 +55,15 @@ fn has_json_escape_markers(input: &str) -> bool {
         || input.contains("\\u")
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn url_encode_transform(input: &str) -> Result<(String, &'static str), String> {
     Ok((url_percent_encode(input), "URL-encoded to clipboard."))
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn url_decode_transform(input: &str) -> Result<(String, &'static str), String> {
     let decoded = url_percent_decode(input)?;
     Ok((decoded, "URL-decoded to clipboard."))
 }
 
-#[cfg(target_os = "macos")]
 fn url_percent_encode(input: &str) -> String {
     let mut output = String::with_capacity(input.len() * 2);
     for byte in input.bytes() {
@@ -88,7 +77,6 @@ fn url_percent_encode(input: &str) -> String {
     output
 }
 
-#[cfg(target_os = "macos")]
 fn url_percent_decode(input: &str) -> Result<String, String> {
     let bytes = input.as_bytes();
     let mut output = Vec::with_capacity(bytes.len());
@@ -128,7 +116,6 @@ fn url_percent_decode(input: &str) -> Result<String, String> {
     String::from_utf8(output).map_err(|_| "decoded URL is not utf-8".to_owned())
 }
 
-#[cfg(target_os = "macos")]
 fn hex_nibble(value: u8) -> Option<u8> {
     match value {
         b'0'..=b'9' => Some(value - b'0'),
@@ -138,7 +125,6 @@ fn hex_nibble(value: u8) -> Option<u8> {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn base64_encode_transform(input: &str) -> Result<(String, &'static str), String> {
     Ok((
         BASE64_STANDARD.encode(input.as_bytes()),
@@ -146,7 +132,6 @@ pub(crate) fn base64_encode_transform(input: &str) -> Result<(String, &'static s
     ))
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn base64_decode_transform(input: &str) -> Result<(String, &'static str), String> {
     let compact: String = input.chars().filter(|ch| !ch.is_whitespace()).collect();
 
@@ -178,7 +163,6 @@ pub(crate) fn base64_decode_transform(input: &str) -> Result<(String, &'static s
     Err(format!("base64 decode error: {err}"))
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn jwt_decode_transform(input: &str) -> Result<(String, &'static str), String> {
     let trimmed = input.trim();
     let parts: Vec<&str> = trimmed.split('.').collect();
@@ -267,7 +251,6 @@ pub(crate) fn jwt_decode_transform(input: &str) -> Result<(String, &'static str)
     Ok((summary.join("\n"), "JWT decoded to clipboard."))
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn json_pretty_transform(input: &str) -> Result<(String, &'static str), String> {
     let value: serde_json::Value =
         serde_json::from_str(input.trim()).map_err(|err| format!("JSON parse error: {err}"))?;
@@ -276,7 +259,6 @@ pub(crate) fn json_pretty_transform(input: &str) -> Result<(String, &'static str
     Ok((pretty, "JSON prettified to clipboard."))
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn json_minify_transform(input: &str) -> Result<(String, &'static str), String> {
     let value: serde_json::Value =
         serde_json::from_str(input.trim()).map_err(|err| format!("JSON parse error: {err}"))?;
@@ -285,7 +267,6 @@ pub(crate) fn json_minify_transform(input: &str) -> Result<(String, &'static str
     Ok((compact, "JSON minified to clipboard."))
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn epoch_decode_transform(input: &str) -> Result<(String, &'static str), String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -353,7 +334,6 @@ pub(crate) fn epoch_decode_transform(input: &str) -> Result<(String, &'static st
     Err("not a recognized timestamp or date format".to_owned())
 }
 
-#[cfg(target_os = "macos")]
 fn format_duration_ago(seconds: i64) -> String {
     if seconds < 60 { return format!("{seconds}s ago"); }
     if seconds < 3600 { return format!("{}m ago", seconds / 60); }
@@ -363,7 +343,6 @@ fn format_duration_ago(seconds: i64) -> String {
     format!("{}y {}d ago", days / 365, days % 365)
 }
 
-#[cfg(target_os = "macos")]
 fn format_duration_from_now(seconds: i64) -> String {
     if seconds < 60 { return format!("in {seconds}s"); }
     if seconds < 3600 { return format!("in {}m", seconds / 60); }
@@ -373,7 +352,6 @@ fn format_duration_from_now(seconds: i64) -> String {
     format!("in {}y {}d", days / 365, days % 365)
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn sha256_hash_transform(input: &str) -> Result<(String, &'static str), String> {
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
@@ -382,7 +360,6 @@ pub(crate) fn sha256_hash_transform(input: &str) -> Result<(String, &'static str
     Ok((hex, "SHA256 hash copied to clipboard."))
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn content_stats_transform(input: &str) -> Result<(String, &'static str), String> {
     let lines = input.lines().count();
     let words = input.split_whitespace().count();
@@ -408,7 +385,6 @@ pub(crate) fn content_stats_transform(input: &str) -> Result<(String, &'static s
     Ok((stats.join("\n"), "Content stats copied to clipboard."))
 }
 
-#[cfg(target_os = "macos")]
 fn looks_like_base64(value: &str) -> bool {
     if value.len() < 8 || value.len() % 4 != 0 {
         return false;
@@ -419,7 +395,6 @@ fn looks_like_base64(value: &str) -> bool {
     })
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn public_cert_pem_info_transform(
     input: &str,
 ) -> Result<(String, &'static str), String> {
@@ -451,7 +426,6 @@ pub(crate) fn public_cert_pem_info_transform(
     Err("no PEM certificate found".to_owned())
 }
 
-#[cfg(target_os = "macos")]
 fn extract_first_pem_certificate(input: &str) -> Option<String> {
     const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
     const END: &str = "-----END CERTIFICATE-----";
@@ -463,7 +437,6 @@ fn extract_first_pem_certificate(input: &str) -> Option<String> {
     Some(input[start..end].to_owned())
 }
 
-#[cfg(target_os = "macos")]
 fn run_openssl_x509_details(input: &[u8], der_input: bool) -> Result<String, String> {
     use std::io::Write as _;
     use std::process::{Command, Stdio};
@@ -503,7 +476,6 @@ fn run_openssl_x509_details(input: &[u8], der_input: bool) -> Result<String, Str
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-#[cfg(target_os = "macos")]
 fn summarize_certificate_details(details: &str) -> String {
     let mut subject = String::new();
     let mut issuer = String::new();
@@ -571,7 +543,6 @@ fn summarize_certificate_details(details: &str) -> String {
     .join("\n")
 }
 
-#[cfg(target_os = "macos")]
 fn dn_attr_value(dn: &str, key: &str) -> Option<String> {
     for part in dn.split(',') {
         let (name, value) = part.split_once('=')?;
@@ -582,7 +553,6 @@ fn dn_attr_value(dn: &str, key: &str) -> Option<String> {
     None
 }
 
-#[cfg(target_os = "macos")]
 fn parse_openssl_datetime(value: &str) -> Option<DateTime<Utc>> {
     if value.trim().is_empty() {
         return None;

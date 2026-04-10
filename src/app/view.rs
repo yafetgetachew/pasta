@@ -1,18 +1,12 @@
-#[cfg(target_os = "macos")]
 use super::actions::{
     expand_candidates_with_splits, has_structured_parameter_candidates,
     parameter_clickable_candidates,
 };
-#[cfg(target_os = "macos")]
 use super::query_input::TextInputElement;
-#[cfg(target_os = "macos")]
 use super::state::CachedRowPresentation;
-#[cfg(target_os = "macos")]
 use crate::*;
-#[cfg(target_os = "macos")]
 use gpui::{AnyElement, StatefulInteractiveElement};
 
-#[cfg(target_os = "macos")]
 impl Render for LauncherView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.apply_pending_text_input_focus(window);
@@ -1395,7 +1389,6 @@ impl Render for LauncherView {
     }
 }
 
-#[cfg(target_os = "macos")]
 impl LauncherView {
     fn render_tag_search_suggestions(
         &self,
@@ -1833,7 +1826,6 @@ impl LauncherView {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn search_suggestion_heading(query: &str) -> &'static str {
     match parse_search_query(query) {
         SearchQuery::TagOnly { .. } => "Tag suggestions",
@@ -1842,7 +1834,6 @@ fn search_suggestion_heading(query: &str) -> &'static str {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn search_suggestion_label(query: &str, suggestion: &str) -> String {
     match parse_search_query(query) {
         SearchQuery::TagOnly { .. } => format!(":{suggestion}"),
@@ -1852,7 +1843,6 @@ fn search_suggestion_label(query: &str, suggestion: &str) -> String {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn result_meta_chip(label: &str, palette: Palette) -> impl IntoElement {
     div()
         .flex_none()
@@ -1874,7 +1864,6 @@ fn result_meta_chip(label: &str, palette: Palette) -> impl IntoElement {
         .child(label.to_owned())
 }
 
-#[cfg(target_os = "macos")]
 fn render_help_run(tips: &[&str], palette: Palette) -> impl IntoElement {
     let help_chip_bg = scale_alpha(palette.row_hover_bg, if palette.dark { 0.9 } else { 1.0 });
     let help_chip_border =

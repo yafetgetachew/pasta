@@ -1,7 +1,5 @@
-#[cfg(target_os = "macos")]
 use crate::*;
 
-#[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 pub(crate) enum LanguageTag {
     Bash,
@@ -22,7 +20,6 @@ pub(crate) enum LanguageTag {
     Code,
 }
 
-#[cfg(target_os = "macos")]
 impl LanguageTag {
     pub(crate) fn label(&self) -> &'static str {
         match self {
@@ -46,7 +43,6 @@ impl LanguageTag {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn detect_language(item_type: ClipboardItemType, content: &str) -> Option<LanguageTag> {
     if item_type == ClipboardItemType::Password {
         return None;
@@ -162,7 +158,6 @@ pub(crate) fn detect_language(item_type: ClipboardItemType, content: &str) -> Op
     None
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn language_color(language: LanguageTag, dark: bool) -> gpui::Hsla {
     let color = match language {
         LanguageTag::Bash => {
@@ -281,12 +276,10 @@ pub(crate) fn language_color(language: LanguageTag, dark: bool) -> gpui::Hsla {
 
     color.into()
 }
-#[cfg(target_os = "macos")]
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
 }
 
-#[cfg(target_os = "macos")]
 fn looks_like_json(text: &str, lower: &str) -> bool {
     let trimmed = text.trim();
     let wrapped = (trimmed.starts_with('{') && trimmed.ends_with('}'))
@@ -294,7 +287,6 @@ fn looks_like_json(text: &str, lower: &str) -> bool {
     wrapped && lower.contains(':') && trimmed.contains('"')
 }
 
-#[cfg(target_os = "macos")]
 fn looks_like_yaml(text: &str) -> bool {
     let mut has_pairs = 0_usize;
     for line in text.lines().take(12) {

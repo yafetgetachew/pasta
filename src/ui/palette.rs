@@ -1,9 +1,6 @@
-#[cfg(target_os = "macos")]
 use super::LanguageTag;
-#[cfg(target_os = "macos")]
 use crate::*;
 
-#[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 pub(crate) struct Palette {
     pub(crate) dark: bool,
@@ -22,7 +19,6 @@ pub(crate) struct Palette {
 }
 
 
-#[cfg(target_os = "macos")]
 pub(crate) fn palette_for(appearance: WindowAppearance, surface_alpha: f32) -> Palette {
     let dark = matches!(
         appearance,
@@ -76,7 +72,6 @@ pub(crate) fn palette_for(appearance: WindowAppearance, surface_alpha: f32) -> P
     palette
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn scale_alpha(color: gpui::Rgba, scale: f32) -> gpui::Rgba {
     gpui::Rgba {
         r: color.r,
@@ -86,7 +81,6 @@ pub(crate) fn scale_alpha(color: gpui::Rgba, scale: f32) -> gpui::Rgba {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn type_color(item_type: ClipboardItemType, dark: bool) -> gpui::Hsla {
     match item_type {
         ClipboardItemType::Text => {
@@ -120,14 +114,12 @@ pub(crate) fn type_color(item_type: ClipboardItemType, dark: bool) -> gpui::Hsla
     }
 }
 
-#[cfg(target_os = "macos")]
 fn push_unique_chip(chips: &mut Vec<String>, label: &str) {
     if !chips.iter().any(|existing| existing == label) {
         chips.push(label.to_owned());
     }
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn visible_tag_chips(
     item_type: ClipboardItemType,
     language: Option<LanguageTag>,
@@ -235,7 +227,6 @@ pub(crate) fn visible_tag_chips(
     chips
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn tag_chip_color(label: &str, dark: bool) -> gpui::Hsla {
     if label.starts_with("OPEN ") {
         if dark {

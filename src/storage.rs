@@ -182,16 +182,19 @@ pub struct ClipboardStorage {
 
 impl ClipboardStorage {
     pub fn bootstrap(app_dir_name: &str) -> Result<Self> {
-        let data_dir = dirs::data_local_dir()
-            .or_else(dirs::home_dir)
-            .context("unable to determine data directory")?
-            .join(app_dir_name);
-        fs::create_dir_all(&data_dir).context("unable to create data directory")?;
-
-        let db_path = data_dir.join("clipboard.db");
+        let db_path = primary_db_path(app_dir_name)?;
+        let crypto = match CryptoBox::load_or_create() {
+            Ok(crypto) => crypto,
+            Err(err) => {
+                eprintln!(
+                    "warning: secure storage unavailable; using ephemeral encryption for this session: {err}"
+                );
+                CryptoBox::ephemeral()
+            }
+        };
         let storage = Self {
             db_path,
-            crypto: CryptoBox::load_or_create()?,
+            crypto,
             semantic_embedding_cache: Arc::new(Mutex::new(HashMap::new())),
             neural_embedding_cache: Arc::new(Mutex::new(HashMap::new())),
             neural_embedder: Arc::new(Mutex::new(None)),
@@ -203,15 +206,7 @@ impl ClipboardStorage {
     }
 
     pub fn bootstrap_fallback(app_dir_name: &str) -> Result<Self> {
-        let data_dir = dirs::cache_dir()
-            .or_else(dirs::home_dir)
-            .context("unable to determine fallback data directory")?
-            .join(app_dir_name);
-        fs::create_dir_all(&data_dir).context("unable to create fallback data directory")?;
-
-        // Fallback storage is intentionally isolated from the primary DB because
-        // keychain access may be unavailable in this mode.
-        let db_path = data_dir.join(format!("clipboard-fallback-{}.db", std::process::id()));
+        let db_path = fallback_db_path(app_dir_name)?;
         let storage = Self {
             db_path,
             crypto: CryptoBox::ephemeral(),
@@ -1329,6 +1324,55 @@ impl ClipboardStorage {
         }
         embedding
     }
+}
+
+fn primary_db_path(app_dir_name: &str) -> Result<PathBuf> {
+    let data_dir = dirs::data_local_dir()
+        .or_else(dirs::home_dir)
+        .context("unable to determine data directory")?
+        .join(app_dir_name);
+    fs::create_dir_all(&data_dir).context("unable to create data directory")?;
+
+    let db_path = data_dir.join("clipboard.db");
+    verify_sqlite_path(&db_path)?;
+    Ok(db_path)
+}
+
+fn fallback_db_path(app_dir_name: &str) -> Result<PathBuf> {
+    let candidate_roots = [
+        dirs::cache_dir(),
+        dirs::data_local_dir(),
+        dirs::home_dir().map(|path| path.join(".cache")),
+        Some(std::env::temp_dir()),
+        Some(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+    ];
+
+    for data_dir in candidate_roots.into_iter().flatten().map(|root| root.join(app_dir_name)) {
+        if fs::create_dir_all(&data_dir).is_err() {
+            continue;
+        }
+
+        let db_path = data_dir.join(format!("clipboard-fallback-{}.db", std::process::id()));
+        if verify_sqlite_path(&db_path).is_ok() {
+            return Ok(db_path);
+        }
+    }
+
+    Err(anyhow!("unable to create fallback data directory"))
+}
+
+fn verify_sqlite_path(path: &PathBuf) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("unable to create {:?}", parent))?;
+    }
+
+    Connection::open(path)
+        .with_context(|| format!("unable to open sqlite database at {:?}", path))?
+        .close()
+        .map_err(|(_, err)| anyhow!(err))
+        .context("unable to close sqlite database probe")?;
+
+    Ok(())
 }
 
 pub(crate) fn parse_search_query(query: &str) -> SearchQuery {
