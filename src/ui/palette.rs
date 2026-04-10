@@ -163,7 +163,21 @@ pub(crate) fn visible_tag_chips(
                         | "url"
                         | "path"
                         | "env"
+                        | "ip"
                         | "sensitive"
+                        | "secret"
+                        | "pass"
+                        | "high_entropy"
+                        | "token"
+                        | "base64"
+                        | "k8s"
+                        | "kubernetes"
+                        | "docker"
+                        | "dockerfile"
+                        | "terraform"
+                        | "hcl"
+                        | "jwt"
+                        | "ansible"
                 )
                 || lower.starts_with("type:")
                 || lower.starts_with("lang:")
@@ -179,11 +193,30 @@ pub(crate) fn visible_tag_chips(
         }
     }
 
+    // Domain/structural chips — shown after language/type chips.
+    if has("k8s") {
+        push_unique_chip(&mut chips, "K8S");
+    }
+    if has("docker") {
+        push_unique_chip(&mut chips, "DOCKER");
+    }
+    if has("terraform") {
+        push_unique_chip(&mut chips, "TF");
+    }
+    if has("ansible") {
+        push_unique_chip(&mut chips, "ANSIBLE");
+    }
+    if has("jwt") {
+        push_unique_chip(&mut chips, "JWT");
+    }
     if has("sensitive") {
         push_unique_chip(&mut chips, "SECRET");
     }
     if has("env") {
         push_unique_chip(&mut chips, "ENV");
+    }
+    if has("ip") {
+        push_unique_chip(&mut chips, "IP");
     }
     if has("path") {
         push_unique_chip(&mut chips, "PATH");
@@ -256,6 +289,48 @@ pub(crate) fn tag_chip_color(label: &str, dark: bool) -> gpui::Hsla {
                 rgb(0x7dd3fc).into()
             } else {
                 rgb(0x0369a1).into()
+            }
+        }
+        "K8S" => {
+            if dark {
+                rgb(0x60a5fa).into()
+            } else {
+                rgb(0x1d4ed8).into()
+            }
+        }
+        "DOCKER" => {
+            if dark {
+                rgb(0x38bdf8).into()
+            } else {
+                rgb(0x0284c7).into()
+            }
+        }
+        "TF" => {
+            if dark {
+                rgb(0xc084fc).into()
+            } else {
+                rgb(0x7c3aed).into()
+            }
+        }
+        "ANSIBLE" => {
+            if dark {
+                rgb(0xfb7185).into()
+            } else {
+                rgb(0xbe123c).into()
+            }
+        }
+        "JWT" => {
+            if dark {
+                rgb(0xfbbf24).into()
+            } else {
+                rgb(0xb45309).into()
+            }
+        }
+        "IP" => {
+            if dark {
+                rgb(0x5eead4).into()
+            } else {
+                rgb(0x0f766e).into()
             }
         }
         "ENV" => {

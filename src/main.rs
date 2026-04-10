@@ -109,7 +109,7 @@ const WINDOW_CLOSE_DURATION_MS: u64 = 95;
 #[cfg(target_os = "macos")]
 const WINDOW_CLOSE_EARLY_EXIT_ALPHA: f32 = 0.08;
 #[cfg(target_os = "macos")]
-const MAX_VISIBLE_TAG_CHIPS: usize = 4;
+const MAX_VISIBLE_TAG_CHIPS: usize = 5;
 
 #[cfg(target_os = "macos")]
 const RESULT_ROW_HEIGHT: f32 = 118.0;
