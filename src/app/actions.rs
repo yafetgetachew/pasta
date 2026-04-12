@@ -2248,9 +2248,18 @@ impl LauncherView {
         let key = event.keystroke.key.as_str();
         let modifiers = &event.keystroke.modifiers;
         let no_modifiers = !modifiers.modified();
-        let command_navigation = modifiers.platform
+
+        // On macOS, Cmd (modifiers.platform) is the action modifier.
+        // On Linux, Ctrl (modifiers.control) is the standard app shortcut
+        // modifier — GPUI maps modifiers.platform to Super/Meta on Linux.
+        let action_mod = if cfg!(target_os = "macos") {
+            modifiers.platform && !modifiers.control
+        } else {
+            modifiers.control && !modifiers.platform
+        };
+
+        let command_navigation = action_mod
             && !modifiers.shift
-            && !modifiers.control
             && !modifiers.alt
             && !modifiers.function;
 
@@ -2336,33 +2345,29 @@ impl LauncherView {
                 self.delete_selected_item(cx);
                 return;
             }
-            "d" if modifiers.platform
-                && !modifiers.control
+            "d" if action_mod
                 && !modifiers.alt
                 && !modifiers.function =>
             {
                 self.delete_selected_item(cx);
                 return;
             }
-            "r" if modifiers.platform
-                && !modifiers.control
+            "r" if action_mod
                 && !modifiers.alt
                 && !modifiers.function =>
             {
                 self.reveal_and_copy_selected_secret(cx);
                 return;
             }
-            "s" if modifiers.platform
+            "s" if action_mod
                 && modifiers.shift
-                && !modifiers.control
                 && !modifiers.alt
                 && !modifiers.function =>
             {
                 self.toggle_selected_item_secret_state(cx);
                 return;
             }
-            "h" if modifiers.platform
-                && !modifiers.control
+            "h" if action_mod
                 && !modifiers.alt
                 && !modifiers.function =>
             {
@@ -2370,71 +2375,63 @@ impl LauncherView {
                 cx.notify();
                 return;
             }
-            "t" if modifiers.platform
+            "t" if action_mod
                 && modifiers.shift
-                && !modifiers.control
                 && !modifiers.alt
                 && !modifiers.function =>
             {
                 self.remove_custom_tags_from_selected(cx);
                 return;
             }
-            "t" if modifiers.platform
+            "t" if action_mod
                 && !modifiers.shift
-                && !modifiers.control
                 && !modifiers.alt
                 && !modifiers.function =>
             {
                 self.add_custom_tags_to_selected(cx);
                 return;
             }
-            "b" if modifiers.platform
+            "b" if action_mod
                 && modifiers.shift
-                && !modifiers.control
                 && !modifiers.alt
                 && !modifiers.function =>
             {
                 self.remove_bowl_from_selected(cx);
                 return;
             }
-            "b" if modifiers.platform
+            "b" if action_mod
                 && !modifiers.shift
-                && !modifiers.control
                 && modifiers.alt
                 && !modifiers.function =>
             {
                 self.import_bowl_from_picker(cx);
                 return;
             }
-            "b" if modifiers.platform
+            "b" if action_mod
                 && !modifiers.shift
-                && !modifiers.control
                 && !modifiers.alt
                 && !modifiers.function =>
             {
                 self.start_bowl_editor_for_selected(cx);
                 return;
             }
-            "p" if modifiers.platform
+            "p" if action_mod
                 && !modifiers.shift
-                && !modifiers.control
                 && !modifiers.alt
                 && !modifiers.function =>
             {
                 self.start_parameter_editor_for_selected(cx);
                 return;
             }
-            "i" if modifiers.platform
+            "i" if action_mod
                 && !modifiers.shift
-                && !modifiers.control
                 && !modifiers.alt
                 && !modifiers.function =>
             {
                 self.start_info_editor_for_selected(cx);
                 return;
             }
-            "q" if modifiers.platform
-                && !modifiers.control
+            "q" if action_mod
                 && !modifiers.alt
                 && !modifiers.function =>
             {
@@ -2443,8 +2440,7 @@ impl LauncherView {
                 return;
             }
             "backspace"
-                if modifiers.platform
-                    && !modifiers.control
+                if action_mod
                     && !modifiers.alt
                     && !modifiers.function =>
             {

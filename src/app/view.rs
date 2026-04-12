@@ -658,7 +658,12 @@ impl Render for LauncherView {
                             .py(px(1.0))
                             .cursor_pointer()
                             .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
-                                let additive = event.modifiers().platform;
+                                let mods = event.modifiers();
+                                let additive = if cfg!(target_os = "macos") {
+                                    mods.platform
+                                } else {
+                                    mods.control
+                                };
                                 this.select_parameter_clickable_range(range_ix, additive, cx);
                             }))
                             .child(token),
