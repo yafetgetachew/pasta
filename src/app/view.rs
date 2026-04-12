@@ -103,7 +103,11 @@ impl Render for LauncherView {
                         div()
                             .text_xs()
                             .text_color(palette.muted_text)
-                            .child("⌥ + SPACE"),
+                            .child(if cfg!(target_os = "macos") {
+                                "⌥ + SPACE"
+                            } else {
+                                "Meta + Space"
+                            }),
                     ),
             )
             .child({
@@ -304,7 +308,11 @@ impl Render for LauncherView {
                             .mt_1()
                             .text_xs()
                             .text_color(palette.muted_text)
-                            .child("⌘V paste"),
+                            .child(if cfg!(target_os = "macos") {
+                                "⌘V paste"
+                            } else {
+                                "Ctrl+V paste"
+                            }),
                     ),
             );
         }
@@ -413,7 +421,11 @@ impl Render for LauncherView {
                             .mt_1()
                             .text_xs()
                             .text_color(palette.muted_text)
-                            .child("comma-separated • ⌘V"),
+                            .child(if cfg!(target_os = "macos") {
+                                "comma-separated • ⌘V"
+                            } else {
+                                "comma-separated • Ctrl+V"
+                            }),
                     ),
             );
         }
@@ -561,9 +573,13 @@ impl Render for LauncherView {
             }
 
             let help_text = if self.bowl_editor_suggestions.is_empty() {
-                "single bowl • blank = remove • ⌘V"
+                if cfg!(target_os = "macos") {
+                    "single bowl • blank = remove • ⌘V"
+                } else {
+                    "single bowl • blank = remove • Ctrl+V"
+                }
             } else {
-                "single bowl • ↹ autocomplete • blank = remove"
+                "single bowl • Tab autocomplete • blank = remove"
             };
             bowl_panel = bowl_panel.child(
                 div()
@@ -786,12 +802,24 @@ impl Render for LauncherView {
                                     if auto_named_candidates {
                                         "pick one or more fields"
                                     } else {
-                                        "pick values • ⌘+click to split"
+                                        if cfg!(target_os = "macos") {
+                                            "pick values • ⌘+click to split"
+                                        } else {
+                                            "pick values • Ctrl+click to split"
+                                        }
                                     }
                                 } else if auto_named_candidates {
-                                    "Enter saves • ⌘+click toggles"
+                                    if cfg!(target_os = "macos") {
+                                        "Enter saves • ⌘+click toggles"
+                                    } else {
+                                        "Enter saves • Ctrl+click toggles"
+                                    }
                                 } else {
-                                    "Enter then name • ⌘+click splits or toggles"
+                                    if cfg!(target_os = "macos") {
+                                        "Enter then name • ⌘+click splits or toggles"
+                                    } else {
+                                        "Enter then name • Ctrl+click splits or toggles"
+                                    }
                                 }),
                         ),
                 );
@@ -1338,21 +1366,39 @@ impl Render for LauncherView {
                             .items_start()
                             .gap_2()
                             .child(render_help_run(
-                                &["⏎ copy", "⌘R reveal secret", "⌘J / ⌘K / ⌘L / ⌘; navigate"],
+                                if cfg!(target_os = "macos") {
+                                    &["⏎ copy", "⌘R reveal secret", "⌘J / ⌘K / ⌘L / ⌘; navigate"]
+                                } else {
+                                    &["⏎ copy", "Ctrl+R reveal secret", "Ctrl+J/K/L/; navigate"]
+                                },
                                 palette,
                             ))
                             .child(render_help_run(
-                                &["⌘I edit info", "⌘P parametrize", "Tab transforms"],
+                                if cfg!(target_os = "macos") {
+                                    &["⌘I edit info", "⌘P parametrize", "Tab transforms"]
+                                } else {
+                                    &["Ctrl+I edit info", "Ctrl+P parametrize", "Tab transforms"]
+                                },
                                 palette,
                             ))
                             .child(render_help_run(
-                                &[
-                                    "⌘T add tags",
-                                    "⌘⇧T remove tags",
-                                    "⌘B set bowl",
-                                    "⌘⇧B remove bowl",
-                                    "⌥⌘B import bowl",
-                                ],
+                                if cfg!(target_os = "macos") {
+                                    &[
+                                        "⌘T add tags",
+                                        "⌘⇧T remove tags",
+                                        "⌘B set bowl",
+                                        "⌘⇧B remove bowl",
+                                        "⌥⌘B import bowl",
+                                    ]
+                                } else {
+                                    &[
+                                        "Ctrl+T add tags",
+                                        "Ctrl+Shift+T remove tags",
+                                        "Ctrl+B set bowl",
+                                        "Ctrl+Shift+B remove bowl",
+                                        "Ctrl+Alt+B import bowl",
+                                    ]
+                                },
                                 palette,
                             ))
                             .child(render_help_run(
@@ -1360,13 +1406,23 @@ impl Render for LauncherView {
                                 palette,
                             ))
                             .child(render_help_run(
-                                &[
-                                    "⌘⇧S toggle secret",
-                                    "⌘D delete",
-                                    "Esc close",
-                                    "⌘Q quit",
-                                    "⌘H hide help",
-                                ],
+                                if cfg!(target_os = "macos") {
+                                    &[
+                                        "⌘⇧S toggle secret",
+                                        "⌘D delete",
+                                        "Esc close",
+                                        "⌘Q quit",
+                                        "⌘H hide help",
+                                    ]
+                                } else {
+                                    &[
+                                        "Ctrl+Shift+S toggle secret",
+                                        "Ctrl+D delete",
+                                        "Esc close",
+                                        "Ctrl+Q quit",
+                                        "Ctrl+H hide help",
+                                    ]
+                                },
                                 palette,
                             )),
                     )
@@ -1375,7 +1431,11 @@ impl Render for LauncherView {
                     .w_full()
                     .text_xs()
                     .text_color(palette.muted_text)
-                    .child("⌘H commands")
+                    .child(if cfg!(target_os = "macos") {
+                        "⌘H commands"
+                    } else {
+                        "Ctrl+H commands"
+                    })
             })
     }
 }
@@ -1511,14 +1571,26 @@ impl LauncherView {
         };
         let created_detail = format_timestamp_detail(&item.created_at);
         let primary_action_hint = if is_masked_secret {
-            "⌘R Reveal"
+            if cfg!(target_os = "macos") {
+                "⌘R Reveal"
+            } else {
+                "Ctrl+R Reveal"
+            }
         } else {
             "⏎ Copy"
         };
         let secret_action_hint = if item.item_type == ClipboardItemType::Password {
-            "⌘⇧S Unmark secret"
+            if cfg!(target_os = "macos") {
+                "⌘⇧S Unmark secret"
+            } else {
+                "Ctrl+Shift+S Unmark secret"
+            }
         } else {
-            "⌘⇧S Mark secret"
+            if cfg!(target_os = "macos") {
+                "⌘⇧S Mark secret"
+            } else {
+                "Ctrl+Shift+S Mark secret"
+            }
         };
         let preview_syntax_enabled = self.syntax_highlighting
             && self.query.trim().is_empty()

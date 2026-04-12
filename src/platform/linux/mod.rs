@@ -457,10 +457,38 @@ pub(crate) fn setup_hotkey(_cx: &mut App) {
 // Autostart (Phase 3) — replaces launch_agent on Linux
 // ---------------------------------------------------------------------------
 
-/// Ensure the app is registered for autostart. Stub is a no-op.
+/// Ensure the app is registered for autostart via XDG autostart.
 pub(crate) fn ensure_launch_agent_registered() {
-    // On Linux this will write an XDG autostart .desktop file.
-    // Stub: no-op.
+    let Some(autostart_dir) = dirs::config_dir().map(|d| d.join("autostart")) else {
+        eprintln!("warning: unable to determine XDG config directory for autostart");
+        return;
+    };
+
+    if let Err(err) = std::fs::create_dir_all(&autostart_dir) {
+        eprintln!("warning: unable to create autostart directory '{autostart_dir:?}': {err}");
+        return;
+    }
+
+    let desktop_path = autostart_dir.join("pasta.desktop");
+    let exe_path = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "pasta-launcher".to_owned());
+
+    let desktop_entry = format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=Pasta\n\
+         Comment=Clipboard manager for devs and devops\n\
+         Exec={exe_path}\n\
+         Terminal=false\n\
+         StartupNotify=false\n\
+         X-GNOME-Autostart-enabled=true\n"
+    );
+
+    match std::fs::write(&desktop_path, desktop_entry) {
+        Ok(()) => eprintln!("info: autostart registered at {desktop_path:?}"),
+        Err(err) => eprintln!("warning: failed to write autostart file '{desktop_path:?}': {err}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -775,25 +803,179 @@ pub(crate) fn menu_command_from_tag(tag: isize) -> Option<crate::MenuCommand> {
 // Style & Fonts (Phase 4)
 // ---------------------------------------------------------------------------
 
-pub(crate) fn load_embedded_ui_font(_cx: &mut App) {
-    // Fonts are embedded via include_bytes! — same approach works on Linux.
-    // Stub: no-op until Phase 4.
+fn ui_style_state_path() -> Option<PathBuf> {
+    let base = dirs::config_dir()
+        .or_else(dirs::data_local_dir)
+        .or_else(dirs::home_dir)?;
+    let directory = base.join("PastaClipboard");
+    if let Err(err) = std::fs::create_dir_all(&directory) {
+        eprintln!("warning: unable to create config directory '{directory:?}': {err}");
+        return None;
+    }
+    Some(directory.join("ui-style.json"))
+}
+
+fn default_ui_style_state(default_family: gpui::SharedString) -> UiStyleState {
+    UiStyleState {
+        family: default_family,
+        surface_alpha: 0.90,
+        syntax_highlighting: true,
+        secret_auto_clear: true,
+        pasta_brain_enabled: true,
+    }
+}
+
+fn load_ui_style_state(default_family: gpui::SharedString) -> UiStyleState {
+    let mut style = default_ui_style_state(default_family);
+    let Some(path) = ui_style_state_path() else {
+        return style;
+    };
+
+    let data = match std::fs::read_to_string(&path) {
+        Ok(data) => data,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return style,
+        Err(err) => {
+            eprintln!("warning: unable to read style settings from '{path:?}': {err}");
+            return style;
+        }
+    };
+
+    let persisted: crate::PersistedUiStyleState = match serde_json::from_str(&data) {
+        Ok(persisted) => persisted,
+        Err(err) => {
+            eprintln!("warning: unable to parse style settings from '{path:?}': {err}");
+            return style;
+        }
+    };
+
+    let family = persisted.family.trim();
+    if !family.is_empty() {
+        style.family = family.to_owned().into();
+    }
+    style.surface_alpha = persisted.surface_alpha.clamp(0.45, 1.0);
+    style.syntax_highlighting = persisted.syntax_highlighting;
+    style.secret_auto_clear = persisted.secret_auto_clear;
+    style.pasta_brain_enabled = persisted.pasta_brain_enabled;
+    style
+}
+
+fn save_ui_style_state(style: &UiStyleState) {
+    let Some(path) = ui_style_state_path() else {
+        return;
+    };
+
+    let serialized = match serde_json::to_string_pretty(&crate::PersistedUiStyleState {
+        family: style.family.to_string(),
+        surface_alpha: style.surface_alpha.clamp(0.45, 1.0),
+        syntax_highlighting: style.syntax_highlighting,
+        secret_auto_clear: style.secret_auto_clear,
+        pasta_brain_enabled: style.pasta_brain_enabled,
+    }) {
+        Ok(serialized) => serialized,
+        Err(err) => {
+            eprintln!("warning: unable to serialize style settings: {err}");
+            return;
+        }
+    };
+
+    if let Err(err) = std::fs::write(&path, serialized) {
+        eprintln!("warning: unable to write style settings to '{path:?}': {err}");
+    }
+}
+
+pub(crate) fn persist_ui_style_state(cx: &App) {
+    save_ui_style_state(cx.global::<UiStyleState>());
+}
+
+pub(crate) fn load_embedded_ui_font(cx: &mut App) {
+    use std::borrow::Cow;
+
+    let font_blobs: Vec<Cow<'static, [u8]>> = vec![
+        Cow::Borrowed(include_bytes!("../../../assets/fonts/MesloLGSNF-Regular.ttf").as_slice()),
+        Cow::Borrowed(include_bytes!("../../../assets/fonts/MesloLGSNF-Bold.ttf").as_slice()),
+        Cow::Borrowed(include_bytes!("../../../assets/fonts/MesloLGSNF-Italic.ttf").as_slice()),
+        Cow::Borrowed(include_bytes!("../../../assets/fonts/MesloLGSNF-BoldItalic.ttf").as_slice()),
+        Cow::Borrowed(
+            include_bytes!("../../../assets/fonts/IosevkaTermNerdFont-Light.ttf").as_slice(),
+        ),
+        Cow::Borrowed(include_bytes!("../../../assets/fonts/IBMPlexMono-Light.ttf").as_slice()),
+        Cow::Borrowed(include_bytes!("../../../assets/fonts/JetBrainsMono-Light.ttf").as_slice()),
+        Cow::Borrowed(include_bytes!("../../../assets/fonts/SourceCodePro-Var.ttf").as_slice()),
+        Cow::Borrowed(
+            include_bytes!("../../../assets/fonts/MonaspaceNeonFrozen-Light.ttf").as_slice(),
+        ),
+    ];
+
+    if let Err(err) = cx.text_system().add_fonts(font_blobs) {
+        eprintln!("warning: unable to load embedded fonts: {err}");
+    }
+
+    let default_family =
+        resolve_font_family(cx, FontChoice::MesloLg).unwrap_or_else(|| "Meslo LG".into());
+    cx.set_global(load_ui_style_state(default_family));
 }
 
 /// Resolve the user's font choice to an actual font family name.
-pub(crate) fn resolve_font_family(_cx: &App, _choice: FontChoice) -> Option<gpui::SharedString> {
-    // Default to the first embedded font, matching macOS behavior.
-    Some("Meslo LG".into())
+pub(crate) fn resolve_font_family(cx: &App, choice: FontChoice) -> Option<gpui::SharedString> {
+    let all_names = cx.text_system().all_font_names();
+    let all_normalized: Vec<String> = all_names
+        .iter()
+        .map(|name| normalize_font_name(name))
+        .collect();
+
+    for candidate in choice.candidates() {
+        let candidate_normalized = normalize_font_name(candidate);
+        if candidate_normalized.is_empty() {
+            continue;
+        }
+
+        if let Some((ix, _)) = all_normalized
+            .iter()
+            .enumerate()
+            .find(|(_, name)| *name == &candidate_normalized)
+        {
+            return Some(all_names[ix].clone().into());
+        }
+    }
+
+    for candidate in choice.candidates() {
+        let candidate_normalized = normalize_font_name(candidate);
+        if candidate_normalized.is_empty() {
+            continue;
+        }
+
+        if let Some((ix, _)) = all_normalized.iter().enumerate().find(|(_, name)| {
+            name.contains(&candidate_normalized) || candidate_normalized.contains(*name)
+        }) {
+            return Some(all_names[ix].clone().into());
+        }
+    }
+
+    None
 }
 
-/// Apply the current style state to an open window. Stub is a no-op.
-pub(crate) fn apply_style_to_open_window(_cx: &mut App) {
-    // no-op
+fn normalize_font_name(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect()
 }
 
-/// Persist the current UI style state to disk. Stub is a no-op.
-pub(crate) fn persist_ui_style_state(_cx: &App) {
-    // no-op
+/// Apply the current style state to an open window.
+pub(crate) fn apply_style_to_open_window(cx: &mut App) {
+    let style = cx.global::<UiStyleState>().clone();
+    if let Some(window) = cx
+        .try_global::<crate::app::LauncherState>()
+        .and_then(|state| state.window)
+    {
+        let _ = window.update(cx, |view, _window, cx| {
+            view.font_family = style.family.clone();
+            view.surface_alpha = style.surface_alpha;
+            view.syntax_highlighting = style.syntax_highlighting;
+            cx.notify();
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------

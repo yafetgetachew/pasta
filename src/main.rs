@@ -124,13 +124,13 @@ pub(crate) struct UiStyleState {
 impl Global for UiStyleState {}
 
 #[derive(Debug, Serialize, Deserialize)]
-struct PersistedUiStyleState {
-    family: String,
-    surface_alpha: f32,
-    syntax_highlighting: bool,
-    secret_auto_clear: bool,
+pub(crate) struct PersistedUiStyleState {
+    pub(crate) family: String,
+    pub(crate) surface_alpha: f32,
+    pub(crate) syntax_highlighting: bool,
+    pub(crate) secret_auto_clear: bool,
     #[serde(default = "default_pasta_brain_enabled")]
-    pasta_brain_enabled: bool,
+    pub(crate) pasta_brain_enabled: bool,
 }
 
 fn default_pasta_brain_enabled() -> bool {
@@ -612,15 +612,8 @@ fn main() {
             KeyBinding::new("end", QueryEnd, Some("PastaTextInput")),
         ]);
 
-        // On macOS, load_embedded_ui_font sets UiStyleState. The Linux stub
-        // doesn't yet, so set a default here.
-        cx.set_global(UiStyleState {
-            family: "Meslo LG".into(),
-            surface_alpha: 0.90,
-            syntax_highlighting: true,
-            secret_auto_clear: true,
-            pasta_brain_enabled: true,
-        });
+        // load_embedded_ui_font now loads fonts into the text system and
+        // sets UiStyleState from persisted preferences (or defaults).
 
         cx.set_global(LauncherState { window: None });
         let background_anchor_window = create_background_anchor_window(cx);
@@ -630,8 +623,9 @@ fn main() {
         cx.set_global(AutoClearState::default());
         cx.set_global(SelfClipboardWriteState::default());
 
-        // Stubs — these are no-ops until Phases 2-4
+        // Platform setup
         configure_background_mode();
+        ensure_launch_agent_registered();
         setup_status_item(cx);
         setup_hotkey(cx);
 
