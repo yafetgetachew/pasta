@@ -18,7 +18,6 @@ pub(crate) struct Palette {
     pub(crate) selected_border: gpui::Rgba,
 }
 
-
 pub(crate) fn palette_for(appearance: WindowAppearance, surface_alpha: f32) -> Palette {
     let dark = matches!(
         appearance,

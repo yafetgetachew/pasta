@@ -162,6 +162,9 @@ struct ScoredRecord {
 struct IndexedRecord {
     record: ClipboardRecord,
     content_hash: String,
+    content_lower: String,
+    description_lower: String,
+    search_tokens: Vec<String>,
 }
 
 #[derive(Default)]
@@ -390,7 +393,8 @@ impl ClipboardStorage {
                 continue;
             }
 
-            let lexical_match = record_matches_query(record, effective_query, tag_only);
+            let lexical_match =
+                record_matches_query_indexed(record, effective_query, tag_only, Some(indexed));
             if !use_semantic_search {
                 if lexical_match {
                     output.push(record.clone());
@@ -439,9 +443,8 @@ impl ClipboardStorage {
             };
             let mut semantic_seed_terms = tags_without_bowl(&record.tags);
             if !record.description.is_empty() {
-                semantic_seed_terms.extend(
-                    semantic_tokenize(&record.description.to_ascii_lowercase()),
-                );
+                semantic_seed_terms
+                    .extend(semantic_tokenize(&record.description.to_ascii_lowercase()));
             }
             let record_embedding =
                 self.cached_semantic_embedding(cache_key, &record.content, &semantic_seed_terms);
@@ -1217,6 +1220,21 @@ impl ClipboardStorage {
         let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
         let parameters: Vec<ClipboardParameter> =
             serde_json::from_str(&parameters_json).unwrap_or_default();
+        let content_lower = content.to_lowercase();
+        let description_lower = description.to_lowercase();
+        let fuzzy_search_text = if description_lower.is_empty() {
+            bounded_text_prefix(&content_lower, SEARCH_FUZZY_TEXT_LIMIT).to_owned()
+        } else {
+            format!(
+                "{} {}",
+                bounded_text_prefix(&content_lower, SEARCH_FUZZY_TEXT_LIMIT),
+                bounded_text_prefix(&description_lower, SEARCH_FUZZY_TEXT_LIMIT.min(512))
+            )
+        };
+        let search_tokens: Vec<String> = tokenize_search_terms(&fuzzy_search_text)
+            .into_iter()
+            .map(|s| s.to_owned())
+            .collect();
         Ok(Some(IndexedRecord {
             record: ClipboardRecord {
                 id,
@@ -1228,6 +1246,9 @@ impl ClipboardStorage {
                 created_at,
             },
             content_hash,
+            content_lower,
+            description_lower,
+            search_tokens,
         }))
     }
 
@@ -1347,7 +1368,11 @@ fn fallback_db_path(app_dir_name: &str) -> Result<PathBuf> {
         Some(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
     ];
 
-    for data_dir in candidate_roots.into_iter().flatten().map(|root| root.join(app_dir_name)) {
+    for data_dir in candidate_roots
+        .into_iter()
+        .flatten()
+        .map(|root| root.join(app_dir_name))
+    {
         if fs::create_dir_all(&data_dir).is_err() {
             continue;
         }
@@ -1759,7 +1784,9 @@ fn classify_clipboard_text_with_mode(
                     enriched.insert("k8s".to_owned());
                     enriched.insert("kubernetes".to_owned());
                 }
-                if lower.contains("ansible") || (lower.contains("hosts:") && lower.contains("tasks:")) {
+                if lower.contains("ansible")
+                    || (lower.contains("hosts:") && lower.contains("tasks:"))
+                {
                     enriched.insert("ansible".to_owned());
                 }
             }
@@ -2020,9 +2047,7 @@ fn looks_like_ip_address(text: &str) -> bool {
     // IPv4: four octets separated by dots, each 0-255.
     let parts: Vec<&str> = host.split('.').collect();
     if parts.len() == 4 {
-        return parts
-            .iter()
-            .all(|p| p.parse::<u8>().is_ok());
+        return parts.iter().all(|p| p.parse::<u8>().is_ok());
     }
     // IPv6: contains at least two colons and only hex digits, colons, dots (for mapped v4).
     if value.contains("::") || value.matches(':').count() >= 2 {
@@ -2927,10 +2952,7 @@ fn recency_boost(created_at: &str) -> f32 {
         return 0.0;
     };
 
-    let age_hours = Utc::now()
-        .signed_duration_since(timestamp)
-        .num_minutes() as f64
-        / 60.0;
+    let age_hours = Utc::now().signed_duration_since(timestamp).num_minutes() as f64 / 60.0;
 
     if age_hours <= 0.0 {
         return MAX_BOOST;
@@ -3277,6 +3299,15 @@ pub(crate) fn decode_f32_vec_base64(encoded: &str) -> Option<Vec<f32>> {
 }
 
 pub(crate) fn record_matches_query(record: &ClipboardRecord, query: &str, tag_only: bool) -> bool {
+    record_matches_query_indexed(record, query, tag_only, None)
+}
+
+fn record_matches_query_indexed(
+    record: &ClipboardRecord,
+    query: &str,
+    tag_only: bool,
+    indexed: Option<&IndexedRecord>,
+) -> bool {
     if tag_only {
         let tag_terms: Vec<&str> = query
             .split_whitespace()
@@ -3293,8 +3324,23 @@ pub(crate) fn record_matches_query(record: &ClipboardRecord, query: &str, tag_on
             .all(|term| record_matches_tag(record, term));
     }
 
-    let content = record.content.to_lowercase();
-    let description = record.description.to_lowercase();
+    // Use pre-computed lowercase fields from the index when available,
+    // falling back to computing them on-the-fly for non-indexed callers.
+    let owned_content;
+    let owned_description;
+    let content: &str = if let Some(idx) = indexed {
+        &idx.content_lower
+    } else {
+        owned_content = record.content.to_lowercase();
+        &owned_content
+    };
+    let description: &str = if let Some(idx) = indexed {
+        &idx.description_lower
+    } else {
+        owned_description = record.description.to_lowercase();
+        &owned_description
+    };
+
     if content.contains(query) {
         return true;
     }
@@ -3311,19 +3357,27 @@ pub(crate) fn record_matches_query(record: &ClipboardRecord, query: &str, tag_on
         return false;
     }
 
+    // Use pre-computed search tokens from the index when available.
+    if let Some(idx) = indexed {
+        let token_refs: Vec<&str> = idx.search_tokens.iter().map(|s| s.as_str()).collect();
+        return query_terms
+            .iter()
+            .all(|term| term_matches_record(record, term, content, description, &token_refs));
+    }
+
     let fuzzy_search_text = if description.is_empty() {
-        bounded_text_prefix(&content, SEARCH_FUZZY_TEXT_LIMIT).to_owned()
+        bounded_text_prefix(content, SEARCH_FUZZY_TEXT_LIMIT).to_owned()
     } else {
         format!(
             "{} {}",
-            bounded_text_prefix(&content, SEARCH_FUZZY_TEXT_LIMIT),
-            bounded_text_prefix(&description, SEARCH_FUZZY_TEXT_LIMIT.min(512))
+            bounded_text_prefix(content, SEARCH_FUZZY_TEXT_LIMIT),
+            bounded_text_prefix(description, SEARCH_FUZZY_TEXT_LIMIT.min(512))
         )
     };
     let content_terms = tokenize_search_terms(&fuzzy_search_text);
     query_terms
         .iter()
-        .all(|term| term_matches_record(record, term, &content, &description, &content_terms))
+        .all(|term| term_matches_record(record, term, content, description, &content_terms))
 }
 
 pub fn render_parameterized_content(

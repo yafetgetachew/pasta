@@ -71,9 +71,9 @@ pub(crate) fn read_clipboard_snapshot() -> Option<ClipboardSnapshot> {
 /// so we resolve them via NSURL which handles both forms.
 #[cfg(target_os = "macos")]
 fn read_file_urls_from_pasteboard(pasteboard: id, type_names_lower: &[String]) -> Option<String> {
-    let has_file_urls = type_names_lower.iter().any(|kind| {
-        kind == "public.file-url" || kind.contains("public.file-url")
-    });
+    let has_file_urls = type_names_lower
+        .iter()
+        .any(|kind| kind == "public.file-url" || kind.contains("public.file-url"));
 
     if !has_file_urls {
         return None;

@@ -44,6 +44,7 @@ impl LauncherView {
             search_generation_token,
             latest_applied_search_execution: SearchExecution::Fast,
             query: String::new(),
+            last_query_edit_at: None,
             tag_search_suggestions: Vec::new(),
             items: Vec::new(),
             row_presentations: Vec::new(),
@@ -95,6 +96,7 @@ impl LauncherView {
 
     pub(crate) fn reset_for_show(&mut self) {
         self.query.clear();
+        self.last_query_edit_at = None;
         self.tag_search_suggestions.clear();
         self.query_input_state.reset();
         self.info_editor_input_state.reset();
@@ -173,10 +175,14 @@ impl LauncherView {
     }
 
     pub(crate) fn query_did_change(&mut self, cx: &mut Context<Self>) {
+        let selection_changed = self.selected_index != 0;
         self.selected_index = 0;
+        self.last_query_edit_at = Some(Instant::now());
         self.mark_selection_changed(cx);
-        self.reset_results_scroll_to_top();
-        self.refresh_tag_search_suggestions();
+        if selection_changed {
+            self.reset_results_scroll_to_top();
+        }
+        self.refresh_tag_search_suggestions_async(cx);
         self.schedule_query_refresh();
         self.schedule_delayed_query_refresh(
             SearchExecution::Semantic,
@@ -187,10 +193,28 @@ impl LauncherView {
         cx.notify();
     }
 
-    fn refresh_tag_search_suggestions(&mut self) {
-        self.tag_search_suggestions = self
-            .storage
-            .suggest_search_tokens(&self.query, TAG_SEARCH_AUTOCOMPLETE_LIMIT);
+    fn refresh_tag_search_suggestions_async(&self, cx: &mut Context<Self>) {
+        let storage = self.storage.clone();
+        let query = self.query.clone();
+        let background_query = query.clone();
+        let expected_generation = self.search_generation;
+
+        cx.spawn(async move |this, cx| {
+            let suggestions = cx
+                .background_executor()
+                .spawn(async move {
+                    storage.suggest_search_tokens(&background_query, TAG_SEARCH_AUTOCOMPLETE_LIMIT)
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                if view.search_generation != expected_generation || view.query != query {
+                    return;
+                }
+                view.tag_search_suggestions = suggestions;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn set_query_text(&mut self, query: String) {
@@ -261,20 +285,46 @@ impl LauncherView {
     }
 
     pub(crate) fn begin_open_transition(&mut self) {
-        self.pending_exit = None;
-        self.transition_from = 0.0;
-        self.transition_alpha = self.transition_from;
-        self.transition_target = 1.0;
-        self.transition_started_at = Instant::now();
-        self.transition_duration = Duration::from_millis(WINDOW_OPEN_DURATION_MS);
+        #[cfg(target_os = "linux")]
+        {
+            self.pending_exit = None;
+            self.transition_from = 1.0;
+            self.transition_alpha = 1.0;
+            self.transition_target = 1.0;
+            self.transition_started_at = Instant::now();
+            self.transition_duration = Duration::ZERO;
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.pending_exit = None;
+            self.transition_from = 0.0;
+            self.transition_alpha = self.transition_from;
+            self.transition_target = 1.0;
+            self.transition_started_at = Instant::now();
+            self.transition_duration = Duration::from_millis(WINDOW_OPEN_DURATION_MS);
+        }
     }
 
     pub(crate) fn begin_close_transition(&mut self, intent: LauncherExitIntent) {
-        self.pending_exit = Some(intent);
-        self.transition_from = self.transition_alpha.clamp(0.0, 1.0);
-        self.transition_target = 0.0;
-        self.transition_started_at = Instant::now();
-        self.transition_duration = Duration::from_millis(WINDOW_CLOSE_DURATION_MS);
+        #[cfg(target_os = "linux")]
+        {
+            self.pending_exit = Some(intent);
+            self.transition_from = 0.0;
+            self.transition_alpha = 0.0;
+            self.transition_target = 0.0;
+            self.transition_started_at = Instant::now();
+            self.transition_duration = Duration::ZERO;
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.pending_exit = Some(intent);
+            self.transition_from = self.transition_alpha.clamp(0.0, 1.0);
+            self.transition_target = 0.0;
+            self.transition_started_at = Instant::now();
+            self.transition_duration = Duration::from_millis(WINDOW_CLOSE_DURATION_MS);
+        }
     }
 
     pub(crate) fn transition_running(&self) -> bool {
@@ -467,8 +517,13 @@ impl LauncherView {
             return false;
         }
 
+        let previous_selected_id = self.items.get(self.selected_index).map(|item| item.id);
+        let next_selected_id = response.items.get(self.selected_index).map(|item| item.id);
         self.set_search_results(response.items, response.row_presentations);
         self.latest_applied_search_execution = response.execution;
+        if previous_selected_id != next_selected_id {
+            self.selection_changed_at = Instant::now();
+        }
         if self.selected_index == 0 {
             self.reset_results_scroll_to_top();
         }
@@ -2060,7 +2115,8 @@ impl LauncherView {
                     self.bowl_editor_input_state.selected_range = len..len;
                     self.bowl_editor_input_state.selection_reversed = false;
                     self.bowl_editor_input_state.marked_range = None;
-                    self.bowl_editor_suggestions = self.storage.suggest_bowl_names(&self.bowl_editor_input, 6);
+                    self.bowl_editor_suggestions =
+                        self.storage.suggest_bowl_names(&self.bowl_editor_input, 6);
                     cx.notify();
                 }
                 return;
@@ -2426,7 +2482,11 @@ fn is_sub_split_delimiter(ch: char) -> bool {
 
 fn token_is_sub_splittable(target: &str) -> bool {
     target.chars().any(is_sub_split_delimiter)
-        && target.chars().filter(|ch| is_sub_split_delimiter(*ch)).count() <= 8
+        && target
+            .chars()
+            .filter(|ch| is_sub_split_delimiter(*ch))
+            .count()
+            <= 8
 }
 
 fn sub_split_token(target: &str) -> Vec<String> {

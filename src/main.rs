@@ -152,9 +152,7 @@ pub(crate) const MENU_TAG_BRAIN_OFF: isize = 305;
 
 pub(crate) const MENU_TAG_BRAIN_DOWNLOAD: isize = 306;
 
-
 static MENU_COMMAND_TX: OnceLock<mpsc::Sender<MenuCommand>> = OnceLock::new();
-
 
 #[derive(Clone, Copy)]
 pub(crate) enum MenuCommand {
@@ -178,7 +176,7 @@ pub(crate) enum NeuralStatus {
 pub(crate) static NEURAL_STATUS: std::sync::Mutex<NeuralStatus> =
     std::sync::Mutex::new(NeuralStatus::Loading);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum FontChoice {
     MesloLg,
     Iosevka,
@@ -625,6 +623,10 @@ fn main() {
         });
 
         cx.set_global(LauncherState { window: None });
+        let background_anchor_window = create_background_anchor_window(cx);
+        cx.set_global(BackgroundAnchorState {
+            window: background_anchor_window,
+        });
         cx.set_global(AutoClearState::default());
         cx.set_global(SelfClipboardWriteState::default());
 

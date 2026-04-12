@@ -21,7 +21,6 @@ impl Render for LauncherView {
         let query_focus_handle = self.text_input_focus_handle(TextInputTarget::Query);
         let query_focused = query_focus_handle.is_focused(window);
 
-
         let results = if self.items.is_empty() {
             div()
                 .id("results-list")
@@ -520,18 +519,12 @@ impl Render for LauncherView {
                     let chip_bg = if is_primary {
                         scale_alpha(palette.selected_bg, if palette.dark { 0.92 } else { 0.72 })
                     } else {
-                        scale_alpha(
-                            palette.row_hover_bg,
-                            if palette.dark { 0.9 } else { 1.0 },
-                        )
+                        scale_alpha(palette.row_hover_bg, if palette.dark { 0.9 } else { 1.0 })
                     };
                     let chip_border = if is_primary {
                         palette.selected_border
                     } else {
-                        scale_alpha(
-                            palette.window_border,
-                            if palette.dark { 0.84 } else { 0.9 },
-                        )
+                        scale_alpha(palette.window_border, if palette.dark { 0.84 } else { 0.9 })
                     };
                     let chip_text = if is_primary {
                         palette.title_text
@@ -594,10 +587,8 @@ impl Render for LauncherView {
                 let has_structured_candidates = has_structured_parameter_candidates(&item_content);
                 let candidates =
                     parameter_clickable_candidates(&item_content, self.parameter_editor_force_full);
-                let candidates = expand_candidates_with_splits(
-                    candidates,
-                    &self.parameter_editor_split_tokens,
-                );
+                let candidates =
+                    expand_candidates_with_splits(candidates, &self.parameter_editor_split_tokens);
                 let auto_named_candidates =
                     has_structured_candidates && !self.parameter_editor_force_full;
                 let mut token_picker = div().w_full().mt_1().flex().flex_row().flex_wrap().gap_1();

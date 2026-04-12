@@ -186,6 +186,7 @@ pub(crate) struct LauncherView {
     pub(crate) search_generation_token: Arc<AtomicU64>,
     pub(crate) latest_applied_search_execution: SearchExecution,
     pub(crate) query: String,
+    pub(crate) last_query_edit_at: Option<Instant>,
     pub(crate) tag_search_suggestions: Vec<String>,
     pub(crate) items: Vec<ClipboardRecord>,
     pub(crate) row_presentations: Vec<CachedRowPresentation>,

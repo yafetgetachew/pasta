@@ -108,8 +108,6 @@ fn menu_item(title: &str, key: &str, target: id, action: Sel, tag: isize) -> id 
     }
 }
 
-
-
 #[cfg(target_os = "macos")]
 pub(crate) fn setup_status_item(cx: &mut App) {
     unsafe {

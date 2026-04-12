@@ -540,7 +540,8 @@ impl LauncherView {
         if target == TextInputTarget::Query {
             self.query_did_change(cx);
         } else if target == TextInputTarget::BowlEditor {
-            self.bowl_editor_suggestions = self.storage.suggest_bowl_names(&self.bowl_editor_input, 6);
+            self.bowl_editor_suggestions =
+                self.storage.suggest_bowl_names(&self.bowl_editor_input, 6);
             cx.notify();
         } else {
             cx.notify();

@@ -30,6 +30,14 @@ pub(crate) struct LauncherState {
 
 impl Global for LauncherState {}
 
+#[cfg(target_os = "linux")]
+pub(crate) struct BackgroundAnchorState {
+    pub(crate) window: Option<WindowHandle<BackgroundAnchorView>>,
+}
+
+#[cfg(target_os = "linux")]
+impl Global for BackgroundAnchorState {}
+
 #[derive(Clone)]
 pub(crate) struct PendingAutoClear {
     pub(crate) due_at: Instant,
@@ -82,6 +90,7 @@ fn handle_menu_command(command: MenuCommand, cx: &mut App) {
                 cx.global_mut::<UiStyleState>().family = family;
                 apply_style_to_open_window(cx);
                 persist_ui_style_state(cx);
+                update_brain_menu_state(cx);
             } else {
                 let fallback = choice
                     .candidates()
@@ -96,6 +105,7 @@ fn handle_menu_command(command: MenuCommand, cx: &mut App) {
                     choice.label(),
                     fallback
                 );
+                update_brain_menu_state(cx);
             }
         }
         MenuCommand::ShowAbout => {
@@ -127,10 +137,12 @@ fn handle_menu_command(command: MenuCommand, cx: &mut App) {
             cx.global_mut::<UiStyleState>().syntax_highlighting = enabled;
             apply_style_to_open_window(cx);
             persist_ui_style_state(cx);
+            update_brain_menu_state(cx);
         }
         MenuCommand::SetSecretAutoClear(enabled) => {
             cx.global_mut::<UiStyleState>().secret_auto_clear = enabled;
             persist_ui_style_state(cx);
+            update_brain_menu_state(cx);
         }
         MenuCommand::SetPastaBrain(enabled) => {
             cx.global_mut::<UiStyleState>().pasta_brain_enabled = enabled;
@@ -212,7 +224,17 @@ pub(crate) fn spawn_launcher_transition_loop(cx: &mut App) {
                         cx.notify();
 
                         match maybe_exit {
-                            Some(LauncherExitIntent::Hide) => cx.hide(),
+                            Some(LauncherExitIntent::Hide) => {
+                                #[cfg(target_os = "macos")]
+                                {
+                                    cx.hide();
+                                }
+                                #[cfg(target_os = "linux")]
+                                {
+                                    window.remove_window();
+                                    cx.global_mut::<LauncherState>().window = None;
+                                }
+                            }
                             Some(LauncherExitIntent::Quit) => cx.quit(),
                             None => {}
                         }
@@ -375,7 +397,7 @@ pub(crate) fn spawn_hotkey_listener(_cx: &mut App) {
         let mut keyboards = open_keyboards();
         if keyboards.is_empty() {
             eprintln!(
-                "warning: global Meta+Space hotkey unavailable: no readable keyboards in /dev/input"
+                "warning: global Meta+Space hotkey unavailable: no readable keyboards in /dev/input (check input-group membership or device permissions)"
             );
             return;
         }
@@ -414,9 +436,7 @@ pub(crate) fn spawn_hotkey_listener(_cx: &mut App) {
                     }
                     Err(err) => {
                         let raw = err.raw_os_error();
-                        if raw != Some(nix::libc::EAGAIN)
-                            && raw != Some(nix::libc::EWOULDBLOCK)
-                        {
+                        if raw != Some(nix::libc::EAGAIN) && raw != Some(nix::libc::EWOULDBLOCK) {
                             had_input_error = true;
                         }
                     }
@@ -506,45 +526,49 @@ pub(crate) fn spawn_clipboard_watcher(cx: &mut App) {
     let storage = cx.global::<StorageState>().storage.clone();
 
     cx.spawn(async move |cx| {
-        let mut last_hash: Option<String> = None;
+        let mut last_change_count = clipboard_change_count();
 
         loop {
             let _ = cx.update(|cx| {
                 process_secret_autoclear(cx);
             });
 
-            if let Some(snapshot) = read_clipboard_snapshot()
-                && !snapshot.is_transient
-            {
-                let current_hash = clipboard_text_hash(&snapshot.text);
-                if last_hash.as_ref() != Some(&current_hash) {
-                    last_hash = Some(current_hash);
+            let current_change_count = clipboard_change_count();
+            if current_change_count != last_change_count {
+                last_change_count = current_change_count;
 
+                if let Some(snapshot) = read_clipboard_snapshot()
+                    && !snapshot.is_transient
+                {
                     let should_ignore = cx
                         .update(|cx| should_ignore_self_clipboard_write(cx, &snapshot.text))
                         .unwrap_or(false);
-                    if !should_ignore {
-                        let inserted = if snapshot.is_concealed {
-                            storage
-                                .upsert_clipboard_item_with_hint(&snapshot.text, true)
-                                .unwrap_or(false)
-                        } else {
-                            storage.upsert_clipboard_item(&snapshot.text).unwrap_or(false)
-                        };
+                    if should_ignore {
+                        continue;
+                    }
 
-                        if inserted {
-                            let _ = cx.update(|cx| {
-                                if let Some(window) = cx
-                                    .try_global::<LauncherState>()
-                                    .and_then(|state| state.window)
-                                {
-                                    let _ = window.update(cx, |view, _window, cx| {
-                                        view.refresh_items(view.preferred_refresh_execution());
-                                        cx.notify();
-                                    });
-                                }
-                            });
-                        }
+                    let inserted = if snapshot.is_concealed {
+                        storage
+                            .upsert_clipboard_item_with_hint(&snapshot.text, true)
+                            .unwrap_or(false)
+                    } else {
+                        storage
+                            .upsert_clipboard_item(&snapshot.text)
+                            .unwrap_or(false)
+                    };
+
+                    if inserted {
+                        let _ = cx.update(|cx| {
+                            if let Some(window) = cx
+                                .try_global::<LauncherState>()
+                                .and_then(|state| state.window)
+                            {
+                                let _ = window.update(cx, |view, _window, cx| {
+                                    view.refresh_items(view.preferred_refresh_execution());
+                                    cx.notify();
+                                });
+                            }
+                        });
                     }
                 }
             }
