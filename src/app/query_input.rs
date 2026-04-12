@@ -747,7 +747,9 @@ impl LauncherView {
         let content = self.text_input_content(target).to_owned();
         let selection = clamp_text_range(&content, &self.text_input_state(target).selected_range);
         if !selection.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(content[selection].to_string()));
+            cx.write_to_clipboard(ClipboardItem::new_string(content[selection.clone()].to_string()));
+            #[cfg(target_os = "linux")]
+            write_clipboard_text(&content[selection]);
         }
     }
 
@@ -758,7 +760,9 @@ impl LauncherView {
         let content = self.text_input_content(target).to_owned();
         let selection = clamp_text_range(&content, &self.text_input_state(target).selected_range);
         if !selection.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(content[selection].to_string()));
+            cx.write_to_clipboard(ClipboardItem::new_string(content[selection.clone()].to_string()));
+            #[cfg(target_os = "linux")]
+            write_clipboard_text(&content[selection]);
             self.replace_text_in_range(None, "", window, cx);
         }
     }

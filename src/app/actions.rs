@@ -643,6 +643,11 @@ impl LauncherView {
 
         self.mark_self_clipboard_write(&item.content, cx);
         cx.write_to_clipboard(ClipboardItem::new_string(item.content.clone()));
+        // On Wayland, the GPUI window must stay alive to serve paste requests.
+        // Since Pasta destroys the window on hide, also write via wl-clipboard-rs
+        // which forks a background process to serve the data independently.
+        #[cfg(target_os = "linux")]
+        write_clipboard_text(&item.content);
         if item.item_type == ClipboardItemType::Password {
             self.schedule_secret_autoclear(&item.content, cx);
             self.revealed_secret_id = Some(item.id);
@@ -1973,6 +1978,8 @@ impl LauncherView {
         };
 
         self.mark_self_clipboard_write(&rendered, cx);
+        #[cfg(target_os = "linux")]
+        write_clipboard_text(&rendered);
         cx.write_to_clipboard(ClipboardItem::new_string(rendered));
         self.parameter_fill_target_id = None;
         self.parameter_fill_values.clear();
@@ -2210,6 +2217,8 @@ impl LauncherView {
 
         self.mark_self_clipboard_write(&transformed, cx);
         cx.write_to_clipboard(ClipboardItem::new_string(transformed.clone()));
+        #[cfg(target_os = "linux")]
+        write_clipboard_text(&transformed);
 
         let mut notification = status_message.to_owned();
         if let Err(err) = self.storage.upsert_clipboard_item(&transformed) {
