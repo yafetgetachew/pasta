@@ -116,6 +116,7 @@ impl Global for StorageState {}
 pub(crate) struct UiStyleState {
     pub family: SharedString,
     pub surface_alpha: f32,
+    pub theme_mode: ThemeMode,
     pub syntax_highlighting: bool,
     pub secret_auto_clear: bool,
     pub pasta_brain_enabled: bool,
@@ -127,6 +128,8 @@ impl Global for UiStyleState {}
 pub(crate) struct PersistedUiStyleState {
     pub(crate) family: String,
     pub(crate) surface_alpha: f32,
+    #[serde(default)]
+    pub(crate) theme_mode: ThemeMode,
     pub(crate) syntax_highlighting: bool,
     pub(crate) secret_auto_clear: bool,
     #[serde(default = "default_pasta_brain_enabled")]
@@ -135,6 +138,25 @@ pub(crate) struct PersistedUiStyleState {
 
 fn default_pasta_brain_enabled() -> bool {
     true
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ThemeMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemeMode {
+    pub(crate) fn apply(self, appearance: WindowAppearance) -> WindowAppearance {
+        match self {
+            Self::System => appearance,
+            Self::Light => WindowAppearance::Light,
+            Self::Dark => WindowAppearance::Dark,
+        }
+    }
 }
 
 pub(crate) const MENU_TAG_SHOW: isize = 1;
@@ -151,6 +173,9 @@ pub(crate) const MENU_TAG_BRAIN_ON: isize = 304;
 pub(crate) const MENU_TAG_BRAIN_OFF: isize = 305;
 
 pub(crate) const MENU_TAG_BRAIN_DOWNLOAD: isize = 306;
+pub(crate) const MENU_TAG_THEME_SYSTEM: isize = 307;
+pub(crate) const MENU_TAG_THEME_LIGHT: isize = 308;
+pub(crate) const MENU_TAG_THEME_DARK: isize = 309;
 
 static MENU_COMMAND_TX: OnceLock<mpsc::Sender<MenuCommand>> = OnceLock::new();
 
@@ -160,6 +185,7 @@ pub(crate) enum MenuCommand {
     QuitApp,
     SetFont(FontChoice),
     ShowAbout,
+    SetThemeMode(ThemeMode),
     SetSyntaxHighlighting(bool),
     SetSecretAutoClear(bool),
     SetPastaBrain(bool),

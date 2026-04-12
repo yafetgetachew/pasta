@@ -15,6 +15,13 @@ pub(crate) struct StatusItemRegistration {
     pub(crate) _status_item: StrongPtr,
     pub(crate) _menu: StrongPtr,
     pub(crate) _handler: StrongPtr,
+    pub(crate) theme_system_item: StrongPtr,
+    pub(crate) theme_light_item: StrongPtr,
+    pub(crate) theme_dark_item: StrongPtr,
+    pub(crate) syntax_on_item: StrongPtr,
+    pub(crate) syntax_off_item: StrongPtr,
+    pub(crate) secret_on_item: StrongPtr,
+    pub(crate) secret_off_item: StrongPtr,
     pub(crate) brain_on_item: StrongPtr,
     pub(crate) brain_off_item: StrongPtr,
     pub(crate) brain_download_item: StrongPtr,
@@ -132,6 +139,12 @@ fn handle_menu_command(command: MenuCommand, cx: &mut App) {
                 eprintln!("Pasta — v0.1.0 — The clipboard manager for devs and devops.");
                 eprintln!("https://github.com/yafetgetachew/pasta");
             }
+        }
+        MenuCommand::SetThemeMode(theme_mode) => {
+            cx.global_mut::<UiStyleState>().theme_mode = theme_mode;
+            apply_style_to_open_window(cx);
+            persist_ui_style_state(cx);
+            update_brain_menu_state(cx);
         }
         MenuCommand::SetSyntaxHighlighting(enabled) => {
             cx.global_mut::<UiStyleState>().syntax_highlighting = enabled;
@@ -278,6 +291,7 @@ pub(crate) fn show_launcher(cx: &mut App) {
         .update(cx, |view, window, cx| {
             view.font_family = style.family.clone();
             view.surface_alpha = style.surface_alpha;
+            view.theme_mode = style.theme_mode;
             view.syntax_highlighting = style.syntax_highlighting;
             view.pasta_brain_enabled = style.pasta_brain_enabled;
             view.reset_for_show();
@@ -295,6 +309,7 @@ pub(crate) fn show_launcher(cx: &mut App) {
         let _ = created.update(cx, |view, window, cx| {
             view.font_family = style.family.clone();
             view.surface_alpha = style.surface_alpha;
+            view.theme_mode = style.theme_mode;
             view.syntax_highlighting = style.syntax_highlighting;
             view.pasta_brain_enabled = style.pasta_brain_enabled;
             view.reset_for_show();

@@ -27,40 +27,40 @@ pub(crate) fn palette_for(appearance: WindowAppearance, surface_alpha: f32) -> P
     let mut palette = if dark {
         Palette {
             dark,
-            window_bg: rgba(0x0b0f14b8),
-            window_border: rgba(0xffffff16),
-            title_text: rgba(0xcbd5e1d9),
-            query_placeholder: rgba(0x94a3b8d9),
+            window_bg: rgba(0x08131f99),
+            window_border: rgba(0x7dd3fc33),
+            title_text: rgba(0xe0f2fed9),
+            query_placeholder: rgba(0x7dd3fcd9),
             query_active: rgba(0xf8fafcfa),
-            muted_text: rgba(0x94a3b8d0),
-            list_divider: rgba(0xffffff14),
+            muted_text: rgba(0x93c5fdd0),
+            list_divider: rgba(0x7dd3fc26),
             row_text: rgba(0xe2e8f0f5),
-            row_meta_text: rgba(0x94a3b8cc),
-            row_hover_bg: rgba(0xffffff0c),
-            selected_bg: rgba(0xffffff10),
-            selected_border: rgba(0xffffff22),
+            row_meta_text: rgba(0x93c5fdcc),
+            row_hover_bg: rgba(0x38bdf81f),
+            selected_bg: rgba(0x22d3ee33),
+            selected_border: rgba(0x67e8f944),
         }
     } else {
         Palette {
             dark,
-            window_bg: rgba(0xfffffff2),
-            window_border: rgba(0x0f172a30),
-            title_text: rgba(0x0f172ad9),
-            query_placeholder: rgba(0x64748bb8),
+            window_bg: rgba(0xfffbebad),
+            window_border: rgba(0xf59e0b33),
+            title_text: rgba(0x78350fd9),
+            query_placeholder: rgba(0xb45309c8),
             query_active: rgba(0x020617f2),
-            muted_text: rgba(0x334155c4),
-            list_divider: rgba(0x33415520),
+            muted_text: rgba(0x92400ec8),
+            list_divider: rgba(0xf59e0b26),
             row_text: rgba(0x020617eb),
-            row_meta_text: rgba(0x475569ab),
+            row_meta_text: rgba(0xb45309b8),
             // Neutral hover/selection — no blue tint.
-            row_hover_bg: rgba(0x0f172a0c),
-            selected_bg: rgba(0x0f172a14),
-            selected_border: rgba(0x0f172a30),
+            row_hover_bg: rgba(0xfbbf2466),
+            selected_bg: rgba(0xf59e0b80),
+            selected_border: rgba(0xd9770638),
         }
     };
 
     // Scale window surface elements by the fixed alpha factor.
-    let alpha_scale = surface_alpha.clamp(0.45, 1.0);
+    let alpha_scale = surface_alpha.clamp(0.10, 1.0);
     palette.window_bg = scale_alpha(palette.window_bg, alpha_scale);
     palette.window_border = scale_alpha(palette.window_border, alpha_scale);
     palette.list_divider = scale_alpha(palette.list_divider, alpha_scale);

@@ -1,5 +1,116 @@
 #[cfg(target_os = "macos")]
 use crate::*;
+#[cfg(target_os = "macos")]
+use cocoa::appkit::{
+    NSColor, NSView, NSViewHeightSizable, NSViewWidthSizable, NSVisualEffectBlendingMode,
+    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+};
+#[cfg(target_os = "macos")]
+use cocoa::base::YES;
+#[cfg(target_os = "macos")]
+use cocoa::foundation::NSPoint;
+
+#[cfg(target_os = "macos")]
+const PASTA_BACKDROP_TAG: isize = 48_221;
+
+#[cfg(target_os = "macos")]
+fn install_foggy_backdrop(window: &Window, theme_mode: ThemeMode) {
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+
+    unsafe {
+        let ns_view: id = handle.ns_view.as_ptr().cast();
+        if ns_view == nil {
+            return;
+        }
+
+        let ns_window: id = msg_send![ns_view, window];
+        if ns_window == nil {
+            return;
+        }
+
+        let content_view: id = msg_send![ns_window, contentView];
+        if content_view == nil {
+            return;
+        }
+
+        let clear = NSColor::clearColor(nil);
+        let _: () = msg_send![ns_window, setBackgroundColor: clear];
+
+        let existing: id = msg_send![content_view, viewWithTag: PASTA_BACKDROP_TAG];
+        let bounds = NSView::bounds(content_view);
+        let backdrop = if existing != nil {
+            existing
+        } else {
+            let backdrop =
+                NSVisualEffectView::initWithFrame_(NSVisualEffectView::alloc(nil), bounds);
+            backdrop.autorelease();
+            let _: () = msg_send![backdrop, setTag: PASTA_BACKDROP_TAG];
+            backdrop.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable);
+            let _: () = msg_send![ns_window, setContentView: backdrop];
+            backdrop
+        };
+
+        if ns_view != backdrop && ns_view.superview() != backdrop {
+            ns_view.removeFromSuperview();
+            ns_view.setFrameOrigin(NSPoint::new(0.0, 0.0));
+            ns_view.setFrameSize(bounds.size);
+            ns_view.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable);
+            backdrop.addSubview_(ns_view);
+        }
+
+        backdrop.setBlendingMode_(NSVisualEffectBlendingMode::BehindWindow);
+        backdrop.setState_(NSVisualEffectState::Active);
+        backdrop.setEmphasized_(YES);
+        backdrop.setMaterial_(match theme_mode {
+            ThemeMode::Light => NSVisualEffectMaterial::UnderWindowBackground,
+            ThemeMode::Dark | ThemeMode::System => NSVisualEffectMaterial::HudWindow,
+        });
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn apply_window_foggy_theme(window: &Window, theme_mode: ThemeMode) {
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+
+    unsafe {
+        let ns_view: id = handle.ns_view.as_ptr().cast();
+        if ns_view == nil {
+            return;
+        }
+
+        let ns_window: id = msg_send![ns_view, window];
+        if ns_window == nil {
+            return;
+        }
+
+        let appearance_name = match theme_mode {
+            ThemeMode::System => nil,
+            ThemeMode::Light => NSString::alloc(nil).init_str("NSAppearanceNameVibrantLight"),
+            ThemeMode::Dark => NSString::alloc(nil).init_str("NSAppearanceNameVibrantDark"),
+        };
+
+        let appearance: id = if appearance_name == nil {
+            nil
+        } else {
+            msg_send![class!(NSAppearance), appearanceNamed: appearance_name]
+        };
+        let _: () = msg_send![ns_window, setAppearance: appearance];
+        let _: () = msg_send![ns_window, setOpaque: false];
+        let _: () = msg_send![ns_window, setHasShadow: true];
+    }
+
+    install_foggy_backdrop(window, theme_mode);
+}
 
 #[cfg(target_os = "macos")]
 fn launcher_window_bounds(cx: &mut App) -> (Bounds<gpui::Pixels>, Option<gpui::DisplayId>) {
@@ -76,6 +187,7 @@ pub(crate) fn create_launcher_window(cx: &mut App) -> Option<WindowHandle<Launch
             let search_request_tx = search_request_tx.clone();
             let search_generation_token = search_generation_token.clone();
             set_window_move_to_active_space(window);
+            apply_window_foggy_theme(window, style.theme_mode);
             window.on_window_should_close(cx, |_, cx| {
                 cx.hide();
                 false
@@ -86,6 +198,7 @@ pub(crate) fn create_launcher_window(cx: &mut App) -> Option<WindowHandle<Launch
                     storage.clone(),
                     style.family.clone(),
                     style.surface_alpha,
+                    style.theme_mode,
                     style.syntax_highlighting,
                     style.pasta_brain_enabled,
                     search_request_tx,

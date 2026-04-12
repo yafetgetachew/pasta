@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::Instant;
@@ -9,10 +10,15 @@ use ksni::blocking::TrayMethods;
 use ksni::menu::{CheckmarkItem, MenuItem, StandardItem, SubMenu};
 use ksni::{Icon, ToolTip, Tray};
 use notify_rust::{Hint, Notification, Timeout};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use rfd::FileDialog;
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::backend::ObjectId;
+use wayland_client::protocol::wl_compositor::WlCompositor;
+use wayland_client::protocol::wl_region::WlRegion;
 use wayland_client::protocol::wl_registry::WlRegistry;
 use wayland_client::protocol::wl_seat::WlSeat;
+use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, Dispatch, Proxy, event_created_child};
 use wayland_protocols::ext::data_control::v1::client::ext_data_control_device_v1::{
     EVT_DATA_OFFER_OPCODE as EXT_DATA_OFFER_OPCODE, Event as ExtDataControlDeviceEvent,
@@ -26,6 +32,8 @@ use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_device_v1
 };
 use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
 use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_offer_v1::ZwlrDataControlOfferV1;
+use wayland_protocols_plasma::blur::client::org_kde_kwin_blur::OrgKdeKwinBlur;
+use wayland_protocols_plasma::blur::client::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager;
 use wl_clipboard_rs::copy::{MimeType as CopyMimeType, Options as CopyOptions, Source};
 use wl_clipboard_rs::paste::{
     ClipboardType, MimeType as PasteMimeType, Seat, get_contents, get_mime_types_ordered,
@@ -33,8 +41,9 @@ use wl_clipboard_rs::paste::{
 
 use crate::storage::ClipboardStorage;
 use crate::{
-    AutoClearState, FontChoice, LauncherExitIntent, LauncherView, MENU_COMMAND_TX, MenuCommand,
-    NEURAL_STATUS, NeuralStatus, SelfClipboardWriteState, UiStyleState,
+    AutoClearState, FontChoice, LAUNCHER_HEIGHT, LAUNCHER_WIDTH, LauncherExitIntent,
+    LauncherView, MENU_COMMAND_TX, MenuCommand, NEURAL_STATUS, NeuralStatus,
+    SelfClipboardWriteState, ThemeMode, UiStyleState,
 };
 
 // ---------------------------------------------------------------------------
@@ -72,6 +81,7 @@ struct WaylandClipboardMonitorState {
 static CLIPBOARD_CHANGE_STATE: OnceLock<Mutex<ClipboardChangeState>> = OnceLock::new();
 static WAYLAND_CLIPBOARD_CHANGE_COUNT: AtomicI64 = AtomicI64::new(0);
 static WAYLAND_CLIPBOARD_MONITOR_START: OnceLock<()> = OnceLock::new();
+static KDE_BLUR_APPLIED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 pub(crate) fn clipboard_change_count() -> i64 {
     if is_wayland_session() {
@@ -504,6 +514,7 @@ impl gpui::Global for StatusItemRegistration {}
 struct PastaTray {
     menu_tx: mpsc::Sender<MenuCommand>,
     font_choice: FontChoice,
+    theme_mode: ThemeMode,
     syntax_highlighting: bool,
     secret_auto_clear: bool,
     pasta_brain_enabled: bool,
@@ -513,6 +524,7 @@ struct PastaTray {
 impl PastaTray {
     fn sync_from_app(&mut self, style: &UiStyleState, neural_status: NeuralStatus) {
         self.font_choice = font_choice_from_family(&style.family);
+        self.theme_mode = style.theme_mode;
         self.syntax_highlighting = style.syntax_highlighting;
         self.secret_auto_clear = style.secret_auto_clear;
         self.pasta_brain_enabled = style.pasta_brain_enabled;
@@ -595,6 +607,46 @@ impl Tray for PastaTray {
                         .into()
                     })
                     .collect(),
+                ..Default::default()
+            }
+            .into(),
+        );
+
+        items.push(
+            SubMenu {
+                label: "Theme".into(),
+                submenu: vec![
+                    CheckmarkItem {
+                        label: "System".into(),
+                        checked: self.theme_mode == ThemeMode::System,
+                        activate: Box::new(|tray: &mut Self| {
+                            tray.theme_mode = ThemeMode::System;
+                            let _ = tray.menu_tx.send(MenuCommand::SetThemeMode(ThemeMode::System));
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                    CheckmarkItem {
+                        label: "Light".into(),
+                        checked: self.theme_mode == ThemeMode::Light,
+                        activate: Box::new(|tray: &mut Self| {
+                            tray.theme_mode = ThemeMode::Light;
+                            let _ = tray.menu_tx.send(MenuCommand::SetThemeMode(ThemeMode::Light));
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                    CheckmarkItem {
+                        label: "Dark".into(),
+                        checked: self.theme_mode == ThemeMode::Dark,
+                        activate: Box::new(|tray: &mut Self| {
+                            tray.theme_mode = ThemeMode::Dark;
+                            let _ = tray.menu_tx.send(MenuCommand::SetThemeMode(ThemeMode::Dark));
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                ],
                 ..Default::default()
             }
             .into(),
@@ -741,6 +793,7 @@ pub(crate) fn setup_status_item(cx: &mut App) {
     let tray = PastaTray {
         menu_tx,
         font_choice: font_choice_from_family(&style.family),
+        theme_mode: style.theme_mode,
         syntax_highlighting: style.syntax_highlighting,
         secret_auto_clear: style.secret_auto_clear,
         pasta_brain_enabled: style.pasta_brain_enabled,
@@ -783,6 +836,9 @@ pub(crate) fn menu_command_from_tag(tag: isize) -> Option<crate::MenuCommand> {
         MENU_TAG_SHOW => Some(MenuCommand::ShowLauncher),
         MENU_TAG_QUIT => Some(MenuCommand::QuitApp),
         MENU_TAG_ABOUT => Some(MenuCommand::ShowAbout),
+        MENU_TAG_THEME_SYSTEM => Some(MenuCommand::SetThemeMode(ThemeMode::System)),
+        MENU_TAG_THEME_LIGHT => Some(MenuCommand::SetThemeMode(ThemeMode::Light)),
+        MENU_TAG_THEME_DARK => Some(MenuCommand::SetThemeMode(ThemeMode::Dark)),
         MENU_TAG_SYNTAX_ON => Some(MenuCommand::SetSyntaxHighlighting(true)),
         MENU_TAG_SYNTAX_OFF => Some(MenuCommand::SetSyntaxHighlighting(false)),
         MENU_TAG_SECRET_CLEAR_ON => Some(MenuCommand::SetSecretAutoClear(true)),
@@ -818,7 +874,8 @@ fn ui_style_state_path() -> Option<PathBuf> {
 fn default_ui_style_state(default_family: gpui::SharedString) -> UiStyleState {
     UiStyleState {
         family: default_family,
-        surface_alpha: 0.90,
+        surface_alpha: 0.10,
+        theme_mode: ThemeMode::System,
         syntax_highlighting: true,
         secret_auto_clear: true,
         pasta_brain_enabled: true,
@@ -852,7 +909,8 @@ fn load_ui_style_state(default_family: gpui::SharedString) -> UiStyleState {
     if !family.is_empty() {
         style.family = family.to_owned().into();
     }
-    style.surface_alpha = persisted.surface_alpha.clamp(0.45, 1.0);
+    style.surface_alpha = persisted.surface_alpha.clamp(0.10, 1.0);
+    style.theme_mode = persisted.theme_mode;
     style.syntax_highlighting = persisted.syntax_highlighting;
     style.secret_auto_clear = persisted.secret_auto_clear;
     style.pasta_brain_enabled = persisted.pasta_brain_enabled;
@@ -867,6 +925,7 @@ fn save_ui_style_state(style: &UiStyleState) {
     let serialized = match serde_json::to_string_pretty(&crate::PersistedUiStyleState {
         family: style.family.to_string(),
         surface_alpha: style.surface_alpha.clamp(0.45, 1.0),
+        theme_mode: style.theme_mode,
         syntax_highlighting: style.syntax_highlighting,
         secret_auto_clear: style.secret_auto_clear,
         pasta_brain_enabled: style.pasta_brain_enabled,
@@ -972,6 +1031,7 @@ pub(crate) fn apply_style_to_open_window(cx: &mut App) {
         let _ = window.update(cx, |view, _window, cx| {
             view.font_family = style.family.clone();
             view.surface_alpha = style.surface_alpha;
+            view.theme_mode = style.theme_mode;
             view.syntax_highlighting = style.syntax_highlighting;
             cx.notify();
         });
@@ -1058,7 +1118,7 @@ pub(crate) fn create_launcher_window(cx: &mut App) -> Option<WindowHandle<Launch
             focus: true,
             show: false,
             kind: WindowKind::Normal,
-            window_background: WindowBackgroundAppearance::Opaque,
+            window_background: WindowBackgroundAppearance::Transparent,
             is_movable: false,
             is_resizable: false,
             is_minimizable: false,
@@ -1082,12 +1142,15 @@ pub(crate) fn create_launcher_window(cx: &mut App) -> Option<WindowHandle<Launch
                     storage,
                     style.family.clone(),
                     style.surface_alpha,
+                    style.theme_mode,
                     style.syntax_highlighting,
                     style.pasta_brain_enabled,
                     search_tx,
                     generation_token,
                     cx,
                 );
+
+                try_apply_kde_wayland_blur(window);
 
                 cx.observe_window_activation(window, |view: &mut LauncherView, window, cx| {
                     if window.is_window_active() {
@@ -1141,6 +1204,140 @@ pub(crate) fn set_window_move_to_active_space(_window: &Window) {
 
 fn is_wayland_session() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some()
+}
+
+#[derive(Default)]
+struct KdeBlurState;
+
+impl Dispatch<WlRegistry, GlobalListContents> for KdeBlurState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WlRegistry,
+        _event: wayland_client::protocol::wl_registry::Event,
+        _data: &GlobalListContents,
+        _conn: &Connection,
+        _qh: &wayland_client::QueueHandle<Self>,
+    ) {
+    }
+}
+
+wayland_client::delegate_noop!(KdeBlurState: ignore WlCompositor);
+wayland_client::delegate_noop!(KdeBlurState: ignore WlSurface);
+wayland_client::delegate_noop!(KdeBlurState: ignore WlRegion);
+wayland_client::delegate_noop!(KdeBlurState: ignore OrgKdeKwinBlurManager);
+wayland_client::delegate_noop!(KdeBlurState: ignore OrgKdeKwinBlur);
+
+fn try_apply_kde_wayland_blur(window: &Window) {
+    if !is_wayland_session() {
+        return;
+    }
+
+    let Ok(window_handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::Wayland(raw_window) = window_handle.as_raw() else {
+        return;
+    };
+    let surface_ptr = raw_window.surface.as_ptr();
+    if surface_ptr.is_null() {
+        return;
+    }
+
+    let Ok(display_handle) = HasDisplayHandle::display_handle(window) else {
+        return;
+    };
+    let RawDisplayHandle::Wayland(raw_display) = display_handle.as_raw() else {
+        return;
+    };
+    let display_ptr = raw_display.display.as_ptr();
+    if display_ptr.is_null() {
+        return;
+    }
+
+    let surface_key = format!("{:p}", surface_ptr);
+    let applied = KDE_BLUR_APPLIED.get_or_init(|| Mutex::new(HashSet::new()));
+    {
+        let guard = match applied.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if guard.contains(&surface_key) {
+            return;
+        }
+    }
+
+    let backend = unsafe {
+        wayland_client::backend::Backend::from_foreign_display(display_ptr.cast())
+    };
+    let conn = Connection::from_backend(backend);
+    let (globals, mut event_queue) = match registry_queue_init::<KdeBlurState>(&conn) {
+        Ok(parts) => parts,
+        Err(err) => {
+            eprintln!("warning: failed to init Wayland globals for KWin blur: {err}");
+            return;
+        }
+    };
+    let qh = event_queue.handle();
+    let compositor: WlCompositor = match globals.bind(&qh, 1..=6, ()) {
+        Ok(proxy) => proxy,
+        Err(_) => return,
+    };
+    let blur_manager: OrgKdeKwinBlurManager = match globals.bind(&qh, 1..=1, ()) {
+        Ok(proxy) => proxy,
+        Err(_) => return,
+    };
+    let surface_id = unsafe { ObjectId::from_ptr(WlSurface::interface(), surface_ptr.cast()) };
+    let surface = match surface_id.and_then(|id| WlSurface::from_id(&conn, id)) {
+        Ok(surface) => surface,
+        Err(err) => {
+            eprintln!("warning: failed to access Wayland surface for blur: {err}");
+            return;
+        }
+    };
+
+    let region = compositor.create_region(&qh, ());
+    add_rounded_blur_region(
+        &region,
+        LAUNCHER_WIDTH as i32,
+        LAUNCHER_HEIGHT as i32,
+        22,
+    );
+
+    let blur = blur_manager.create(&surface, &qh, ());
+    blur.set_region(Some(&region));
+    blur.commit();
+    surface.commit();
+    let _ = event_queue.roundtrip(&mut KdeBlurState);
+
+    let mut guard = match applied.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard.insert(surface_key);
+}
+
+fn add_rounded_blur_region(region: &WlRegion, width: i32, height: i32, radius: i32) {
+    let radius = radius.clamp(0, width.min(height) / 2);
+    if radius == 0 {
+        region.add(0, 0, width, height);
+        return;
+    }
+
+    // Center body.
+    region.add(radius, 0, width - radius * 2, height);
+    region.add(0, radius, width, height - radius * 2);
+
+    // Approximate rounded corners with horizontal scanlines.
+    for y in 0..radius {
+        let dy = (radius - y) as f32 - 0.5;
+        let inset = (radius as f32 - (radius as f32 * radius as f32 - dy * dy).sqrt())
+            .floor() as i32;
+        let span = width - inset * 2;
+        if span > 0 {
+            region.add(inset, y, span, 1);
+            region.add(inset, height - y - 1, span, 1);
+        }
+    }
 }
 
 fn current_clipboard_signature() -> Option<String> {

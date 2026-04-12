@@ -10,7 +10,10 @@ use gpui::{AnyElement, StatefulInteractiveElement};
 impl Render for LauncherView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.apply_pending_text_input_focus(window);
-        let palette = palette_for(window.appearance(), self.surface_alpha);
+        let palette = palette_for(
+            self.theme_mode.apply(window.appearance()),
+            self.surface_alpha,
+        );
         let info_editor_open = self.info_editor_target_id.is_some();
         let tag_editor_open = self.tag_editor_target_id.is_some();
         let bowl_editor_open = self.bowl_editor_target_id.is_some();
@@ -1635,32 +1638,33 @@ impl LauncherView {
             );
         }
 
-        pane = pane
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .justify_between()
-                    .items_start()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_1()
-                            .child(result_meta_chip(primary_action_hint, palette))
-                            .child(result_meta_chip(secret_action_hint, palette)),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(palette.row_meta_text)
-                            .child(created_detail),
-                    ),
-            )
-            .child(tag_row);
+        pane = pane.child(
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap_1()
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .items_start()
+                        .gap_1()
+                        .child(result_meta_chip(primary_action_hint, palette))
+                        .child(result_meta_chip(secret_action_hint, palette)),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .text_xs()
+                        .text_color(palette.row_meta_text)
+                        .child(created_detail),
+                )
+                .child(tag_row),
+        );
 
         if !item.description.trim().is_empty() {
             pane = pane.child(
@@ -1828,48 +1832,50 @@ impl LauncherView {
                 }));
         }
 
-        let mut tag_row = div().flex().items_center().gap_1().overflow_hidden();
+        let mut tag_row = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .content_start()
+            .gap_1()
+            .overflow_hidden();
         for tag in item_tags.iter() {
             tag_row = tag_row.child(result_meta_chip(tag, palette));
         }
-
-        let tag_lane = div()
-            .w(relative(0.5))
-            .min_w(px(0.0))
-            .overflow_hidden()
-            .child(tag_row);
-
-        let mut right_meta = div().w_full().flex().items_center().justify_end().gap_1();
-        if let Some(bowl_name) = &row_data.bowl_name {
-            right_meta = right_meta.child(
-                div()
-                    .max_w(relative(0.68))
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .justify_end()
-                            .child(result_meta_chip(&format!("BOWL:{bowl_name}"), palette)),
-                    ),
-            );
-        }
-        right_meta = right_meta.child(
+        row = row.child(
             div()
-                .flex_none()
-                .text_xs()
-                .text_color(palette.row_meta_text)
-                .child(row_data.created_label.clone()),
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(tag_row)
+                .child({
+                    let mut meta_row = div()
+                        .w_full()
+                        .flex()
+                        .justify_between()
+                        .items_center()
+                        .gap_2();
+                    if let Some(bowl_name) = &row_data.bowl_name {
+                        meta_row = meta_row.child(
+                            div()
+                                .min_w(px(0.0))
+                                .overflow_hidden()
+                                .child(result_meta_chip(&format!("BOWL:{bowl_name}"), palette)),
+                        );
+                    } else {
+                        meta_row = meta_row.child(div().min_w(px(0.0)));
+                    }
+                    meta_row.child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(palette.row_meta_text)
+                            .child(row_data.created_label.clone()),
+                    )
+                }),
         );
-
-        let top_row = div()
-            .w_full()
-            .flex()
-            .items_center()
-            .child(tag_lane)
-            .child(div().w(relative(0.5)).min_w(px(0.0)).child(right_meta));
-        row = row.child(top_row);
 
         let preview_block = div()
             .w_full()

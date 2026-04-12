@@ -171,6 +171,7 @@ pub(crate) struct LauncherView {
     pub(crate) storage: Arc<ClipboardStorage>,
     pub(crate) font_family: SharedString,
     pub(crate) surface_alpha: f32,
+    pub(crate) theme_mode: ThemeMode,
     pub(crate) syntax_highlighting: bool,
     pub(crate) pasta_brain_enabled: bool,
     pub(crate) query_input_state: TextInputState,

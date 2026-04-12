@@ -4405,8 +4405,10 @@ dependencies = [
  "syntect",
  "toml 0.8.23",
  "unicode-segmentation",
+ "wayland-backend",
  "wayland-client",
  "wayland-protocols 0.32.12",
+ "wayland-protocols-plasma",
  "wayland-protocols-wlr",
  "wl-clipboard-rs",
 ]
