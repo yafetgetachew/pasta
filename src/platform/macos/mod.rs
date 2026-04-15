@@ -29,7 +29,10 @@ pub(crate) use launch_agent::ensure_launch_agent_registered;
 #[cfg(all(target_os = "macos", test))]
 pub(crate) use menu::menu_command_from_tag;
 #[cfg(target_os = "macos")]
-pub(crate) use menu::{configure_background_mode, setup_status_item, update_brain_menu_state};
+pub(crate) use menu::{
+    configure_background_mode, setup_status_item, update_brain_menu_state,
+    update_font_menu_state, update_secret_menu_state, update_syntax_menu_state,
+};
 #[cfg(target_os = "macos")]
 pub(crate) use style::{
     apply_style_to_open_window, load_embedded_ui_font, persist_ui_style_state, resolve_font_family,

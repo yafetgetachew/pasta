@@ -153,9 +153,12 @@ pub(crate) fn setup_status_item(cx: &mut App) {
 
         let font_parent = menu_item("Font", "", handler, selector("menuAction:"), -1);
         let font_menu = NSMenu::new(nil);
+        let current_family = &cx.global::<UiStyleState>().family;
         for (ix, choice) in FontChoice::ALL.into_iter().enumerate() {
             let tag = MENU_TAG_FONT_BASE + ix as isize;
             let item = menu_item(choice.label(), "", handler, selector("menuAction:"), tag);
+            let is_active = choice.matches_family(current_family);
+            let _: () = msg_send![item, setState: if is_active { 1_isize } else { 0_isize }];
             font_menu.addItem_(item);
         }
         font_parent.setSubmenu_(font_menu);
@@ -170,19 +173,24 @@ pub(crate) fn setup_status_item(cx: &mut App) {
         );
         let syntax_menu = NSMenu::new(nil);
         let syntax_on = menu_item(
-            "Enabled",
+            "Enable",
             "",
             handler,
             selector("menuAction:"),
             MENU_TAG_SYNTAX_ON,
         );
         let syntax_off = menu_item(
-            "Disabled",
+            "Disable",
             "",
             handler,
             selector("menuAction:"),
             MENU_TAG_SYNTAX_OFF,
         );
+        // Set initial checkmark state for syntax highlighting
+        let syntax_enabled = cx.global::<UiStyleState>().syntax_highlighting;
+        let _: () = msg_send![syntax_on, setState: if syntax_enabled { 1_isize } else { 0_isize }];
+        let _: () = msg_send![syntax_off, setState: if syntax_enabled { 0_isize } else { 1_isize }];
+
         syntax_menu.addItem_(syntax_on);
         syntax_menu.addItem_(syntax_off);
         syntax_parent.setSubmenu_(syntax_menu);
@@ -197,19 +205,25 @@ pub(crate) fn setup_status_item(cx: &mut App) {
         );
         let secret_menu = NSMenu::new(nil);
         let secret_on = menu_item(
-            "Enabled (30s)",
+            "Enable (30s)",
             "",
             handler,
             selector("menuAction:"),
             MENU_TAG_SECRET_CLEAR_ON,
         );
         let secret_off = menu_item(
-            "Disabled",
+            "Disable",
             "",
             handler,
             selector("menuAction:"),
             MENU_TAG_SECRET_CLEAR_OFF,
         );
+
+        // Set initial checkmark state for secret auto-clear
+        let secret_enabled = cx.global::<UiStyleState>().secret_auto_clear;
+        let _: () = msg_send![secret_on, setState: if secret_enabled { 1_isize } else { 0_isize }];
+        let _: () = msg_send![secret_off, setState: if secret_enabled { 0_isize } else { 1_isize }];
+
         secret_menu.addItem_(secret_on);
         secret_menu.addItem_(secret_off);
         secret_parent.setSubmenu_(secret_menu);
@@ -218,14 +232,14 @@ pub(crate) fn setup_status_item(cx: &mut App) {
         let brain_parent = menu_item("Pasta Brain", "", handler, selector("menuAction:"), -1);
         let brain_menu = NSMenu::new(nil);
         let brain_on = menu_item(
-            "Enabled",
+            "Enable",
             "",
             handler,
             selector("menuAction:"),
             MENU_TAG_BRAIN_ON,
         );
         let brain_off = menu_item(
-            "Disabled",
+            "Disable",
             "",
             handler,
             selector("menuAction:"),
@@ -276,6 +290,11 @@ pub(crate) fn setup_status_item(cx: &mut App) {
             brain_on_item: StrongPtr::retain(brain_on as id),
             brain_off_item: StrongPtr::retain(brain_off as id),
             brain_download_item: StrongPtr::retain(brain_download as id),
+            secret_on_item: StrongPtr::retain(secret_on as id),
+            secret_off_item: StrongPtr::retain(secret_off as id),
+            syntax_on_item: StrongPtr::retain(syntax_on as id),
+            syntax_off_item: StrongPtr::retain(syntax_off as id),
+            font_menu: StrongPtr::retain(font_menu as id),
         });
     }
 }
@@ -303,5 +322,44 @@ pub(crate) fn update_brain_menu_state(cx: &App) {
         };
         let title = NSString::alloc(nil).init_str(download_title);
         let _: () = msg_send![*reg.brain_download_item, setTitle: title];
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn update_secret_menu_state(cx: &App) {
+    let enabled = cx.global::<UiStyleState>().secret_auto_clear;
+    let reg = cx.global::<StatusItemRegistration>();
+    unsafe {
+        let _: () =
+            msg_send![*reg.secret_on_item, setState: if enabled { 1_isize } else { 0_isize }];
+        let _: () =
+            msg_send![*reg.secret_off_item, setState: if enabled { 0_isize } else { 1_isize }];
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn update_syntax_menu_state(cx: &App) {
+    let enabled = cx.global::<UiStyleState>().syntax_highlighting;
+    let reg = cx.global::<StatusItemRegistration>();
+    unsafe {
+        let _: () =
+            msg_send![*reg.syntax_on_item, setState: if enabled { 1_isize } else { 0_isize }];
+        let _: () =
+            msg_send![*reg.syntax_off_item, setState: if enabled { 0_isize } else { 1_isize }];
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn update_font_menu_state(cx: &App) {
+    let current_family = &cx.global::<UiStyleState>().family;
+    let reg = cx.global::<StatusItemRegistration>();
+    unsafe {
+        let count: isize = msg_send![*reg.font_menu, numberOfItems];
+        for i in 0..count {
+            let item: id = msg_send![*reg.font_menu, itemAtIndex: i];
+            let choice = FontChoice::ALL[i as usize];
+            let is_active = choice.matches_family(current_family);
+            let _: () = msg_send![item, setState: if is_active { 1_isize } else { 0_isize }];
+        }
     }
 }
