@@ -173,14 +173,14 @@ pub(crate) fn setup_status_item(cx: &mut App) {
         );
         let syntax_menu = NSMenu::new(nil);
         let syntax_on = menu_item(
-            "Enabled",
+            "Enable",
             "",
             handler,
             selector("menuAction:"),
             MENU_TAG_SYNTAX_ON,
         );
         let syntax_off = menu_item(
-            "Disabled",
+            "Disable",
             "",
             handler,
             selector("menuAction:"),
@@ -205,14 +205,14 @@ pub(crate) fn setup_status_item(cx: &mut App) {
         );
         let secret_menu = NSMenu::new(nil);
         let secret_on = menu_item(
-            "Enabled (30s)",
+            "Enable (30s)",
             "",
             handler,
             selector("menuAction:"),
             MENU_TAG_SECRET_CLEAR_ON,
         );
         let secret_off = menu_item(
-            "Disabled",
+            "Disable",
             "",
             handler,
             selector("menuAction:"),
@@ -232,14 +232,14 @@ pub(crate) fn setup_status_item(cx: &mut App) {
         let brain_parent = menu_item("Pasta Brain", "", handler, selector("menuAction:"), -1);
         let brain_menu = NSMenu::new(nil);
         let brain_on = menu_item(
-            "Enabled",
+            "Enable",
             "",
             handler,
             selector("menuAction:"),
             MENU_TAG_BRAIN_ON,
         );
         let brain_off = menu_item(
-            "Disabled",
+            "Disable",
             "",
             handler,
             selector("menuAction:"),
