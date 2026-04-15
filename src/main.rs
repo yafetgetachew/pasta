@@ -285,6 +285,22 @@ impl FontChoice {
             Self::InputMono => &["Input Mono", "InputMono"],
         }
     }
+
+    fn matches_family(self, family: &str) -> bool {
+        let fam_norm: String = family
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .map(|ch| ch.to_ascii_lowercase())
+            .collect();
+        self.candidates().iter().any(|c| {
+            let c_norm: String = c
+                .chars()
+                .filter(|ch| ch.is_ascii_alphanumeric())
+                .map(|ch| ch.to_ascii_lowercase())
+                .collect();
+            fam_norm.contains(&c_norm) || c_norm.contains(&fam_norm)
+        })
+    }
 }
 
 #[cfg(target_os = "macos")]

@@ -60,6 +60,11 @@ pub(crate) struct StatusItemRegistration {
     pub(crate) brain_on_item: StrongPtr,
     pub(crate) brain_off_item: StrongPtr,
     pub(crate) brain_download_item: StrongPtr,
+    pub(crate) secret_on_item: StrongPtr,
+    pub(crate) secret_off_item: StrongPtr,
+    pub(crate) syntax_on_item: StrongPtr,
+    pub(crate) syntax_off_item: StrongPtr,
+    pub(crate) font_menu: StrongPtr,
 }
 
 #[cfg(target_os = "macos")]
@@ -107,6 +112,7 @@ fn handle_menu_command(command: MenuCommand, cx: &mut App) {
                     fallback
                 );
             }
+            update_font_menu_state(cx);
         }
         MenuCommand::ShowAbout => {
             let _ = std::process::Command::new("osascript")
@@ -129,10 +135,12 @@ fn handle_menu_command(command: MenuCommand, cx: &mut App) {
             cx.global_mut::<UiStyleState>().syntax_highlighting = enabled;
             apply_style_to_open_window(cx);
             persist_ui_style_state(cx);
+            update_syntax_menu_state(cx);
         }
         MenuCommand::SetSecretAutoClear(enabled) => {
             cx.global_mut::<UiStyleState>().secret_auto_clear = enabled;
             persist_ui_style_state(cx);
+            update_secret_menu_state(cx);
         }
         MenuCommand::SetPastaBrain(enabled) => {
             cx.global_mut::<UiStyleState>().pasta_brain_enabled = enabled;
