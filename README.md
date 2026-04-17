@@ -9,6 +9,8 @@
 A blazing-fast, Spotlight-style clipboard launcher built with Rust and [GPUI](https://gpui.rs).  
 Paste smarter — search, transform, parametrize, and organize everything you copy.
 
+[![CI](https://github.com/yafetgetachew/pasta/actions/workflows/ci.yml/badge.svg)](https://github.com/yafetgetachew/pasta/actions/workflows/ci.yml)
+[![Release](https://github.com/yafetgetachew/pasta/actions/workflows/release.yml/badge.svg)](https://github.com/yafetgetachew/pasta/releases/latest)
 [![macOS](https://img.shields.io/badge/macOS-only-000?logo=apple&logoColor=white)](#)
 [![Built with Rust](https://img.shields.io/badge/Built_with-Rust-dea584?logo=rust)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22d3ee.svg)](LICENSE)
@@ -95,15 +97,32 @@ cd pasta
 cargo run
 ```
 
-### Install as App
+### Install from Release (recommended)
+
+Grab a pre-built bundle from the [Releases page](https://github.com/yafetgetachew/pasta/releases/latest):
+
+- **`Pasta-v<version>-macos-arm64.dmg`** — open it, drag **Pasta.app** into **Applications**. Easiest path.
+- **`Pasta-v<version>-macos-arm64.zip`** — unzip and move `Pasta.app` into `/Applications/`. Smaller download than the DMG.
+- **`Pasta-v<version>-macos-arm64-SHA256SUMS.txt`** — verify your download with `shasum -a 256 -c …`.
+
+Pre-built binaries target **Apple Silicon** (M1/M2/M3/M4). If you're on an Intel Mac, build from source below.
+
+### Install from Source
 
 ```bash
 ./scripts/install-macos-app.sh
 ```
 
-This builds a release binary, creates `Pasta.app`, and installs it into `/Applications` (or `~/Applications` if not writable).
+This builds a release binary, creates `Pasta.app`, and installs it into `/Applications` (or `~/Applications` if not writable). The script ad-hoc signs the bundle and clears the quarantine attribute so the app launches without Gatekeeper prompts on the machine that built it.
 
-You could also just download the bindary from the releases (left panel of GitHub)
+#### First-launch notes
+
+Pasta is not notarized with Apple. If you downloaded a pre-built bundle, or your Mac enforces notarization via MDM, macOS may refuse the first launch. Two workarounds:
+
+- Right-click `Pasta.app` in Finder → **Open** → confirm **Open**, or
+- Run `xattr -dr com.apple.quarantine /Applications/Pasta.app` once.
+
+On first enable of **Pasta Brain** (neural search), the app downloads a ~90 MB model from Hugging Face into `~/Library/Caches/pasta-launcher/fastembed/`. You'll get a notification when the download starts and completes. If the download fails (offline, firewall), Pasta falls back to keyword search and you can retry from the menu bar → **Pasta Brain → Download Model**.
 
 <br>
 

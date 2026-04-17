@@ -25,13 +25,16 @@ pub(crate) use files::{choose_bowl_export_path, choose_bowl_import_path};
 #[cfg(target_os = "macos")]
 pub(crate) use hotkey::setup_hotkey;
 #[cfg(target_os = "macos")]
-pub(crate) use launch_agent::ensure_launch_agent_registered;
+pub(crate) use launch_agent::{
+    ensure_launch_agent_registered, install_launch_agent, launch_agent_is_installed,
+    uninstall_launch_agent,
+};
 #[cfg(all(target_os = "macos", test))]
 pub(crate) use menu::menu_command_from_tag;
 #[cfg(target_os = "macos")]
 pub(crate) use menu::{
-    configure_background_mode, setup_status_item, update_brain_menu_state,
-    update_font_menu_state, update_secret_menu_state, update_syntax_menu_state,
+    configure_background_mode, setup_status_item, update_brain_menu_state, update_font_menu_state,
+    update_launch_at_login_menu_state, update_secret_menu_state, update_syntax_menu_state,
 };
 #[cfg(target_os = "macos")]
 pub(crate) use style::{

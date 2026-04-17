@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs when a branch receives a new push so we don't waste
+# minutes on outdated commits.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Avoid incremental artifacts in CI — caches are keyed on Cargo.lock and
+  # incremental just inflates the cache with rebuildable state.
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  lint-and-test:
+    name: Lint, test & build (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable (with rustfmt + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Separate cache per OS so a Linux matrix added later doesn't collide.
+          shared-key: macos-stable
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      # Clippy runs without -D warnings: the codebase currently has ~33 cosmetic
+      # warnings that are out of scope for CI to gate on. Warnings still show up
+      # in the job log so regressions are visible in PR reviews.
+      - name: cargo clippy
+        run: cargo clippy --all-targets --no-deps
+
+      - name: cargo test
+        run: cargo test --all --no-fail-fast
+        env:
+          RUSTFLAGS: "-D warnings"
+
+      - name: cargo build --release
+        run: cargo build --release
+        env:
+          RUSTFLAGS: "-D warnings"
+
+      - name: Shell script syntax check
+        run: |
+          bash -n scripts/install-macos-app.sh
+          bash -n scripts/build-macos-bundle.sh
+          bash -n scripts/make-icon.sh
+
+  audit:
+    name: cargo audit (advisories)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Advisory scanning is informational: we don't want a newly-disclosed CVE in
+    # a transitive dep to block unrelated PRs. Failures still appear in the
+    # GitHub Actions summary.
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+
+      - name: Run cargo audit
+        run: cargo audit

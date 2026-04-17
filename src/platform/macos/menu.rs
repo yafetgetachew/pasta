@@ -91,6 +91,14 @@ pub(crate) fn menu_command_from_tag(tag: isize) -> Option<MenuCommand> {
         return Some(MenuCommand::DownloadBrain);
     }
 
+    if tag == MENU_TAG_CLEAR_HISTORY {
+        return Some(MenuCommand::RequestClearHistory);
+    }
+
+    if tag == MENU_TAG_LAUNCH_AT_LOGIN {
+        return Some(MenuCommand::ToggleLaunchAtLogin);
+    }
+
     None
 }
 
@@ -107,8 +115,6 @@ fn menu_item(title: &str, key: &str, target: id, action: Sel, tag: isize) -> id 
         item
     }
 }
-
-
 
 #[cfg(target_os = "macos")]
 pub(crate) fn setup_status_item(cx: &mut App) {
@@ -267,6 +273,28 @@ pub(crate) fn setup_status_item(cx: &mut App) {
 
         menu.addItem_(NSMenuItem::separatorItem(nil));
 
+        let launch_at_login_item = menu_item(
+            "Launch at Login",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_LAUNCH_AT_LOGIN,
+        );
+        let login_enabled = launch_agent_is_installed();
+        let _: () = msg_send![launch_at_login_item, setState: if login_enabled { 1_isize } else { 0_isize }];
+        menu.addItem_(launch_at_login_item);
+
+        let clear_history_item = menu_item(
+            "Clear Clipboard History…",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_CLEAR_HISTORY,
+        );
+        menu.addItem_(clear_history_item);
+
+        menu.addItem_(NSMenuItem::separatorItem(nil));
+
         let close_item = menu_item(
             "Close Pasta",
             "",
@@ -295,7 +323,17 @@ pub(crate) fn setup_status_item(cx: &mut App) {
             syntax_on_item: StrongPtr::retain(syntax_on as id),
             syntax_off_item: StrongPtr::retain(syntax_off as id),
             font_menu: StrongPtr::retain(font_menu as id),
+            launch_at_login_item: StrongPtr::retain(launch_at_login_item as id),
         });
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn update_launch_at_login_menu_state(cx: &App) {
+    let installed = launch_agent_is_installed();
+    let reg = cx.global::<StatusItemRegistration>();
+    unsafe {
+        let _: () = msg_send![*reg.launch_at_login_item, setState: if installed { 1_isize } else { 0_isize }];
     }
 }
 

@@ -1,8 +1,54 @@
 #[cfg(target_os = "macos")]
+use cocoa::foundation::NSAutoreleasePool;
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
+
+#[cfg(target_os = "macos")]
 use crate::*;
+
+// RAII guard for NSAutoreleasePool. AppKit does not install an autorelease pool on
+// non-main threads, so every unsafe entry point that creates autoreleased Foundation
+// objects (which is virtually all of them) must run inside one or leak memory.
+#[cfg(target_os = "macos")]
+struct AutoreleasePool {
+    pool: id,
+}
+
+#[cfg(target_os = "macos")]
+impl AutoreleasePool {
+    fn new() -> Self {
+        unsafe {
+            Self {
+                pool: NSAutoreleasePool::new(nil),
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for AutoreleasePool {
+    fn drop(&mut self) {
+        unsafe {
+            let _: () = self.pool.drain();
+        }
+    }
+}
+
+// Cached NSString for the "public.file-url" pasteboard UTI. init_str returns a
+// retain-count=1 object; we keep the pointer in a OnceLock so we never leak a new
+// one per poll and never need to release it (process lifetime).
+#[cfg(target_os = "macos")]
+fn cached_file_url_type() -> id {
+    static CACHED: OnceLock<usize> = OnceLock::new();
+    *CACHED.get_or_init(|| unsafe {
+        let ns: id = NSString::alloc(nil).init_str("public.file-url");
+        ns as usize
+    }) as id
+}
 
 #[cfg(target_os = "macos")]
 pub(crate) fn clipboard_change_count() -> i64 {
+    let _pool = AutoreleasePool::new();
     unsafe {
         let pasteboard = NSPasteboard::generalPasteboard(nil);
         pasteboard.changeCount()
@@ -19,6 +65,7 @@ pub(crate) struct ClipboardSnapshot {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn read_clipboard_snapshot() -> Option<ClipboardSnapshot> {
+    let _pool = AutoreleasePool::new();
     unsafe {
         let pasteboard = NSPasteboard::generalPasteboard(nil);
         let type_names = pasteboard_type_names(pasteboard);
@@ -71,9 +118,9 @@ pub(crate) fn read_clipboard_snapshot() -> Option<ClipboardSnapshot> {
 /// so we resolve them via NSURL which handles both forms.
 #[cfg(target_os = "macos")]
 fn read_file_urls_from_pasteboard(pasteboard: id, type_names_lower: &[String]) -> Option<String> {
-    let has_file_urls = type_names_lower.iter().any(|kind| {
-        kind == "public.file-url" || kind.contains("public.file-url")
-    });
+    let has_file_urls = type_names_lower
+        .iter()
+        .any(|kind| kind == "public.file-url" || kind.contains("public.file-url"));
 
     if !has_file_urls {
         return None;
@@ -91,7 +138,7 @@ fn read_file_urls_from_pasteboard(pasteboard: id, type_names_lower: &[String]) -
             return None;
         }
 
-        let file_url_type = NSString::alloc(nil).init_str("public.file-url");
+        let file_url_type = cached_file_url_type();
         let nsurl_class = class!(NSURL);
         let mut paths = Vec::with_capacity(count);
 
@@ -138,6 +185,7 @@ pub(crate) fn read_clipboard_text() -> Option<String> {
     read_clipboard_snapshot().map(|snapshot| snapshot.text)
 }
 
+// Called from inside read_clipboard_snapshot, which already owns an autorelease pool.
 #[cfg(target_os = "macos")]
 fn pasteboard_type_names(pasteboard: id) -> Vec<String> {
     unsafe {
@@ -202,11 +250,15 @@ pub(crate) fn show_macos_notification(title: &str, body: &str) {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn write_clipboard_text(value: &str) {
+    let _pool = AutoreleasePool::new();
     unsafe {
         let pasteboard = NSPasteboard::generalPasteboard(nil);
         let _: usize = msg_send![pasteboard, clearContents];
         let ns = NSString::alloc(nil).init_str(value);
         let _: usize = msg_send![pasteboard, setString: ns forType: NSPasteboardTypeString];
+        // NSString::alloc + init_str returns a retain-count=1 object that nothing
+        // else owns; release it to avoid leaking one per write.
+        let _: () = msg_send![ns, release];
     }
 }
 

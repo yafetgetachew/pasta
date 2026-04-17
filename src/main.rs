@@ -190,10 +190,14 @@ const MENU_TAG_BRAIN_OFF: isize = 305;
 #[cfg(target_os = "macos")]
 const MENU_TAG_BRAIN_DOWNLOAD: isize = 306;
 
+#[cfg(target_os = "macos")]
+const MENU_TAG_CLEAR_HISTORY: isize = 307;
+
+#[cfg(target_os = "macos")]
+const MENU_TAG_LAUNCH_AT_LOGIN: isize = 308;
 
 #[cfg(target_os = "macos")]
 static MENU_COMMAND_TX: OnceLock<mpsc::Sender<MenuCommand>> = OnceLock::new();
-
 
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
@@ -206,6 +210,9 @@ enum MenuCommand {
     SetSecretAutoClear(bool),
     SetPastaBrain(bool),
     DownloadBrain,
+    RequestClearHistory,
+    PerformClearHistory,
+    ToggleLaunchAtLogin,
 }
 
 #[cfg(target_os = "macos")]
@@ -517,9 +524,33 @@ pub(crate) fn spawn_neural_init(storage: Arc<ClipboardStorage>) {
     if let Ok(mut status) = NEURAL_STATUS.lock() {
         *status = NeuralStatus::Loading;
     }
+
+    // Pin the fastembed cache to a stable, user-scoped location so the model isn't
+    // re-downloaded whenever the app launches from a different working directory
+    // (e.g. Finder vs. Terminal vs. the .app bundle). FASTEMBED_CACHE_DIR is read
+    // by fastembed at TextEmbedding::try_new time.
+    let cache_dir = dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("pasta-launcher")
+        .join("fastembed");
+    let _ = fs::create_dir_all(&cache_dir);
+    // SAFETY: called once during startup before any fastembed init reads the env;
+    // no other thread is racing this write. (Rust 2024 marks set_var as unsafe.)
+    unsafe {
+        env::set_var("FASTEMBED_CACHE_DIR", &cache_dir);
+    }
+    let model_dir = cache_dir.join("models--Qdrant--all-MiniLM-L6-v2-onnx");
+    let model_cached = model_dir.exists();
+
     std::thread::Builder::new()
         .name("pasta-neural-init".into())
         .spawn(move || {
+            if !model_cached {
+                show_macos_notification(
+                    "Pasta Brain",
+                    "Downloading semantic search model (~90 MB)…",
+                );
+            }
             eprintln!("info: initializing neural embedder (may download model on first run)...");
             match neural_embed::NeuralEmbedder::try_new() {
                 Ok(embedder) => {
@@ -528,6 +559,12 @@ pub(crate) fn spawn_neural_init(storage: Arc<ClipboardStorage>) {
                         *status = NeuralStatus::Ready;
                     }
                     eprintln!("info: neural embedder ready");
+                    if !model_cached {
+                        show_macos_notification(
+                            "Pasta Brain",
+                            "Model downloaded. Semantic search is ready.",
+                        );
+                    }
                 }
                 Err(err) => {
                     if let Ok(mut status) = NEURAL_STATUS.lock() {
@@ -535,6 +572,10 @@ pub(crate) fn spawn_neural_init(storage: Arc<ClipboardStorage>) {
                     }
                     eprintln!("warning: neural embedder unavailable: {err}");
                     eprintln!("warning: semantic search will use feature-hash only");
+                    show_macos_notification(
+                        "Pasta Brain",
+                        "Model unavailable — using keyword search. Retry from the menu bar.",
+                    );
                 }
             }
         })

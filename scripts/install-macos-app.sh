@@ -11,79 +11,18 @@ APP_NAME="Pasta"
 LEGACY_APP_NAME="Pasta Launcher"
 BUNDLE_NAME="${APP_NAME}.app"
 LEGACY_BUNDLE_NAME="${LEGACY_APP_NAME}.app"
-BIN_NAME="pasta-launcher"
-BUNDLE_ID="com.pasta.launcher"
-APP_VERSION="${APP_VERSION:-0.1.0}"
 
 INSTALL_DIR="${HOME}/Applications"
 if [[ -w "/Applications" ]]; then
   INSTALL_DIR="/Applications"
 fi
+mkdir -p "${INSTALL_DIR}"
 
-echo "Building release binary..."
-(
-  cd "${ROOT_DIR}"
-  CARGO_PROFILE_RELEASE_STRIP=none cargo build --release
-)
-
-BIN_PATH="${ROOT_DIR}/target/release/${BIN_NAME}"
-if [[ ! -x "${BIN_PATH}" ]]; then
-  echo "error: release binary not found at ${BIN_PATH}" >&2
-  exit 1
-fi
+# Delegate binary build + bundle staging to build-macos-bundle.sh so the
+# layout/plist live in exactly one place (also called by release.yml).
+"${ROOT_DIR}/scripts/build-macos-bundle.sh"
 
 STAGE_DIR="${ROOT_DIR}/target/${BUNDLE_NAME}"
-CONTENTS_DIR="${STAGE_DIR}/Contents"
-MACOS_DIR="${CONTENTS_DIR}/MacOS"
-RESOURCES_DIR="${CONTENTS_DIR}/Resources"
-PLIST_PATH="${CONTENTS_DIR}/Info.plist"
-
-mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}" "${INSTALL_DIR}"
-cp "${BIN_PATH}" "${MACOS_DIR}/${BIN_NAME}"
-chmod +x "${MACOS_DIR}/${BIN_NAME}"
-
-# Copy app icon if available
-ICON_PATH="${ROOT_DIR}/assets/AppIcon.icns"
-if [[ -f "${ICON_PATH}" ]]; then
-  cp "${ICON_PATH}" "${RESOURCES_DIR}/AppIcon.icns"
-else
-  echo "warning: AppIcon.icns not found — app will use default icon"
-  echo "  Run: ./scripts/make-icon.sh path/to/icon.png"
-fi
-
-cat > "${PLIST_PATH}" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleDevelopmentRegion</key>
-  <string>en</string>
-  <key>CFBundleExecutable</key>
-  <string>${BIN_NAME}</string>
-  <key>CFBundleIdentifier</key>
-  <string>${BUNDLE_ID}</string>
-  <key>CFBundleInfoDictionaryVersion</key>
-  <string>6.0</string>
-  <key>CFBundleName</key>
-  <string>${APP_NAME}</string>
-  <key>CFBundleDisplayName</key>
-  <string>${APP_NAME}</string>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>CFBundleShortVersionString</key>
-  <string>${APP_VERSION}</string>
-  <key>CFBundleVersion</key>
-  <string>${APP_VERSION}</string>
-  <key>CFBundleIconFile</key>
-  <string>AppIcon</string>
-  <key>LSUIElement</key>
-  <true/>
-  <key>NSHighResolutionCapable</key>
-  <true/>
-</dict>
-</plist>
-PLIST
-
 DEST_APP="${INSTALL_DIR}/${BUNDLE_NAME}"
 LEGACY_DEST_APP="${INSTALL_DIR}/${LEGACY_BUNDLE_NAME}"
 
@@ -101,9 +40,30 @@ fi
 
 cp -R "${STAGE_DIR}" "${DEST_APP}"
 
+# Strip the quarantine attribute so Gatekeeper doesn't nag on first launch.
+# This is safe here because the bundle was just produced locally from a
+# repository checkout rather than downloaded from the internet.
+if command -v xattr >/dev/null 2>&1; then
+  xattr -dr com.apple.quarantine "${DEST_APP}" 2>/dev/null || true
+fi
+
+# Ad-hoc sign the bundle. This is not notarization — users on machines that
+# enforce notarization (e.g. "App Management" restrictions, MDM) will still
+# need to right-click → Open on first launch, or run:
+#   spctl --add --label 'Pasta' "${DEST_APP}"
 if command -v codesign >/dev/null 2>&1; then
-  codesign --force --deep --sign - "${DEST_APP}" >/dev/null 2>&1 || true
+  if codesign --force --deep --sign - "${DEST_APP}"; then
+    echo "Ad-hoc signed: ${DEST_APP}"
+  else
+    echo "warning: ad-hoc signing failed; the app may be blocked on first launch" >&2
+  fi
+else
+  echo "warning: codesign not found; skipping ad-hoc signing" >&2
 fi
 
 echo "Installed: ${DEST_APP}"
 echo "You can launch it from Finder/Spotlight without a terminal."
+echo
+echo "First launch: if macOS blocks the app with a Gatekeeper warning, either:"
+echo "  1) right-click the app in Finder → Open → Open, or"
+echo "  2) run:  xattr -dr com.apple.quarantine \"${DEST_APP}\""

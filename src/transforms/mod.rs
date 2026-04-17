@@ -172,9 +172,7 @@ pub(crate) fn base64_decode_transform(input: &str) -> Result<(String, &'static s
     }
 
     // All engines failed — return the standard error for diagnostics.
-    let err = BASE64_STANDARD
-        .decode(compact.as_bytes())
-        .unwrap_err();
+    let err = BASE64_STANDARD.decode(compact.as_bytes()).unwrap_err();
     Err(format!("base64 decode error: {err}"))
 }
 
@@ -192,17 +190,16 @@ pub(crate) fn jwt_decode_transform(input: &str) -> Result<(String, &'static str)
             .decode(segment.as_bytes())
             .or_else(|_| BASE64_URL_SAFE.decode(segment.as_bytes()))
             .map_err(|err| format!("base64 decode error: {err}"))?;
-        serde_json::from_slice(&decoded_bytes)
-            .map_err(|err| format!("JSON parse error: {err}"))
+        serde_json::from_slice(&decoded_bytes).map_err(|err| format!("JSON parse error: {err}"))
     };
 
     let header = decode_segment(parts[0])?;
     let payload = decode_segment(parts[1])?;
 
-    let header_pretty = serde_json::to_string_pretty(&header)
-        .unwrap_or_else(|_| header.to_string());
-    let payload_pretty = serde_json::to_string_pretty(&payload)
-        .unwrap_or_else(|_| payload.to_string());
+    let header_pretty =
+        serde_json::to_string_pretty(&header).unwrap_or_else(|_| header.to_string());
+    let payload_pretty =
+        serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
 
     let mut summary = Vec::new();
     summary.push("JWT DECODED".to_owned());
@@ -303,7 +300,10 @@ pub(crate) fn epoch_decode_transform(input: &str) -> Result<(String, &'static st
         if let Some(dt) = DateTime::from_timestamp(seconds, 0) {
             let utc = dt.format("%Y-%m-%d %H:%M:%S UTC").to_string();
             let local_offset = *chrono::Local::now().offset();
-            let local = dt.with_timezone(&local_offset).format("%Y-%m-%d %H:%M:%S %:z").to_string();
+            let local = dt
+                .with_timezone(&local_offset)
+                .format("%Y-%m-%d %H:%M:%S %:z")
+                .to_string();
             let now = Utc::now().timestamp();
             let diff = seconds - now;
             let age = if diff < 0 {
@@ -355,21 +355,37 @@ pub(crate) fn epoch_decode_transform(input: &str) -> Result<(String, &'static st
 
 #[cfg(target_os = "macos")]
 fn format_duration_ago(seconds: i64) -> String {
-    if seconds < 60 { return format!("{seconds}s ago"); }
-    if seconds < 3600 { return format!("{}m ago", seconds / 60); }
-    if seconds < 86400 { return format!("{}h {}m ago", seconds / 3600, (seconds % 3600) / 60); }
+    if seconds < 60 {
+        return format!("{seconds}s ago");
+    }
+    if seconds < 3600 {
+        return format!("{}m ago", seconds / 60);
+    }
+    if seconds < 86400 {
+        return format!("{}h {}m ago", seconds / 3600, (seconds % 3600) / 60);
+    }
     let days = seconds / 86400;
-    if days < 365 { return format!("{days}d ago"); }
+    if days < 365 {
+        return format!("{days}d ago");
+    }
     format!("{}y {}d ago", days / 365, days % 365)
 }
 
 #[cfg(target_os = "macos")]
 fn format_duration_from_now(seconds: i64) -> String {
-    if seconds < 60 { return format!("in {seconds}s"); }
-    if seconds < 3600 { return format!("in {}m", seconds / 60); }
-    if seconds < 86400 { return format!("in {}h {}m", seconds / 3600, (seconds % 3600) / 60); }
+    if seconds < 60 {
+        return format!("in {seconds}s");
+    }
+    if seconds < 3600 {
+        return format!("in {}m", seconds / 60);
+    }
+    if seconds < 86400 {
+        return format!("in {}h {}m", seconds / 3600, (seconds % 3600) / 60);
+    }
     let days = seconds / 86400;
-    if days < 365 { return format!("in {days}d"); }
+    if days < 365 {
+        return format!("in {days}d");
+    }
     format!("in {}y {}d", days / 365, days % 365)
 }
 

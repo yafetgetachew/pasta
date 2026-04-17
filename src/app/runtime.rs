@@ -65,6 +65,7 @@ pub(crate) struct StatusItemRegistration {
     pub(crate) syntax_on_item: StrongPtr,
     pub(crate) syntax_off_item: StrongPtr,
     pub(crate) font_menu: StrongPtr,
+    pub(crate) launch_at_login_item: StrongPtr,
 }
 
 #[cfg(target_os = "macos")]
@@ -115,20 +116,21 @@ fn handle_menu_command(command: MenuCommand, cx: &mut App) {
             update_font_menu_state(cx);
         }
         MenuCommand::ShowAbout => {
+            let script = format!(
+                "set result to display dialog \"Pasta — v{version}\\n\\n\
+                The clipboard manager for devs and devops.\\n\
+                Blazing-fast, Spotlight-style clipboard launcher\\n\
+                built with Rust and GPUI.\" \
+                with title \"About Pasta\" \
+                buttons {{\"GitHub\", \"OK\"}} default button 2 with icon note\n\
+                if button returned of result is \"GitHub\" then\n\
+                  open location \"https://github.com/yafetgetachew/pasta\"\n\
+                end if",
+                version = env!("CARGO_PKG_VERSION"),
+            );
             let _ = std::process::Command::new("osascript")
                 .arg("-e")
-                .arg(concat!(
-                    "set result to display dialog ",
-                    "\"Pasta — v0.1.0\\n\\n",
-                    "The clipboard manager for devs and devops.\\n",
-                    "Blazing-fast, Spotlight-style clipboard launcher\\n",
-                    "built with Rust and GPUI.\" ",
-                    "with title \"About Pasta\" ",
-                    "buttons {\"GitHub\", \"OK\"} default button 2 with icon note\n",
-                    "if button returned of result is \"GitHub\" then\n",
-                    "  open location \"https://github.com/yafetgetachew/pasta\"\n",
-                    "end if",
-                ))
+                .arg(script)
                 .spawn();
         }
         MenuCommand::SetSyntaxHighlighting(enabled) => {
@@ -151,6 +153,71 @@ fn handle_menu_command(command: MenuCommand, cx: &mut App) {
             let storage = cx.global::<StorageState>().storage.clone();
             spawn_neural_init(storage);
             update_brain_menu_state(cx);
+        }
+        MenuCommand::RequestClearHistory => {
+            // Touch ID blocks the caller for up to ~20s; run it off the main runloop
+            // and route the result back through the menu command channel so the
+            // actual deletion runs in the normal app-context handler.
+            std::thread::Builder::new()
+                .name("pasta-clear-history-auth".to_owned())
+                .spawn(|| {
+                    let approved = authenticate_with_touch_id("clear all saved clipboard history");
+                    if approved && let Some(tx) = MENU_COMMAND_TX.get() {
+                        let _ = tx.send(MenuCommand::PerformClearHistory);
+                    }
+                })
+                .ok();
+        }
+        MenuCommand::PerformClearHistory => {
+            let storage = cx.global::<StorageState>().storage.clone();
+            match storage.clear_all_items() {
+                Ok(()) => {
+                    if let Some(window) = cx
+                        .try_global::<LauncherState>()
+                        .and_then(|state| state.window)
+                    {
+                        let _ = window.update(cx, |view, _window, cx| {
+                            view.refresh_items(view.preferred_refresh_execution());
+                            cx.notify();
+                        });
+                    }
+                    show_macos_notification("Pasta", "Clipboard history cleared.");
+                }
+                Err(err) => {
+                    eprintln!("warning: failed to clear clipboard history: {err}");
+                    show_macos_notification("Pasta", "Failed to clear clipboard history.");
+                }
+            }
+        }
+        MenuCommand::ToggleLaunchAtLogin => {
+            if launch_agent_is_installed() {
+                match uninstall_launch_agent() {
+                    Ok(()) => {
+                        show_macos_notification("Pasta", "Launch at login disabled.");
+                    }
+                    Err(err) => {
+                        eprintln!("warning: failed to remove launch agent: {err}");
+                        show_macos_notification("Pasta", "Failed to disable launch at login.");
+                    }
+                }
+            } else {
+                match install_launch_agent() {
+                    Ok(()) => {
+                        show_macos_notification(
+                            "Pasta",
+                            "Launch at login enabled. Takes effect at next login.",
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!("warning: failed to install launch agent: {err}");
+                        show_macos_notification(
+                            "Pasta",
+                            &format!("Launch at login unavailable: {err}"),
+                        );
+                    }
+                }
+            }
+            update_launch_at_login_menu_state(cx);
         }
     }
 }
@@ -353,15 +420,26 @@ pub(crate) fn spawn_clipboard_watcher(cx: &mut App) {
                         continue;
                     }
 
-                    let inserted = if snapshot.is_concealed {
-                        storage
-                            .upsert_clipboard_item_with_hint(&snapshot.text, true)
-                            .unwrap_or(false)
-                    } else {
-                        storage
-                            .upsert_clipboard_item(&snapshot.text)
-                            .unwrap_or(false)
-                    };
+                    // SQLite writes, in-memory index mutation, and embedding computation
+                    // all run on the background executor so the async watcher loop stays
+                    // responsive even when the DB is slow or under contention.
+                    let storage_for_insert = storage.clone();
+                    let text = snapshot.text;
+                    let is_concealed = snapshot.is_concealed;
+                    let inserted = cx
+                        .background_executor()
+                        .spawn(async move {
+                            if is_concealed {
+                                storage_for_insert
+                                    .upsert_clipboard_item_with_hint(&text, true)
+                                    .unwrap_or(false)
+                            } else {
+                                storage_for_insert
+                                    .upsert_clipboard_item(&text)
+                                    .unwrap_or(false)
+                            }
+                        })
+                        .await;
                     if inserted {
                         let _ = cx.update(|cx| {
                             if let Some(window) = cx

@@ -6,6 +6,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use aes_gcm::{
@@ -197,6 +198,7 @@ impl ClipboardStorage {
             neural_embedder: Arc::new(Mutex::new(None)),
             memory_index: Arc::new(Mutex::new(MemorySearchIndex::default())),
         };
+        storage.apply_persistent_pragmas()?;
         storage.init_schema()?;
         storage.rebuild_memory_index()?;
         Ok(storage)
@@ -209,6 +211,10 @@ impl ClipboardStorage {
             .join(app_dir_name);
         fs::create_dir_all(&data_dir).context("unable to create fallback data directory")?;
 
+        // Previous fallback sessions leave behind db files encrypted with an ephemeral
+        // key that can never be decrypted again; sweep them so they do not accumulate.
+        sweep_orphaned_fallback_dbs(&data_dir, std::process::id());
+
         // Fallback storage is intentionally isolated from the primary DB because
         // keychain access may be unavailable in this mode.
         let db_path = data_dir.join(format!("clipboard-fallback-{}.db", std::process::id()));
@@ -220,9 +226,34 @@ impl ClipboardStorage {
             neural_embedder: Arc::new(Mutex::new(None)),
             memory_index: Arc::new(Mutex::new(MemorySearchIndex::default())),
         };
+        storage.apply_persistent_pragmas()?;
         storage.init_schema()?;
         storage.rebuild_memory_index()?;
         Ok(storage)
+    }
+
+    pub fn clear_all_items(&self) -> Result<()> {
+        let conn = self.open()?;
+        conn.execute("DELETE FROM clipboard_items", [])?;
+        if let Ok(mut index) = self.memory_index.lock() {
+            *index = MemorySearchIndex::default();
+        }
+        if let Ok(mut cache) = self.semantic_embedding_cache.lock() {
+            cache.clear();
+        }
+        if let Ok(mut cache) = self.neural_embedding_cache.lock() {
+            cache.clear();
+        }
+        Ok(())
+    }
+
+    fn apply_persistent_pragmas(&self) -> Result<()> {
+        let conn = self.open()?;
+        // WAL persists in the database file; set once so subsequent connections inherit it.
+        // synchronous=NORMAL pairs safely with WAL and avoids the fsync cost of FULL.
+        let _ = conn.pragma_update(None, "journal_mode", "WAL");
+        let _ = conn.pragma_update(None, "synchronous", "NORMAL");
+        Ok(())
     }
 
     pub fn upsert_clipboard_item(&self, raw_text: &str) -> Result<bool> {
@@ -444,9 +475,8 @@ impl ClipboardStorage {
             };
             let mut semantic_seed_terms = tags_without_bowl(&record.tags);
             if !record.description.is_empty() {
-                semantic_seed_terms.extend(
-                    semantic_tokenize(&record.description.to_ascii_lowercase()),
-                );
+                semantic_seed_terms
+                    .extend(semantic_tokenize(&record.description.to_ascii_lowercase()));
             }
             let record_embedding =
                 self.cached_semantic_embedding(cache_key, &record.content, &semantic_seed_terms);
@@ -1084,7 +1114,12 @@ impl ClipboardStorage {
     }
 
     fn open(&self) -> Result<Connection> {
-        Connection::open(&self.db_path).context("unable to open sqlite database")
+        let conn = Connection::open(&self.db_path).context("unable to open sqlite database")?;
+        // Wait up to 2s when another connection is writing before returning SQLITE_BUSY.
+        // This is necessary because the clipboard watcher, search worker, and UI thread
+        // can all touch the DB concurrently.
+        let _ = conn.busy_timeout(Duration::from_millis(2_000));
+        Ok(conn)
     }
 
     fn init_schema(&self) -> Result<()> {
@@ -1620,6 +1655,32 @@ impl CryptoBox {
     }
 }
 
+fn sweep_orphaned_fallback_dbs(data_dir: &std::path::Path, current_pid: u32) {
+    let Ok(entries) = fs::read_dir(data_dir) else {
+        return;
+    };
+    let current_marker = format!("-{current_pid}.db");
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if !name.starts_with("clipboard-fallback-") {
+            continue;
+        }
+        // Keep the file that belongs to the current process; SQLite may also create
+        // -wal and -shm sidecars which we intentionally leave alone for the live db
+        // and prune for stale ones below.
+        if name.ends_with(&current_marker)
+            || name.ends_with(&format!("-{current_pid}.db-wal"))
+            || name.ends_with(&format!("-{current_pid}.db-shm"))
+        {
+            continue;
+        }
+        let _ = fs::remove_file(entry.path());
+    }
+}
+
 fn classify_clipboard_text(text: &str) -> (ClipboardItemType, Vec<String>) {
     classify_clipboard_text_with_mode(text, SecretClassificationMode::Auto)
 }
@@ -1715,7 +1776,9 @@ fn classify_clipboard_text_with_mode(
                     enriched.insert("k8s".to_owned());
                     enriched.insert("kubernetes".to_owned());
                 }
-                if lower.contains("ansible") || (lower.contains("hosts:") && lower.contains("tasks:")) {
+                if lower.contains("ansible")
+                    || (lower.contains("hosts:") && lower.contains("tasks:"))
+                {
                     enriched.insert("ansible".to_owned());
                 }
             }
@@ -1976,9 +2039,7 @@ fn looks_like_ip_address(text: &str) -> bool {
     // IPv4: four octets separated by dots, each 0-255.
     let parts: Vec<&str> = host.split('.').collect();
     if parts.len() == 4 {
-        return parts
-            .iter()
-            .all(|p| p.parse::<u8>().is_ok());
+        return parts.iter().all(|p| p.parse::<u8>().is_ok());
     }
     // IPv6: contains at least two colons and only hex digits, colons, dots (for mapped v4).
     if value.contains("::") || value.matches(':').count() >= 2 {
@@ -2883,10 +2944,7 @@ fn recency_boost(created_at: &str) -> f32 {
         return 0.0;
     };
 
-    let age_hours = Utc::now()
-        .signed_duration_since(timestamp)
-        .num_minutes() as f64
-        / 60.0;
+    let age_hours = Utc::now().signed_duration_since(timestamp).num_minutes() as f64 / 60.0;
 
     if age_hours <= 0.0 {
         return MAX_BOOST;

@@ -2071,7 +2071,8 @@ impl LauncherView {
                     self.bowl_editor_input_state.selected_range = len..len;
                     self.bowl_editor_input_state.selection_reversed = false;
                     self.bowl_editor_input_state.marked_range = None;
-                    self.bowl_editor_suggestions = self.storage.suggest_bowl_names(&self.bowl_editor_input, 6);
+                    self.bowl_editor_suggestions =
+                        self.storage.suggest_bowl_names(&self.bowl_editor_input, 6);
                     cx.notify();
                 }
                 return;
@@ -2442,7 +2443,11 @@ fn is_sub_split_delimiter(ch: char) -> bool {
 #[cfg(target_os = "macos")]
 fn token_is_sub_splittable(target: &str) -> bool {
     target.chars().any(is_sub_split_delimiter)
-        && target.chars().filter(|ch| is_sub_split_delimiter(*ch)).count() <= 8
+        && target
+            .chars()
+            .filter(|ch| is_sub_split_delimiter(*ch))
+            .count()
+            <= 8
 }
 
 #[cfg(target_os = "macos")]
