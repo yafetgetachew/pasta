@@ -29,3 +29,13 @@ block = "0.1.6"
 cocoa = "0.26.0"
 objc = "0.2.7"
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
+
+# Release binary size/perf tuning. Keep default opt-level = 3 so the interactive
+# launcher stays responsive; shave size via LTO + single codegen unit + symbol
+# strip instead. panic = "unwind" (default) is intentional — the neural init
+# thread and clipboard writer are best-effort and are allowed to die without
+# taking the whole app with them.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
