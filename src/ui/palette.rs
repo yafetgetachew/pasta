@@ -31,7 +31,7 @@ pub(crate) fn palette_for(appearance: WindowAppearance, surface_alpha: f32) -> P
     let mut palette = if dark {
         Palette {
             dark,
-            window_bg: rgba(0x0b0f14b8),
+            window_bg: rgba(0x0b0f1499),
             window_border: rgba(0xffffff16),
             title_text: rgba(0xcbd5e1d9),
             query_placeholder: rgba(0x94a3b8d9),
@@ -47,7 +47,7 @@ pub(crate) fn palette_for(appearance: WindowAppearance, surface_alpha: f32) -> P
     } else {
         Palette {
             dark,
-            window_bg: rgba(0xfffffff2),
+            window_bg: rgba(0xffffff99),
             window_border: rgba(0x0f172a30),
             title_text: rgba(0x0f172ad9),
             query_placeholder: rgba(0x64748bb8),
