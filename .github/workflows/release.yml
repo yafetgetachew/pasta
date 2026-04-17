@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Allow kicking off a release build manually from the Actions tab without
+  # pushing a tag (useful for smoke-testing the workflow itself).
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to stamp into the bundle (no leading v)'
+        required: true
+        default: '0.0.0-dev'
+
+permissions:
+  contents: write  # needed by softprops/action-gh-release to create the Release
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build-and-release:
+    name: Build & publish macOS bundle
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-release
+
+      - name: Resolve release version
+        id: ver
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            # Strip leading 'v' from tag name (v0.1.0 -> 0.1.0).
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "basename=Pasta-v${VERSION}-macos-arm64" >> "$GITHUB_OUTPUT"
+
+      - name: Build Pasta.app
+        env:
+          APP_VERSION: ${{ steps.ver.outputs.version }}
+        run: ./scripts/build-macos-bundle.sh
+
+      - name: Verify bundle signature
+        run: codesign --verify --deep --strict --verbose=2 target/Pasta.app
+
+      - name: Create zip, dmg, and checksums
+        env:
+          BASENAME: ${{ steps.ver.outputs.basename }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          # ditto preserves extended attributes + signature correctly (cp -R
+          # does this on modern macOS too, but ditto is the documented path).
+          ditto -c -k --keepParent "target/Pasta.app" "dist/${BASENAME}.zip"
+
+          # DMG via built-in hdiutil — no homebrew dependency, reliable on CI.
+          # Stage: a temp folder containing Pasta.app + an Applications symlink
+          # so drag-to-install works the moment the DMG mounts.
+          DMG_STAGE="$(mktemp -d)"
+          cp -R "target/Pasta.app" "${DMG_STAGE}/Pasta.app"
+          ln -s /Applications "${DMG_STAGE}/Applications"
+          hdiutil create \
+            -volname "Pasta ${VERSION}" \
+            -srcfolder "${DMG_STAGE}" \
+            -ov \
+            -format UDZO \
+            "dist/${BASENAME}.dmg"
+          rm -rf "${DMG_STAGE}"
+
+          # SHA-256 of both assets so users can verify integrity.
+          cd dist
+          shasum -a 256 "${BASENAME}.zip" "${BASENAME}.dmg" \
+            > "${BASENAME}-SHA256SUMS.txt"
+          cat "${BASENAME}-SHA256SUMS.txt"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Pasta v${{ steps.ver.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          # Auto-generate a changelog from merged PRs since the previous tag.
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(steps.ver.outputs.version, '-') }}
+          files: |
+            dist/${{ steps.ver.outputs.basename }}.zip
+            dist/${{ steps.ver.outputs.basename }}.dmg
+            dist/${{ steps.ver.outputs.basename }}-SHA256SUMS.txt
+          body: |
+            ### Install
+
+            **Quick install (drag-and-drop):**
+            1. Download `${{ steps.ver.outputs.basename }}.dmg`
+            2. Open it and drag **Pasta.app** into **Applications**
+            3. Launch from Spotlight — hit **Option + Space** once it's running
+
+            **Zip alternative:** download `${{ steps.ver.outputs.basename }}.zip`, unzip, move `Pasta.app` into `/Applications/`.
+
+            **First-launch note:** Pasta is ad-hoc signed, not Apple-notarized. If macOS blocks the first launch, either right-click **Pasta.app** → Open → Open, or run:
+            ```
+            xattr -dr com.apple.quarantine /Applications/Pasta.app
+            ```
+
+            **Verify download integrity:**
+            ```
+            shasum -a 256 -c ${{ steps.ver.outputs.basename }}-SHA256SUMS.txt
+            ```
