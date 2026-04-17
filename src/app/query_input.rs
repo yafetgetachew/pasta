@@ -208,9 +208,14 @@ impl GpuiElement for TextInputElement {
         if let Some(selection) = prepaint.selection.take() {
             window.paint_quad(selection);
         }
-        let line = prepaint.line.take().unwrap();
-        line.paint(bounds.origin, window.line_height(), window, cx)
-            .unwrap();
+        let Some(line) = prepaint.line.take() else {
+            // Prepaint should always populate `line`; if it didn't, bail out rather
+            // than aborting the process like an unwrap would.
+            return;
+        };
+        if let Err(err) = line.paint(bounds.origin, window.line_height(), window, cx) {
+            eprintln!("warning: query_input paint failed: {err}");
+        }
 
         if self.enabled
             && focus_handle.is_focused(window)
@@ -557,7 +562,8 @@ impl LauncherView {
         if target == TextInputTarget::Query {
             self.query_did_change(cx);
         } else if target == TextInputTarget::BowlEditor {
-            self.bowl_editor_suggestions = self.storage.suggest_bowl_names(&self.bowl_editor_input, 6);
+            self.bowl_editor_suggestions =
+                self.storage.suggest_bowl_names(&self.bowl_editor_input, 6);
             cx.notify();
         } else {
             cx.notify();
