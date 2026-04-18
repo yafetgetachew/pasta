@@ -76,10 +76,7 @@ fn resolve_app_icon_path() -> Option<String> {
     let exe = env::current_exe().ok()?;
     let exe_parent = exe.parent()?;
 
-    let bundle_icon = exe_parent
-        .parent()?
-        .join("Resources")
-        .join("AppIcon.icns");
+    let bundle_icon = exe_parent.parent()?.join("Resources").join("AppIcon.icns");
     if bundle_icon.exists() {
         return Some(bundle_icon.to_string_lossy().into_owned());
     }
