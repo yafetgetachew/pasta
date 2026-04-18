@@ -43,19 +43,19 @@ pub(crate) fn palette_for(appearance: WindowAppearance, surface_alpha: f32) -> P
     } else {
         Palette {
             dark,
-            window_bg: rgba(0xfffbebad),
-            window_border: rgba(0xf59e0b33),
-            title_text: rgba(0x78350fd9),
-            query_placeholder: rgba(0xb45309c8),
+            window_bg: rgba(0xffffff8c),
+            window_border: rgba(0x0f172a30),
+            title_text: rgba(0x0f172ad9),
+            query_placeholder: rgba(0x64748bb8),
             query_active: rgba(0x020617f2),
-            muted_text: rgba(0x92400ec8),
-            list_divider: rgba(0xf59e0b26),
+            muted_text: rgba(0x334155c4),
+            list_divider: rgba(0x33415520),
             row_text: rgba(0x020617eb),
-            row_meta_text: rgba(0xb45309b8),
+            row_meta_text: rgba(0x475569ab),
             // Neutral hover/selection — no blue tint.
-            row_hover_bg: rgba(0xfbbf2466),
-            selected_bg: rgba(0xf59e0b80),
-            selected_border: rgba(0xd9770638),
+            row_hover_bg: rgba(0x0f172a0c),
+            selected_bg: rgba(0x0f172a14),
+            selected_border: rgba(0x0f172a30),
         }
     };
 
