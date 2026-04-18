@@ -41,6 +41,27 @@ impl LanguageTag {
             Self::Code => "CODE",
         }
     }
+
+    pub(crate) fn storage_alias(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Bash => "bash",
+            Self::Rust => "rust",
+            Self::Python => "python",
+            Self::TypeScript => "typescript",
+            Self::JavaScript => "javascript",
+            Self::Go => "go",
+            Self::Java => "java",
+            Self::Cpp => "cpp",
+            Self::Sql => "sql",
+            Self::Json => "json",
+            Self::Yaml => "yaml",
+            Self::Html => "html",
+            Self::Css => "css",
+            Self::Markdown => "markdown",
+            Self::Toml => "toml",
+            Self::Code => return None,
+        })
+    }
 }
 
 pub(crate) fn detect_language(item_type: ClipboardItemType, content: &str) -> Option<LanguageTag> {

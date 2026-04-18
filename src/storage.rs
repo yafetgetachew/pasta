@@ -3546,6 +3546,16 @@ fn searchable_tag_terms(record: &ClipboardRecord) -> HashSet<String> {
         insert_tag_variants(raw, &mut terms);
     }
 
+    // Merge the UI-facing language detector so `:yaml` (and friends) match items the
+    // user sees labeled that way, even when the stricter storage-side detector
+    // abstained at insert time.
+    if let Some(language) = crate::ui::detect_language(record.item_type, &record.content)
+        && let Some(alias) = language.storage_alias()
+    {
+        terms.insert(alias.to_owned());
+        insert_language_aliases(alias, &mut terms);
+    }
+
     if terms.contains("multiline") {
         terms.insert("multi".to_owned());
     }
@@ -3993,6 +4003,24 @@ mod tests {
         };
 
         assert!(record_matches_query(&record, "rs", true));
+    }
+
+    #[test]
+    fn tag_search_matches_ui_detected_language_when_stored_tag_missing() {
+        // Content the loose UI detector labels YAML but the strict storage
+        // detector skips at insert time (no doc marker, few indented lines).
+        let record = ClipboardRecord {
+            id: 4,
+            item_type: ClipboardItemType::Text,
+            content: "name: widget\nversion: 1.2.3".to_owned(),
+            description: String::new(),
+            tags: vec!["text".to_owned()],
+            parameters: Vec::new(),
+            created_at: "2026-03-11T00:00:00Z".to_owned(),
+        };
+
+        assert!(record_matches_query(&record, "yaml", true));
+        assert!(record_matches_query(&record, "yml", true));
     }
 
     #[test]
