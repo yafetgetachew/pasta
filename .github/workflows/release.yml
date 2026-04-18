@@ -53,6 +53,9 @@ jobs:
       - name: Build Pasta.app
         env:
           APP_VERSION: ${{ steps.ver.outputs.version }}
+          PASTA_ANALYTICS_API_KEY: ${{ secrets.PASTA_ANALYTICS_API_KEY }}
+          PASTA_ANALYTICS_ENDPOINT: ${{ secrets.PASTA_ANALYTICS_ENDPOINT }}
+          PASTA_ANALYTICS_SALT: ${{ secrets.PASTA_ANALYTICS_SALT }}
         run: ./scripts/build-macos-bundle.sh
 
       - name: Verify bundle signature
