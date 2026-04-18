@@ -72,6 +72,31 @@ pub(crate) struct StatusItemRegistration {
 impl Global for StatusItemRegistration {}
 
 #[cfg(target_os = "macos")]
+fn resolve_app_icon_path() -> Option<String> {
+    let exe = env::current_exe().ok()?;
+    let exe_parent = exe.parent()?;
+
+    let bundle_icon = exe_parent
+        .parent()?
+        .join("Resources")
+        .join("AppIcon.icns");
+    if bundle_icon.exists() {
+        return Some(bundle_icon.to_string_lossy().into_owned());
+    }
+
+    let dev_icon = exe_parent
+        .parent()?
+        .parent()?
+        .join("assets")
+        .join("AppIcon.icns");
+    if dev_icon.exists() {
+        return Some(dev_icon.to_string_lossy().into_owned());
+    }
+
+    None
+}
+
+#[cfg(target_os = "macos")]
 fn handle_menu_command(command: MenuCommand, cx: &mut App) {
     match command {
         MenuCommand::ShowLauncher => show_launcher(cx),
@@ -116,17 +141,24 @@ fn handle_menu_command(command: MenuCommand, cx: &mut App) {
             update_font_menu_state(cx);
         }
         MenuCommand::ShowAbout => {
+            let icon_clause = resolve_app_icon_path()
+                .map(|path| {
+                    let escaped = path.replace('\\', "\\\\").replace('"', "\\\"");
+                    format!("with icon (POSIX file \"{}\")", escaped)
+                })
+                .unwrap_or_else(|| "with icon note".to_string());
             let script = format!(
                 "set result to display dialog \"Pasta — v{version}\\n\\n\
                 The clipboard manager for devs and devops.\\n\
                 Blazing-fast, Spotlight-style clipboard launcher\\n\
                 built with Rust and GPUI.\" \
                 with title \"About Pasta\" \
-                buttons {{\"GitHub\", \"OK\"}} default button 2 with icon note\n\
+                buttons {{\"GitHub\", \"OK\"}} default button 2 {icon_clause}\n\
                 if button returned of result is \"GitHub\" then\n\
                   open location \"https://github.com/yafetgetachew/pasta\"\n\
                 end if",
                 version = env!("CARGO_PKG_VERSION"),
+                icon_clause = icon_clause,
             );
             let _ = std::process::Command::new("osascript")
                 .arg("-e")
