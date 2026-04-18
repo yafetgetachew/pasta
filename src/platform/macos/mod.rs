@@ -1,4 +1,6 @@
 #[cfg(target_os = "macos")]
+mod analytics;
+#[cfg(target_os = "macos")]
 mod clipboard;
 #[cfg(target_os = "macos")]
 mod files;
@@ -15,6 +17,8 @@ mod touch_id;
 #[cfg(target_os = "macos")]
 mod window;
 
+#[cfg(target_os = "macos")]
+pub(crate) use analytics::maybe_send_heartbeat;
 #[cfg(target_os = "macos")]
 pub(crate) use clipboard::{
     clipboard_change_count, clipboard_text_hash, parse_custom_tags_input, process_secret_autoclear,
@@ -33,8 +37,9 @@ pub(crate) use launch_agent::{
 pub(crate) use menu::menu_command_from_tag;
 #[cfg(target_os = "macos")]
 pub(crate) use menu::{
-    configure_background_mode, setup_status_item, update_brain_menu_state, update_font_menu_state,
-    update_launch_at_login_menu_state, update_secret_menu_state, update_syntax_menu_state,
+    configure_background_mode, setup_status_item, update_analytics_menu_state,
+    update_brain_menu_state, update_font_menu_state, update_launch_at_login_menu_state,
+    update_secret_menu_state, update_syntax_menu_state,
 };
 #[cfg(target_os = "macos")]
 pub(crate) use style::{

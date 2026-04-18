@@ -232,6 +232,13 @@ impl ClipboardStorage {
         Ok(storage)
     }
 
+    pub fn total_item_count(&self) -> usize {
+        self.memory_index
+            .lock()
+            .map(|index| index.order_desc_ids.len())
+            .unwrap_or(0)
+    }
+
     pub fn clear_all_items(&self) -> Result<()> {
         let conn = self.open()?;
         conn.execute("DELETE FROM clipboard_items", [])?;

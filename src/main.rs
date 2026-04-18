@@ -143,6 +143,7 @@ struct UiStyleState {
     syntax_highlighting: bool,
     secret_auto_clear: bool,
     pasta_brain_enabled: bool,
+    analytics_opt_in: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -157,6 +158,8 @@ struct PersistedUiStyleState {
     secret_auto_clear: bool,
     #[serde(default = "default_pasta_brain_enabled")]
     pasta_brain_enabled: bool,
+    #[serde(default)]
+    analytics_opt_in: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -197,6 +200,12 @@ const MENU_TAG_CLEAR_HISTORY: isize = 307;
 const MENU_TAG_LAUNCH_AT_LOGIN: isize = 308;
 
 #[cfg(target_os = "macos")]
+const MENU_TAG_ANALYTICS_ON: isize = 309;
+
+#[cfg(target_os = "macos")]
+const MENU_TAG_ANALYTICS_OFF: isize = 310;
+
+#[cfg(target_os = "macos")]
 static MENU_COMMAND_TX: OnceLock<mpsc::Sender<MenuCommand>> = OnceLock::new();
 
 #[cfg(target_os = "macos")]
@@ -209,6 +218,7 @@ enum MenuCommand {
     SetSyntaxHighlighting(bool),
     SetSecretAutoClear(bool),
     SetPastaBrain(bool),
+    SetAnalyticsOptIn(bool),
     DownloadBrain,
     RequestClearHistory,
     PerformClearHistory,
@@ -516,6 +526,14 @@ mod tests {
             menu_command_from_tag(MENU_TAG_SECRET_CLEAR_OFF),
             Some(MenuCommand::SetSecretAutoClear(false))
         ));
+        assert!(matches!(
+            menu_command_from_tag(MENU_TAG_ANALYTICS_ON),
+            Some(MenuCommand::SetAnalyticsOptIn(true))
+        ));
+        assert!(matches!(
+            menu_command_from_tag(MENU_TAG_ANALYTICS_OFF),
+            Some(MenuCommand::SetAnalyticsOptIn(false))
+        ));
     }
 }
 
@@ -665,6 +683,9 @@ fn main() {
         spawn_menu_command_listener(cx, menu_rx);
         spawn_launcher_transition_loop(cx);
         spawn_clipboard_watcher(cx);
+
+        let analytics_opt_in = cx.global::<UiStyleState>().analytics_opt_in;
+        maybe_send_heartbeat(storage.clone(), analytics_opt_in);
 
         cx.hide();
     });

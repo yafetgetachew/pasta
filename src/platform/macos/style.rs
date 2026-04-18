@@ -22,6 +22,7 @@ fn default_ui_style_state(default_family: SharedString) -> UiStyleState {
         syntax_highlighting: true,
         secret_auto_clear: true,
         pasta_brain_enabled: true,
+        analytics_opt_in: false,
     }
 }
 
@@ -57,6 +58,7 @@ fn load_ui_style_state(default_family: SharedString) -> UiStyleState {
     style.syntax_highlighting = persisted.syntax_highlighting;
     style.secret_auto_clear = persisted.secret_auto_clear;
     style.pasta_brain_enabled = persisted.pasta_brain_enabled;
+    style.analytics_opt_in = persisted.analytics_opt_in;
     style
 }
 
@@ -72,6 +74,7 @@ fn save_ui_style_state(style: &UiStyleState) {
         syntax_highlighting: style.syntax_highlighting,
         secret_auto_clear: style.secret_auto_clear,
         pasta_brain_enabled: style.pasta_brain_enabled,
+        analytics_opt_in: style.analytics_opt_in,
     }) {
         Ok(serialized) => serialized,
         Err(err) => {

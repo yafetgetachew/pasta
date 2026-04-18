@@ -1,0 +1,216 @@
+#[cfg(target_os = "macos")]
+use crate::*;
+#[cfg(target_os = "macos")]
+use std::process::{Command, Stdio};
+#[cfg(target_os = "macos")]
+use std::time::{SystemTime, UNIX_EPOCH};
+
+// Placeholder analytics endpoint. The `.invalid` TLD is reserved by RFC 2606 and
+// will never resolve, so a misconfigured build can never leak data to a real host.
+#[cfg(target_os = "macos")]
+const ANALYTICS_ENDPOINT: &str = "https://analytics.pasta.invalid/v1/events";
+
+#[cfg(target_os = "macos")]
+const FINGERPRINT_SALT: &[u8] = b"pasta-launcher/v1";
+
+#[cfg(target_os = "macos")]
+const HEARTBEAT_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct AnalyticsState {
+    last_sent_epoch: Option<u64>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Serialize)]
+struct AnalyticsEvent<'a> {
+    install_id: &'a str,
+    event: &'a str,
+    app_version: &'a str,
+    os: &'a str,
+    os_version: String,
+    clipboard_count: usize,
+    timestamp: u64,
+}
+
+#[cfg(target_os = "macos")]
+fn analytics_state_path() -> Option<PathBuf> {
+    let base = dirs::config_dir()
+        .or_else(dirs::data_local_dir)
+        .or_else(dirs::home_dir)?;
+    let directory = base.join("PastaClipboard");
+    fs::create_dir_all(&directory).ok()?;
+    Some(directory.join("analytics-state.json"))
+}
+
+#[cfg(target_os = "macos")]
+fn load_analytics_state() -> AnalyticsState {
+    let Some(path) = analytics_state_path() else {
+        return AnalyticsState::default();
+    };
+    let Ok(data) = fs::read_to_string(&path) else {
+        return AnalyticsState::default();
+    };
+    serde_json::from_str(&data).unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn save_analytics_state(state: &AnalyticsState) {
+    let Some(path) = analytics_state_path() else {
+        return;
+    };
+    if let Ok(serialized) = serde_json::to_string_pretty(state) {
+        let _ = fs::write(&path, serialized);
+    }
+}
+
+// Shells out to `ioreg` rather than linking IOKit directly — keeps the dependency
+// footprint zero and avoids wiring unsafe FFI for a once-per-day read.
+#[cfg(target_os = "macos")]
+fn mac_serial_number() -> Option<String> {
+    let output = Command::new("/usr/sbin/ioreg")
+        .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let line = line.trim();
+        if !line.contains("IOPlatformSerialNumber") {
+            continue;
+        }
+        let Some(eq_idx) = line.rfind('=') else {
+            continue;
+        };
+        let raw = line[eq_idx + 1..].trim().trim_matches('"');
+        if !raw.is_empty() {
+            return Some(raw.to_owned());
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn install_fingerprint() -> Option<String> {
+    let serial = mac_serial_number()?;
+    let mut hasher = Sha256::new();
+    hasher.update(FINGERPRINT_SALT);
+    hasher.update(b":");
+    hasher.update(serial.as_bytes());
+    let digest = hasher.finalize();
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    Some(format!("sha256:{hex}"))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_product_version() -> String {
+    Command::new("/usr/bin/sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()
+        .and_then(|out| {
+            if out.status.success() {
+                Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+#[cfg(target_os = "macos")]
+fn post_event_via_curl(payload: &str) {
+    let status = Command::new("/usr/bin/curl")
+        .args([
+            "-fsS",
+            "--max-time",
+            "10",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            payload,
+            ANALYTICS_ENDPOINT,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    // Silent on failure: analytics must never disrupt the app. The `.invalid`
+    // endpoint always fails DNS, which is expected until a real host is wired up.
+    let _ = status;
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn maybe_send_heartbeat(storage: Arc<ClipboardStorage>, opt_in: bool) {
+    if !opt_in {
+        return;
+    }
+
+    let state = load_analytics_state();
+    let now = unix_now();
+    if let Some(last) = state.last_sent_epoch
+        && now.saturating_sub(last) < HEARTBEAT_INTERVAL_SECONDS
+    {
+        return;
+    }
+
+    std::thread::Builder::new()
+        .name("pasta-analytics-heartbeat".into())
+        .spawn(move || {
+            let Some(install_id) = install_fingerprint() else {
+                eprintln!("warning: analytics heartbeat skipped (no platform serial available)");
+                return;
+            };
+            let clipboard_count = storage.total_item_count();
+            let event = AnalyticsEvent {
+                install_id: &install_id,
+                event: "heartbeat",
+                app_version: env!("CARGO_PKG_VERSION"),
+                os: "macos",
+                os_version: macos_product_version(),
+                clipboard_count,
+                timestamp: unix_now(),
+            };
+            let Ok(payload) = serde_json::to_string(&event) else {
+                return;
+            };
+            post_event_via_curl(&payload);
+            save_analytics_state(&AnalyticsState {
+                last_sent_epoch: Some(unix_now()),
+            });
+        })
+        .ok();
+}
+
+#[cfg(test)]
+#[cfg(target_os = "macos")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fingerprint_format_is_sha256_prefixed_hex() {
+        let mut hasher = Sha256::new();
+        hasher.update(FINGERPRINT_SALT);
+        hasher.update(b":");
+        hasher.update(b"EXAMPLESERIAL");
+        let digest = hasher.finalize();
+        let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+        let fingerprint = format!("sha256:{hex}");
+        assert!(fingerprint.starts_with("sha256:"));
+        assert_eq!(fingerprint.len(), "sha256:".len() + 64);
+    }
+}

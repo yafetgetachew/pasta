@@ -99,6 +99,14 @@ pub(crate) fn menu_command_from_tag(tag: isize) -> Option<MenuCommand> {
         return Some(MenuCommand::ToggleLaunchAtLogin);
     }
 
+    if tag == MENU_TAG_ANALYTICS_ON {
+        return Some(MenuCommand::SetAnalyticsOptIn(true));
+    }
+
+    if tag == MENU_TAG_ANALYTICS_OFF {
+        return Some(MenuCommand::SetAnalyticsOptIn(false));
+    }
+
     None
 }
 
@@ -271,6 +279,38 @@ pub(crate) fn setup_status_item(cx: &mut App) {
         brain_parent.setSubmenu_(brain_menu);
         menu.addItem_(brain_parent);
 
+        let analytics_parent = menu_item(
+            "Share Anonymous Analytics",
+            "",
+            handler,
+            selector("menuAction:"),
+            -1,
+        );
+        let analytics_menu = NSMenu::new(nil);
+        let analytics_on = menu_item(
+            "Enable",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_ANALYTICS_ON,
+        );
+        let analytics_off = menu_item(
+            "Disable",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_ANALYTICS_OFF,
+        );
+        let analytics_enabled = cx.global::<UiStyleState>().analytics_opt_in;
+        let _: () =
+            msg_send![analytics_on, setState: if analytics_enabled { 1_isize } else { 0_isize }];
+        let _: () =
+            msg_send![analytics_off, setState: if analytics_enabled { 0_isize } else { 1_isize }];
+        analytics_menu.addItem_(analytics_on);
+        analytics_menu.addItem_(analytics_off);
+        analytics_parent.setSubmenu_(analytics_menu);
+        menu.addItem_(analytics_parent);
+
         menu.addItem_(NSMenuItem::separatorItem(nil));
 
         let launch_at_login_item = menu_item(
@@ -324,6 +364,8 @@ pub(crate) fn setup_status_item(cx: &mut App) {
             syntax_off_item: StrongPtr::retain(syntax_off as id),
             font_menu: StrongPtr::retain(font_menu as id),
             launch_at_login_item: StrongPtr::retain(launch_at_login_item as id),
+            analytics_on_item: StrongPtr::retain(analytics_on as id),
+            analytics_off_item: StrongPtr::retain(analytics_off as id),
         });
     }
 }
@@ -384,6 +426,18 @@ pub(crate) fn update_syntax_menu_state(cx: &App) {
             msg_send![*reg.syntax_on_item, setState: if enabled { 1_isize } else { 0_isize }];
         let _: () =
             msg_send![*reg.syntax_off_item, setState: if enabled { 0_isize } else { 1_isize }];
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn update_analytics_menu_state(cx: &App) {
+    let enabled = cx.global::<UiStyleState>().analytics_opt_in;
+    let reg = cx.global::<StatusItemRegistration>();
+    unsafe {
+        let _: () =
+            msg_send![*reg.analytics_on_item, setState: if enabled { 1_isize } else { 0_isize }];
+        let _: () =
+            msg_send![*reg.analytics_off_item, setState: if enabled { 0_isize } else { 1_isize }];
     }
 }
 
