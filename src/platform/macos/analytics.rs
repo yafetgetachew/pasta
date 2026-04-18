@@ -24,6 +24,24 @@ const FINGERPRINT_SALT: &[u8] = b"pasta-launcher/v1";
 #[cfg(target_os = "macos")]
 const HEARTBEAT_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 
+// Shared bearer token required by the analytics endpoint. Injected at build time
+// via the PASTA_ANALYTICS_API_KEY environment variable (set by CI from a release
+// secret). A desktop binary cannot keep a secret from anyone who has the `.app`,
+// so this is an anti-abuse measure — it stops drive-by traffic from hitting the
+// endpoint — and not an authentication boundary. Pair with per-install_id rate
+// limiting server-side and rotate the key on each release channel cut.
+//
+// If the variable is unset at build time the constant is `None` and the entire
+// analytics subsystem no-ops: no thread spawned, no DNS lookup, no state write.
+// That is the correct behaviour for local `cargo build`/`cargo run`.
+#[cfg(target_os = "macos")]
+const ANALYTICS_API_KEY: Option<&str> = option_env!("PASTA_ANALYTICS_API_KEY");
+
+#[cfg(target_os = "macos")]
+fn analytics_configured() -> bool {
+    ANALYTICS_API_KEY.is_some_and(|key| !key.is_empty())
+}
+
 #[cfg(target_os = "macos")]
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct AnalyticsState {
@@ -169,7 +187,8 @@ fn unix_now() -> u64 {
 // suspenders outer deadline (12s) in case curl itself wedges before honouring
 // its timer. Either way the thread is never stuck.
 #[cfg(target_os = "macos")]
-fn post_event_via_curl(payload: &str) {
+fn post_event_via_curl(payload: &str, api_key: &str) {
+    let auth_header = format!("Authorization: Bearer {api_key}");
     let mut cmd = Command::new("/usr/bin/curl");
     cmd.args([
         "-fsS",
@@ -179,6 +198,8 @@ fn post_event_via_curl(payload: &str) {
         "POST",
         "-H",
         "Content-Type: application/json",
+        "-H",
+        auth_header.as_str(),
         "-d",
         payload,
         ANALYTICS_ENDPOINT,
@@ -197,6 +218,9 @@ fn post_event_via_curl(payload: &str) {
 // incurs a single Arc clone and the fixed cost of thread creation.
 #[cfg(target_os = "macos")]
 pub(crate) fn maybe_send_heartbeat(storage: Arc<ClipboardStorage>, detailed_opt_in: bool) {
+    if !analytics_configured() {
+        return;
+    }
     spawn_heartbeat(storage, detailed_opt_in, true);
 }
 
@@ -205,6 +229,9 @@ pub(crate) fn maybe_send_heartbeat(storage: Arc<ClipboardStorage>, detailed_opt_
 // detail level immediately, rather than silently waiting out the window.
 #[cfg(target_os = "macos")]
 pub(crate) fn send_heartbeat_now(storage: Arc<ClipboardStorage>, detailed_opt_in: bool) {
+    if !analytics_configured() {
+        return;
+    }
     spawn_heartbeat(storage, detailed_opt_in, false);
 }
 
@@ -226,6 +253,12 @@ fn spawn_heartbeat(storage: Arc<ClipboardStorage>, detailed_opt_in: bool, thrott
 
 #[cfg(target_os = "macos")]
 fn heartbeat_body(storage: Arc<ClipboardStorage>, detailed_opt_in: bool, throttled: bool) {
+    // Re-check inside the worker: spawn_heartbeat's callers already gate on
+    // analytics_configured(), but pulling the key here keeps the invariant
+    // local and removes the risk of a future caller bypassing it.
+    let Some(api_key) = ANALYTICS_API_KEY.filter(|k| !k.is_empty()) else {
+        return;
+    };
     if throttled {
         let state = load_analytics_state();
         if let Some(last) = state.last_sent_epoch
@@ -251,7 +284,7 @@ fn heartbeat_body(storage: Arc<ClipboardStorage>, detailed_opt_in: bool, throttl
     let Ok(payload) = serde_json::to_string(&event) else {
         return;
     };
-    post_event_via_curl(&payload);
+    post_event_via_curl(&payload, api_key);
     save_analytics_state(&AnalyticsState {
         last_sent_epoch: Some(unix_now()),
     });
