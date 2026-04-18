@@ -199,7 +199,6 @@ fn which(program: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-#[cfg(target_os = "macos")]
 fn handle_menu_command(command: MenuCommand, cx: &mut App) {
     match command {
         MenuCommand::ShowLauncher => show_launcher(cx),

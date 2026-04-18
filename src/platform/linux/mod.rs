@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::Instant;
 
 use gpui::{App, Styled, Window, WindowHandle};
@@ -914,6 +914,38 @@ pub(crate) fn update_launch_at_login_menu_state(cx: &App) {
     let _ = registration._handle.update(|tray| {
         tray.launch_at_login_enabled = installed;
     });
+}
+
+// The ksni tray rebuilds its menu from UiStyleState on every sync, so the
+// macOS-granular per-item updaters collapse to a single full refresh here.
+pub(crate) fn update_syntax_menu_state(cx: &App) {
+    update_brain_menu_state(cx);
+}
+
+pub(crate) fn update_secret_menu_state(cx: &App) {
+    update_brain_menu_state(cx);
+}
+
+pub(crate) fn update_analytics_menu_state(cx: &App) {
+    update_brain_menu_state(cx);
+}
+
+pub(crate) fn update_font_menu_state(cx: &App) {
+    update_brain_menu_state(cx);
+}
+
+// Analytics is macOS-only today; these are no-op entry points so the shared
+// menu-command handler compiles on Linux without platform-specific branches.
+pub(crate) fn maybe_send_heartbeat(
+    _storage: Arc<crate::storage::ClipboardStorage>,
+    _detailed_opt_in: bool,
+) {
+}
+
+pub(crate) fn send_heartbeat_now(
+    _storage: Arc<crate::storage::ClipboardStorage>,
+    _detailed_opt_in: bool,
+) {
 }
 
 /// Map a menu tag integer to a MenuCommand. Stub for tests.
