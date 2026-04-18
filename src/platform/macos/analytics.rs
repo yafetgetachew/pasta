@@ -7,11 +7,17 @@ use std::process::{Command, Output, Stdio};
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-// Every subprocess this module spawns (ioreg, sw_vers, curl) must finish inside
-// this window or be killed. Analytics is a side channel; it is never allowed to
+// Every subprocess this module spawns (ioreg, sw_vers) must finish inside this
+// window or be killed. Analytics is a side channel; it is never allowed to
 // leak a thread waiting on a hung child.
 #[cfg(target_os = "macos")]
 const SUBPROCESS_MAX_DURATION: Duration = Duration::from_secs(5);
+
+// Total budget for the outbound HTTP request (connect + TLS + write + read).
+// Enforced by ureq's global timeout, so a hung server or slow network cannot
+// keep the heartbeat thread alive past this deadline.
+#[cfg(target_os = "macos")]
+const HTTP_MAX_DURATION: Duration = Duration::from_secs(10);
 
 // Placeholder analytics endpoint. The `.invalid` TLD is reserved by RFC 2606 and
 // will never resolve, so a misconfigured build can never leak data to a real host.
@@ -183,30 +189,21 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-// Curl's own --max-time guards the transfer; run_bounded is the belt-and-
-// suspenders outer deadline (12s) in case curl itself wedges before honouring
-// its timer. Either way the thread is never stuck.
+// Uses ureq so we stay in-process for the HTTP call: no subprocess spawn, no
+// bearer token in argv (visible to `ps`), no platform coupling to /usr/bin/curl.
+// A one-shot agent with a global timeout guarantees the worker thread exits
+// within HTTP_MAX_DURATION regardless of server or network behaviour. Errors
+// are intentionally swallowed — analytics must never disrupt the app.
 #[cfg(target_os = "macos")]
-fn post_event_via_curl(payload: &str, api_key: &str) {
-    let auth_header = format!("Authorization: Bearer {api_key}");
-    let mut cmd = Command::new("/usr/bin/curl");
-    cmd.args([
-        "-fsS",
-        "--max-time",
-        "10",
-        "-X",
-        "POST",
-        "-H",
-        "Content-Type: application/json",
-        "-H",
-        auth_header.as_str(),
-        "-d",
-        payload,
-        ANALYTICS_ENDPOINT,
-    ]);
-    // Silent on failure: analytics must never disrupt the app. The `.invalid`
-    // endpoint always fails DNS, which is expected until a real host is wired up.
-    let _ = run_bounded(cmd, Duration::from_secs(12));
+fn post_event(event: &AnalyticsEvent<'_>, api_key: &str) {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(HTTP_MAX_DURATION))
+        .build()
+        .into();
+    let _ = agent
+        .post(ANALYTICS_ENDPOINT)
+        .header("Authorization", &format!("Bearer {api_key}"))
+        .send_json(event);
 }
 
 // Baseline heartbeat (install_id + app_version + clipboard_count) runs for every
@@ -281,10 +278,7 @@ fn heartbeat_body(storage: Arc<ClipboardStorage>, detailed_opt_in: bool, throttl
         os_version: detailed_opt_in.then(macos_product_version),
         timestamp: detailed_opt_in.then(unix_now),
     };
-    let Ok(payload) = serde_json::to_string(&event) else {
-        return;
-    };
-    post_event_via_curl(&payload, api_key);
+    post_event(&event, api_key);
     save_analytics_state(&AnalyticsState {
         last_sent_epoch: Some(unix_now()),
     });
