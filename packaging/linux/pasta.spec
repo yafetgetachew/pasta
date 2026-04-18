@@ -6,6 +6,8 @@
 %global debug_package %{nil}
 
 Name:           pasta
+# Version line is rewritten by .github/workflows/release.yml for tagged builds;
+# the 0.1.0 default is the local/mock-build version.
 Version:        0.1.0
 Release:        1%{?dist}
 Summary:        Fast local-first clipboard launcher with search and secrets

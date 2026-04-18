@@ -2,6 +2,35 @@
 name = "pasta-launcher"
 version = "0.1.0"
 edition = "2024"
+description = "Fast local-first clipboard launcher with search, syntax previews, and encrypted secrets."
+license = "MIT"
+homepage = "https://github.com/yafetgetachew/pasta"
+repository = "https://github.com/yafetgetachew/pasta"
+
+# cargo-deb metadata — drives the release workflow's Ubuntu/Debian .deb build.
+# Runtime deps mirror the Requires list in packaging/linux/pasta.spec; asset
+# layout matches scripts/install-linux-app.sh so `apt install ./pasta.deb` and
+# the manual installer produce equivalent on-disk state.
+[package.metadata.deb]
+name = "pasta"
+maintainer = "Yafet Getachew <pasta@yaf.et>"
+section = "utils"
+priority = "optional"
+depends = "libc6, libxkbcommon0, libfontconfig1, libwayland-client0, libdbus-1-3, libsecret-1-0, libssl3 | libssl1.1, policykit-1 | polkitd"
+recommends = "polkit-kde-agent-1 | polkit-gnome"
+suggests = "gnome-shell-extension-appindicator"
+extended-description = """Pasta is a clipboard history launcher designed for speed and local-first privacy. \
+It supports full-text and semantic search, syntax-highlighted previews, tagged collections, \
+and encrypted clipboard secrets that remain masked in the UI until the user re-authenticates \
+through polkit (password or Howdy face recognition)."""
+assets = [
+    ["target/release/pasta-launcher", "usr/bin/", "755"],
+    ["packaging/linux/com.pasta.launcher.desktop", "usr/share/applications/", "644"],
+    ["packaging/linux/com.pasta.launcher.policy", "usr/share/polkit-1/actions/", "644"],
+    ["assets/pasta.png", "usr/share/icons/hicolor/512x512/apps/com.pasta.launcher.png", "644"],
+    ["LICENSE", "usr/share/doc/pasta/LICENSE", "644"],
+    ["README.md", "usr/share/doc/pasta/README.md", "644"],
+]
 
 # Dev builds: opt-level 1 gives ~5-10x faster runtime vs 0, with minimal compile-time cost.
 [profile.dev]

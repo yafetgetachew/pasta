@@ -21,11 +21,45 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
-  build-and-release:
-    name: Build & publish macOS bundle
-    runs-on: macos-latest
-    timeout-minutes: 60
+  resolve-version:
+    name: Resolve release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      basename_macos: ${{ steps.ver.outputs.basename_macos }}
+      basename_deb: ${{ steps.ver.outputs.basename_deb }}
+      basename_rpm: ${{ steps.ver.outputs.basename_rpm }}
+      basename_tgz: ${{ steps.ver.outputs.basename_tgz }}
+      prerelease: ${{ steps.ver.outputs.prerelease }}
+    steps:
+      - name: Compute version + asset basenames
+        id: ver
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            # Strip leading 'v' from tag name (v0.1.0 -> 0.1.0).
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=${VERSION}"                                    >> "$GITHUB_OUTPUT"
+          echo "basename_macos=Pasta-v${VERSION}-macos-arm64"          >> "$GITHUB_OUTPUT"
+          echo "basename_deb=pasta_${VERSION}_amd64"                   >> "$GITHUB_OUTPUT"
+          echo "basename_rpm=pasta-${VERSION}-1.x86_64"                >> "$GITHUB_OUTPUT"
+          echo "basename_tgz=pasta-v${VERSION}-linux-x86_64"           >> "$GITHUB_OUTPUT"
+          # Semver-prerelease detection: anything with a '-' in the version string
+          # (e.g. 0.2.0-rc.1) is flagged as a pre-release on the GitHub side.
+          if [[ "${VERSION}" == *-* ]]; then
+            echo "prerelease=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
 
+  build-macos:
+    name: Build macOS bundle
+    runs-on: macos-latest
+    needs: resolve-version
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,21 +72,9 @@ jobs:
         with:
           shared-key: macos-release
 
-      - name: Resolve release version
-        id: ver
-        run: |
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            VERSION="${{ github.event.inputs.version }}"
-          else
-            # Strip leading 'v' from tag name (v0.1.0 -> 0.1.0).
-            VERSION="${GITHUB_REF_NAME#v}"
-          fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "basename=Pasta-v${VERSION}-macos-arm64" >> "$GITHUB_OUTPUT"
-
       - name: Build Pasta.app
         env:
-          APP_VERSION: ${{ steps.ver.outputs.version }}
+          APP_VERSION: ${{ needs.resolve-version.outputs.version }}
           PASTA_ANALYTICS_API_KEY: ${{ secrets.PASTA_ANALYTICS_API_KEY }}
           PASTA_ANALYTICS_ENDPOINT: ${{ secrets.PASTA_ANALYTICS_ENDPOINT }}
           PASTA_ANALYTICS_SALT: ${{ secrets.PASTA_ANALYTICS_SALT }}
@@ -61,21 +83,19 @@ jobs:
       - name: Verify bundle signature
         run: codesign --verify --deep --strict --verbose=2 target/Pasta.app
 
-      - name: Create zip, dmg, and checksums
+      - name: Stage zip, dmg, and checksums
         env:
-          BASENAME: ${{ steps.ver.outputs.basename }}
-          VERSION: ${{ steps.ver.outputs.version }}
+          BASENAME: ${{ needs.resolve-version.outputs.basename_macos }}
+          VERSION: ${{ needs.resolve-version.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p dist
 
-          # ditto preserves extended attributes + signature correctly (cp -R
-          # does this on modern macOS too, but ditto is the documented path).
+          # ditto preserves extended attributes + signature correctly.
           ditto -c -k --keepParent "target/Pasta.app" "dist/${BASENAME}.zip"
 
-          # DMG via built-in hdiutil — no homebrew dependency, reliable on CI.
-          # Stage: a temp folder containing Pasta.app + an Applications symlink
-          # so drag-to-install works the moment the DMG mounts.
+          # DMG via built-in hdiutil — staged with an Applications symlink so
+          # drag-to-install works the moment the DMG mounts.
           DMG_STAGE="$(mktemp -d)"
           cp -R "target/Pasta.app" "${DMG_STAGE}/Pasta.app"
           ln -s /Applications "${DMG_STAGE}/Applications"
@@ -87,41 +107,280 @@ jobs:
             "dist/${BASENAME}.dmg"
           rm -rf "${DMG_STAGE}"
 
-          # SHA-256 of both assets so users can verify integrity.
           cd dist
           shasum -a 256 "${BASENAME}.zip" "${BASENAME}.dmg" \
             > "${BASENAME}-SHA256SUMS.txt"
           cat "${BASENAME}-SHA256SUMS.txt"
 
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  build-linux-deb:
+    name: Build Linux .deb (Ubuntu/KDE-ready)
+    runs-on: ubuntu-24.04
+    needs: resolve-version
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libxkbcommon-dev \
+            libfontconfig1-dev \
+            libwayland-dev \
+            libdbus-1-dev \
+            libssl-dev \
+            libsecret-1-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-x11-dev \
+            libudev-dev \
+            desktop-file-utils
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-deb-release
+
+      - name: Install cargo-deb
+        run: cargo install --locked cargo-deb
+
+      - name: Stamp version into Cargo.toml
+        env:
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          # Rewrite only the [package] version line; cargo-deb reads it verbatim.
+          sed -i -E "0,/^version = \".*\"$/ s//version = \"${VERSION}\"/" Cargo.toml
+          grep -E '^version' Cargo.toml | head -1
+
+      - name: Build release binary
+        env:
+          PASTA_ANALYTICS_API_KEY: ${{ secrets.PASTA_ANALYTICS_API_KEY }}
+          PASTA_ANALYTICS_ENDPOINT: ${{ secrets.PASTA_ANALYTICS_ENDPOINT }}
+          PASTA_ANALYTICS_SALT: ${{ secrets.PASTA_ANALYTICS_SALT }}
+        run: cargo build --release --locked
+
+      - name: Package .deb
+        run: cargo deb --no-build --no-strip
+
+      - name: Stage DEB + portable tar.gz + checksums
+        env:
+          BASENAME_DEB: ${{ needs.resolve-version.outputs.basename_deb }}
+          BASENAME_TGZ: ${{ needs.resolve-version.outputs.basename_tgz }}
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # cargo-deb drops the package under target/debian/ with the package
+          # name from [package.metadata.deb], not the crate name.
+          DEB_SRC="$(ls target/debian/*.deb | head -1)"
+          cp "${DEB_SRC}" "dist/${BASENAME_DEB}.deb"
+
+          # Portable tarball: the raw binary + packaging assets, same layout
+          # the install-linux-app.sh script expects. Useful for Arch, openSUSE,
+          # and anyone who wants to install without a package manager.
+          STAGE="$(mktemp -d)"
+          mkdir -p "${STAGE}/${BASENAME_TGZ}/bin" \
+                   "${STAGE}/${BASENAME_TGZ}/share/applications" \
+                   "${STAGE}/${BASENAME_TGZ}/share/polkit-1/actions" \
+                   "${STAGE}/${BASENAME_TGZ}/share/icons/hicolor/512x512/apps"
+          install -m 0755 target/release/pasta-launcher \
+            "${STAGE}/${BASENAME_TGZ}/bin/pasta-launcher"
+          install -m 0644 packaging/linux/com.pasta.launcher.desktop \
+            "${STAGE}/${BASENAME_TGZ}/share/applications/"
+          install -m 0644 packaging/linux/com.pasta.launcher.policy \
+            "${STAGE}/${BASENAME_TGZ}/share/polkit-1/actions/"
+          install -m 0644 assets/pasta.png \
+            "${STAGE}/${BASENAME_TGZ}/share/icons/hicolor/512x512/apps/com.pasta.launcher.png"
+          install -m 0644 LICENSE "${STAGE}/${BASENAME_TGZ}/LICENSE"
+          install -m 0644 README.md "${STAGE}/${BASENAME_TGZ}/README.md"
+          install -m 0644 scripts/install-linux-app.sh "${STAGE}/${BASENAME_TGZ}/install.sh" || true
+          tar -C "${STAGE}" -czf "dist/${BASENAME_TGZ}.tar.gz" "${BASENAME_TGZ}"
+          rm -rf "${STAGE}"
+
+          cd dist
+          sha256sum "${BASENAME_DEB}.deb" "${BASENAME_TGZ}.tar.gz" \
+            > "${BASENAME_DEB}-SHA256SUMS.txt"
+          cat "${BASENAME_DEB}-SHA256SUMS.txt"
+
+      - name: Upload DEB artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb-artifacts
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  build-linux-rpm:
+    name: Build Linux .rpm (Fedora/KDE-ready)
+    runs-on: ubuntu-latest
+    needs: resolve-version
+    timeout-minutes: 60
+    # Run the whole job inside a Fedora container so rpmbuild and the matching
+    # BuildRequires resolve against real Fedora packages. The ubuntu-latest
+    # runner is just the host — the build itself never touches apt.
+    container:
+      image: fedora:41
+
+    steps:
+      - name: Install RPM build dependencies
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            rust cargo \
+            gcc gcc-c++ make \
+            rpm-build rpmdevtools \
+            pkgconfig \
+            libxkbcommon-devel \
+            fontconfig-devel \
+            wayland-devel \
+            dbus-devel \
+            openssl-devel \
+            libsecret-devel \
+            systemd-devel \
+            desktop-file-utils \
+            libappstream-glib \
+            git tar
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Mark checkout safe for container git
+        run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-rpm-release
+
+      - name: Stamp version into spec and Cargo.toml
+        env:
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          sed -i -E "s/^Version:[[:space:]]+.*/Version:        ${VERSION}/" packaging/linux/pasta.spec
+          sed -i -E "0,/^version = \".*\"$/ s//version = \"${VERSION}\"/" Cargo.toml
+          grep -E '^Version:' packaging/linux/pasta.spec
+          grep -E '^version'  Cargo.toml | head -1
+
+      - name: Stage source tarball for rpmbuild
+        env:
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          rpmdev-setuptree
+          # The spec's %autosetup expects a top-level dir named pasta-<version>.
+          STAGE="$(mktemp -d)"
+          mkdir -p "${STAGE}/pasta-${VERSION}"
+          # Exclude target/ and .git/ to keep the source tarball small.
+          tar --exclude='./target' --exclude='./.git' --exclude='./dist' \
+              -cf - . | tar -xf - -C "${STAGE}/pasta-${VERSION}"
+          tar -C "${STAGE}" -czf "${HOME}/rpmbuild/SOURCES/pasta-${VERSION}.tar.gz" "pasta-${VERSION}"
+          rm -rf "${STAGE}"
+
+      - name: rpmbuild
+        env:
+          PASTA_ANALYTICS_API_KEY: ${{ secrets.PASTA_ANALYTICS_API_KEY }}
+          PASTA_ANALYTICS_ENDPOINT: ${{ secrets.PASTA_ANALYTICS_ENDPOINT }}
+          PASTA_ANALYTICS_SALT: ${{ secrets.PASTA_ANALYTICS_SALT }}
+        run: |
+          rpmbuild -bb packaging/linux/pasta.spec
+
+      - name: Stage RPM + checksums
+        env:
+          BASENAME_RPM: ${{ needs.resolve-version.outputs.basename_rpm }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          RPM_SRC="$(ls ${HOME}/rpmbuild/RPMS/x86_64/pasta-*.rpm | head -1)"
+          cp "${RPM_SRC}" "dist/${BASENAME_RPM}.rpm"
+          cd dist
+          sha256sum "${BASENAME_RPM}.rpm" > "${BASENAME_RPM}-SHA256SUMS.txt"
+          cat "${BASENAME_RPM}-SHA256SUMS.txt"
+
+      - name: Upload RPM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-rpm-artifacts
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [resolve-version, build-macos, build-linux-deb, build-linux-rpm]
+    timeout-minutes: 10
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded
+
+      - name: Flatten artifacts into a single dist/
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find downloaded -type f -exec cp -v {} dist/ \;
+          ls -la dist/
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Pasta v${{ steps.ver.outputs.version }}
+          name: Pasta v${{ needs.resolve-version.outputs.version }}
           tag_name: ${{ github.ref_name }}
           # Auto-generate a changelog from merged PRs since the previous tag.
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(steps.ver.outputs.version, '-') }}
-          files: |
-            dist/${{ steps.ver.outputs.basename }}.zip
-            dist/${{ steps.ver.outputs.basename }}.dmg
-            dist/${{ steps.ver.outputs.basename }}-SHA256SUMS.txt
+          prerelease: ${{ needs.resolve-version.outputs.prerelease == 'true' }}
+          files: dist/*
           body: |
             ### Install
 
-            **Quick install (drag-and-drop):**
-            1. Download `${{ steps.ver.outputs.basename }}.dmg`
+            #### macOS (Apple Silicon)
+            1. Download `${{ needs.resolve-version.outputs.basename_macos }}.dmg`
             2. Open it and drag **Pasta.app** into **Applications**
             3. Launch from Spotlight — hit **Option + Space** once it's running
 
-            **Zip alternative:** download `${{ steps.ver.outputs.basename }}.zip`, unzip, move `Pasta.app` into `/Applications/`.
+            Zip alternative: `${{ needs.resolve-version.outputs.basename_macos }}.zip`.
 
-            **First-launch note:** Pasta is ad-hoc signed, not Apple-notarized. If macOS blocks the first launch, either right-click **Pasta.app** → Open → Open, or run:
+            First-launch note: Pasta is ad-hoc signed, not Apple-notarized. If macOS
+            blocks the first launch, right-click **Pasta.app** → Open → Open, or run:
             ```
             xattr -dr com.apple.quarantine /Applications/Pasta.app
             ```
 
-            **Verify download integrity:**
+            #### Fedora / KDE (RPM, x86_64)
             ```
-            shasum -a 256 -c ${{ steps.ver.outputs.basename }}-SHA256SUMS.txt
+            sudo dnf install ./${{ needs.resolve-version.outputs.basename_rpm }}.rpm
+            ```
+            The RPM installs the polkit action automatically; secret reveal and
+            clear-history prompts will route through PAM (Howdy if configured).
+
+            #### Ubuntu / KDE (DEB, x86_64)
+            ```
+            sudo apt install ./${{ needs.resolve-version.outputs.basename_deb }}.deb
+            ```
+
+            #### Other Linux (portable tarball)
+            Download `${{ needs.resolve-version.outputs.basename_tgz }}.tar.gz`, extract
+            anywhere, and either run `bin/pasta-launcher` directly or execute the
+            bundled `install.sh` to wire up the .desktop entry, icons, and polkit
+            action into `~/.local/`.
+
+            ### Verify download integrity
+            ```
+            sha256sum -c *-SHA256SUMS.txt
             ```

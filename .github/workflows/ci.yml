@@ -64,6 +64,65 @@ jobs:
           bash -n scripts/build-macos-bundle.sh
           bash -n scripts/make-icon.sh
 
+  lint-and-test-linux:
+    name: Lint, test & build (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libxkbcommon-dev \
+            libfontconfig1-dev \
+            libwayland-dev \
+            libdbus-1-dev \
+            libssl-dev \
+            libsecret-1-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-x11-dev \
+            libudev-dev \
+            desktop-file-utils
+
+      - name: Install Rust stable (with rustfmt + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-stable
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --no-deps
+
+      - name: cargo test
+        run: cargo test --all --no-fail-fast
+        env:
+          RUSTFLAGS: "-D warnings"
+
+      - name: cargo build --release
+        run: cargo build --release
+        env:
+          RUSTFLAGS: "-D warnings"
+
+      - name: Shell script syntax check
+        run: |
+          bash -n scripts/install-linux-app.sh
+          bash -n scripts/uninstall-linux-app.sh
+
   audit:
     name: cargo audit (advisories)
     runs-on: ubuntu-latest
