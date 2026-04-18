@@ -6,6 +6,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use aes_gcm::{
@@ -203,6 +204,7 @@ impl ClipboardStorage {
             neural_embedder: Arc::new(Mutex::new(None)),
             memory_index: Arc::new(Mutex::new(MemorySearchIndex::default())),
         };
+        storage.apply_persistent_pragmas()?;
         storage.init_schema()?;
         storage.rebuild_memory_index()?;
         Ok(storage)
@@ -210,6 +212,13 @@ impl ClipboardStorage {
 
     pub fn bootstrap_fallback(app_dir_name: &str) -> Result<Self> {
         let db_path = fallback_db_path(app_dir_name)?;
+
+        // Previous fallback sessions leave behind db files encrypted with an ephemeral
+        // key that can never be decrypted again; sweep them so they do not accumulate.
+        if let Some(data_dir) = db_path.parent() {
+            sweep_orphaned_fallback_dbs(data_dir, std::process::id());
+        }
+
         let storage = Self {
             db_path,
             crypto: CryptoBox::ephemeral(),
@@ -218,6 +227,7 @@ impl ClipboardStorage {
             neural_embedder: Arc::new(Mutex::new(None)),
             memory_index: Arc::new(Mutex::new(MemorySearchIndex::default())),
         };
+        storage.apply_persistent_pragmas()?;
         storage.init_schema()?;
         storage.rebuild_memory_index()?;
         Ok(storage)
@@ -1082,7 +1092,36 @@ impl ClipboardStorage {
     }
 
     fn open(&self) -> Result<Connection> {
-        Connection::open(&self.db_path).context("unable to open sqlite database")
+        let conn = Connection::open(&self.db_path).context("unable to open sqlite database")?;
+        // Wait up to 2s when another connection is writing before returning SQLITE_BUSY.
+        // This is necessary because the clipboard watcher, search worker, and UI thread
+        // can all touch the DB concurrently.
+        let _ = conn.busy_timeout(Duration::from_millis(2_000));
+        Ok(conn)
+    }
+
+    fn apply_persistent_pragmas(&self) -> Result<()> {
+        let conn = self.open()?;
+        // WAL persists in the database file; set once so subsequent connections inherit it.
+        // synchronous=NORMAL pairs safely with WAL and avoids the fsync cost of FULL.
+        let _ = conn.pragma_update(None, "journal_mode", "WAL");
+        let _ = conn.pragma_update(None, "synchronous", "NORMAL");
+        Ok(())
+    }
+
+    pub fn clear_all_items(&self) -> Result<()> {
+        let conn = self.open()?;
+        conn.execute("DELETE FROM clipboard_items", [])?;
+        if let Ok(mut index) = self.memory_index.lock() {
+            *index = MemorySearchIndex::default();
+        }
+        if let Ok(mut cache) = self.semantic_embedding_cache.lock() {
+            cache.clear();
+        }
+        if let Ok(mut cache) = self.neural_embedding_cache.lock() {
+            cache.clear();
+        }
+        Ok(())
     }
 
     fn init_schema(&self) -> Result<()> {
@@ -1357,6 +1396,32 @@ fn primary_db_path(app_dir_name: &str) -> Result<PathBuf> {
     let db_path = data_dir.join("clipboard.db");
     verify_sqlite_path(&db_path)?;
     Ok(db_path)
+}
+
+fn sweep_orphaned_fallback_dbs(data_dir: &std::path::Path, current_pid: u32) {
+    let Ok(entries) = fs::read_dir(data_dir) else {
+        return;
+    };
+    let current_marker = format!("-{current_pid}.db");
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if !name.starts_with("clipboard-fallback-") {
+            continue;
+        }
+        // Keep the file that belongs to the current process; SQLite may also create
+        // -wal and -shm sidecars which we intentionally leave alone for the live db
+        // and prune for stale ones below.
+        if name.ends_with(&current_marker)
+            || name.ends_with(&format!("-{current_pid}.db-wal"))
+            || name.ends_with(&format!("-{current_pid}.db-shm"))
+        {
+            continue;
+        }
+        let _ = fs::remove_file(entry.path());
+    }
 }
 
 fn fallback_db_path(app_dir_name: &str) -> Result<PathBuf> {
@@ -3298,6 +3363,7 @@ pub(crate) fn decode_f32_vec_base64(encoded: &str) -> Option<Vec<f32>> {
     )
 }
 
+#[cfg(test)]
 pub(crate) fn record_matches_query(record: &ClipboardRecord, query: &str, tag_only: bool) -> bool {
     record_matches_query_indexed(record, query, tag_only, None)
 }
