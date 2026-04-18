@@ -9,7 +9,10 @@
 A blazing-fast, Spotlight-style clipboard launcher built with Rust and [GPUI](https://gpui.rs).  
 Paste smarter — search, transform, parametrize, and organize everything you copy.
 
-[![macOS](https://img.shields.io/badge/macOS-only-000?logo=apple&logoColor=white)](#)
+[![CI](https://github.com/yafetgetachew/pasta/actions/workflows/ci.yml/badge.svg)](https://github.com/yafetgetachew/pasta/actions/workflows/ci.yml)
+[![Release](https://github.com/yafetgetachew/pasta/actions/workflows/release.yml/badge.svg)](https://github.com/yafetgetachew/pasta/releases/latest)
+[![macOS](https://img.shields.io/badge/macOS-supported-000?logo=apple&logoColor=white)](#)
+[![Linux](https://img.shields.io/badge/Linux-supported-FCC624?logo=linux&logoColor=black)](#)
 [![Built with Rust](https://img.shields.io/badge/Built_with-Rust-dea584?logo=rust)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22d3ee.svg)](LICENSE)
 
@@ -23,164 +26,90 @@ Paste smarter — search, transform, parametrize, and organize everything you co
 
 <br>
 
-## Features
+## Highlights
 
-### Instant Search
-Type to fuzzy-search your entire clipboard history — text, commands, JSON, YAML, URLs, certs, and more. Results with smart content-type badges.
-
-### Neural Search
-Pasta ships with an on-device embedding model. Search by *meaning*, not just keywords. Type `"k8s restart command"` and find that `kubectl rollout restart` you copied last week.
-
-### Syntax Highlighting
-Code snippets are automatically highlighted with full syntax coloring for Bash, JSON, YAML, TOML, Python, Rust, Go, SQL, and [more](https://github.com/sublimehq/Packages).
+- **Neural search** — find clips by *meaning*, not just keywords. On-device embeddings, no cloud, no telemetry.
+- **One-key transforms** — shell-quote, base64, JWT decode, JSON format/pretty, URL encode, cert inspect, SHA-256, epoch conversion, and more, a `Tab` away.
+- **Parametrize snippets** — turn any copied command into a reusable template with `{{placeholders}}`, filled in on paste. `Cmd + click` to sub-split tokens like `deployment/checkout-api`.
+- **Pasta Bowls** — organize clips into tagged collections; export and import as YAML to share with your team.
+- **Secrets** — AES-256-GCM encrypted, stored in the macOS Keychain, masked in the UI until revealed.
+- **Syntax highlighting** out of the box for Bash, JSON, YAML, TOML, Python, Rust, Go, SQL, and [many more](https://github.com/sublimehq/Packages).
+- **Native** — glassmorphic UI, dark/light auto, GPU-accelerated rendering. No Electron, no web views. Global hotkey: `Option + Space` on macOS, `Ctrl + Space` on Linux.
 
 <p align="center">
   <img src="docs/screenshots/syntax-highlighting.png" width="720" alt="Syntax highlighting and parametrization" />
 </p>
 
-### ⚡ Transforms
-One-key transforms on any clipboard item. Open the transform menu with `Tab`, then press a shortcut:
-
-| Key | Transform | Description |
-|:---:|-----------|-------------|
-| `s` | Shell quote | Wraps in single quotes, escapes inner quotes |
-| `j` / `J` | JSON encode / decode | String-escapes or unescapes JSON |
-| `f` / `F` | JSON pretty / minify | Pretty-print or compact JSON |
-| `u` / `U` | URL encode / decode | Percent-encodes or decodes URLs |
-| `b` / `B` | Base64 encode / decode | Standard + URL-safe auto-detection |
-| `t` | JWT decode | Decodes header & payload, shows expiry status |
-| `e` | Epoch decode | Unix timestamp ↔ human date (seconds, ms, ISO) |
-| `h` | SHA256 hash | Computes the SHA-256 hex digest |
-| `c` | Count stats | Lines, words, chars, bytes |
-| `p` | Cert info | Parses PEM/DER certificates via OpenSSL |
-
 <p align="center">
   <img src="docs/screenshots/transforms.png" width="720" alt="Transforms menu" />
 </p>
 
-### Parametrize Snippets
-Turn any copied command into a reusable template:
-- Select a snippet → `Cmd+P` → click values to mark as `{{parameters}}`
-- **Smart sub-split**: `Cmd+click` a token like `deployment/checkout-api` to expand it into `deployment` and `checkout-api`, so you can parametrize just the part you need
-- Fill parameters on paste — Pasta prompts you for each value
-
-### Pasta Bowls
-Organize snippets into **bowls** (tagged collections). Export and import bowls as YAML files to share with your team.
-
-### Secrets
-Mark any item as a secret. Secrets are encrypted at rest with AES-256-GCM, stored in the macOS Keychain, and masked in the UI until revealed.
-
-### Native macOS
-- Global hotkey: **`Option + Space`**
-- Glassmorphic UI with dark/light mode auto-detection
-- System tray with menu
-- Launch at login via LaunchAgent
-- Zero Electron, zero web views — pure native rendering - ZED TEAM FTW!
-
 <br>
 
-## Getting Started
+## Install
 
-### Prerequisites
+### macOS
 
-- updated macOS
-- [Rust](https://rustup.rs/) (stable)
-- Xcode Command Line Tools (`xcode-select --install`)
+Requires **Apple Silicon** (M1/M2/M3/M4). Intel Macs: build from source.
 
-### Run from Source
+**From a release (recommended):** grab the latest DMG from the [Releases page](https://github.com/yafetgetachew/pasta/releases/latest), open it, drag **Pasta.app** into **Applications**, then hit `Option + Space`.
+
+Pasta is ad-hoc signed, not Apple-notarized. If Gatekeeper blocks the first launch, either right-click `Pasta.app` → **Open**, or run:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Pasta.app
+```
+
+**From source:**
 
 ```bash
 git clone https://github.com/yafetgetachew/pasta.git
 cd pasta
-cargo run
-```
-
-### Install as App
-
-```bash
 ./scripts/install-macos-app.sh
 ```
 
-This builds a release binary, creates `Pasta.app`, and installs it into `/Applications` (or `~/Applications` if not writable).
+### Linux
 
-You could also just download the bindary from the releases (left panel of GitHub)
+Wayland-first (tested on KDE Plasma and GNOME; requires a compositor that implements `ext-data-control-v1` or `wlr-data-control-v1`). X11 falls back through GPUI's X11 backend.
 
-<br>
+**System dependencies** (Fedora / RHEL):
 
-## ⌨️ Keyboard Shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| `Option + Space` | Toggle Pasta |
-| `Enter` | Copy selected item to clipboard |
-| `Tab` | Open transforms menu |
-| `Cmd + P` | Parametrize snippet |
-| `Cmd + B` | Assign bowl |
-| `Cmd + S` | Mark as secret |
-| `Cmd + I` | Edit description |
-| `Cmd + H` | Toggle command help |
-| `Cmd + D` | Delete item |
-| `↑` / `↓` | Navigate items |
-| `Esc` | Close Pasta |
-
-<br>
-
-## 🏗 Architecture
-
-```
-src/
-├── main.rs            # App entry, hotkey registration, event loop
-├── app/
-│   ├── actions.rs     # All user actions and state mutations
-│   ├── view.rs        # GPUI rendering and layout
-│   ├── query_input.rs # Text input handling and IME support
-│   └── state.rs       # Application state definitions
-├── storage.rs         # SQLite persistence and neural search
-├── transforms/
-│   └── mod.rs         # All transform implementations
-└── platform/
-    └── macos/         # macOS-specific: tray, hotkey, file dialogs
+```bash
+sudo dnf install libxkbcommon-devel fontconfig-devel wayland-devel \
+    dbus-devel openssl-devel libsecret-devel
 ```
 
-**Key dependencies:**
-- [GPUI](https://gpui.rs) — GPU-accelerated native UI framework
-- [rusqlite](https://github.com/rusqlite/rusqlite) — SQLite for clipboard storage
-- [fastembed](https://github.com/anush008/fastembed-rs) — On-device neural embeddings
-- [syntect](https://github.com/trishume/syntect) — Syntax highlighting
-- [global-hotkey](https://github.com/nicegui-dev/global-hotkey) — System-wide hotkey capture
+Debian / Ubuntu equivalents: `libxkbcommon-dev libfontconfig1-dev libwayland-dev libdbus-1-dev libssl-dev libsecret-1-dev`.
+
+**Build from source:**
+
+```bash
+git clone https://github.com/yafetgetachew/pasta.git
+cd pasta
+./scripts/install-linux-app.sh
+```
+
+The install script builds the release binary, drops a `.desktop` entry and icon into `~/.local/share`, and installs the polkit policy that gates secret reveal and clear-history behind the system authentication dialog. Plain `cargo build --release` also works if you prefer to launch from the CLI.
+
+Global hotkey is `Ctrl + Space`. Tray icon requires a StatusNotifierItem host (built-in on KDE, `gnome-shell-extension-appindicator` on GNOME).
+
+**Secrets on Linux.** Revealing a masked entry or clearing clipboard history triggers a polkit prompt backed by PAM. Password works out of the box. If you have [Howdy](https://github.com/boltgolt/howdy) installed and enrolled (`sudo howdy add`) and your distro's `system-auth` stack includes `pam_howdy.so`, face recognition is tried before the password field appears. Verify the action is registered with `pkaction --action-id com.pasta.launcher.reveal-secret`.
+
+On first enable of **Pasta Brain** (neural search), the app downloads a ~90 MB embedding model into the system cache directory (`~/Library/Caches/pasta-launcher/fastembed/` on macOS, `~/.cache/pasta-launcher/fastembed/` on Linux). Offline or firewall? Pasta falls back to keyword search and you can retry from the menu bar.
 
 <br>
 
-## 🤝 Contributing
+## Contributing
 
-Contributions are welcome! Here's how:
-
-1. **Fork** the repository
-2. **Create a branch** for your feature or fix
-   ```bash
-   git checkout -b feature/your-feature
-   ```
-3. **Make your changes** — try to follow the existing code style (Rust 2024 edition, `#[cfg(target_os = "macos")]` guards on platform code)
-4. **Test manually** using the [smoke test checklist](SMOKE_TEST_CHECKLIST.md)
-5. **Submit a pull request** with a clear description
-
-### Ideas for contributions
-- 🐧 Linux support (Wayland/X11 clipboard, tray, hotkey) I might create a separate repo
-- 🪟 Windows support - Not planning to do it now, but if you do let me know!
-- 📋 Image clipboard support - I'm not sure if it's necessary, but if you think it's a good idea and if the UI/UX is bearable, please go ahead!
-- 🔗 More transforms (hex encode/decode, regex extract, markdown strip and any other cool ideas)
-- 🧪 Automated test suite
-- 🌍 i18n / localization
+PRs welcome. Good first targets: Windows port, image clipboard support, more transforms (hex, regex extract, markdown strip), automated tests, i18n. Open an issue first if it's a big change.
 
 <br>
 
-## 📄 License
+## License
 
-MIT License — free to use, modify, and distribute. Just keep the attribution (Yafet Getachew - mailofyafet@gmail.com - @YafetGetch on X *formerly Twitter).
+MIT — free to use, modify, and distribute. Keep the attribution: Yafet Getachew · [@YafetGetch](https://x.com/YafetGetch) · mailofyafet@gmail.com.
 
 See [LICENSE](LICENSE) for the full text.
-
-**Made by [Yafet Getachew](https://github.com/yafetgetachew)**
 
 <br>
 
