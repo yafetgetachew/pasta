@@ -1,6 +1,6 @@
+use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::Instant;
@@ -12,8 +12,8 @@ use ksni::{Icon, ToolTip, Tray};
 use notify_rust::{Hint, Notification, Timeout};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use rfd::FileDialog;
-use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::backend::ObjectId;
+use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::wl_region::WlRegion;
 use wayland_client::protocol::wl_registry::WlRegistry;
@@ -26,14 +26,16 @@ use wayland_protocols::ext::data_control::v1::client::ext_data_control_device_v1
 };
 use wayland_protocols::ext::data_control::v1::client::ext_data_control_manager_v1::ExtDataControlManagerV1;
 use wayland_protocols::ext::data_control::v1::client::ext_data_control_offer_v1::ExtDataControlOfferV1;
+use wayland_protocols_plasma::blur::client::org_kde_kwin_blur::OrgKdeKwinBlur;
+use wayland_protocols_plasma::blur::client::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager;
 use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_device_v1::{
     EVT_DATA_OFFER_OPCODE as WLR_DATA_OFFER_OPCODE, Event as ZwlrDataControlDeviceEvent,
     ZwlrDataControlDeviceV1,
 };
 use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
 use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_offer_v1::ZwlrDataControlOfferV1;
-use wayland_protocols_plasma::blur::client::org_kde_kwin_blur::OrgKdeKwinBlur;
-use wayland_protocols_plasma::blur::client::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager;
+mod polkit;
+
 use wl_clipboard_rs::copy::{MimeType as CopyMimeType, Options as CopyOptions, Source};
 use wl_clipboard_rs::paste::{
     ClipboardType, MimeType as PasteMimeType, Seat, get_contents, get_mime_types_ordered,
@@ -41,9 +43,9 @@ use wl_clipboard_rs::paste::{
 
 use crate::storage::ClipboardStorage;
 use crate::{
-    AutoClearState, FontChoice, LAUNCHER_HEIGHT, LAUNCHER_WIDTH, LauncherExitIntent,
-    LauncherView, MENU_COMMAND_TX, MenuCommand, NEURAL_STATUS, NeuralStatus,
-    SelfClipboardWriteState, ThemeMode, UiStyleState,
+    AutoClearState, FontChoice, LAUNCHER_HEIGHT, LAUNCHER_WIDTH, LauncherExitIntent, LauncherView,
+    MENU_COMMAND_TX, MenuCommand, NEURAL_STATUS, NeuralStatus, SelfClipboardWriteState, ThemeMode,
+    UiStyleState,
 };
 
 // ---------------------------------------------------------------------------
@@ -69,19 +71,22 @@ enum ClipboardManager {
     Ext(ExtDataControlManagerV1),
 }
 
+// Variant payloads are owned solely to keep the underlying Wayland proxies
+// alive for the duration of the monitor; they're never read back.
+#[allow(dead_code)]
 enum ClipboardDevice {
     Zwlr(ZwlrDataControlDeviceV1),
     Ext(ExtDataControlDeviceV1),
 }
 
 struct WaylandClipboardMonitorState {
+    #[allow(dead_code)]
     devices: Vec<ClipboardDevice>,
 }
 
 static CLIPBOARD_CHANGE_STATE: OnceLock<Mutex<ClipboardChangeState>> = OnceLock::new();
 static WAYLAND_CLIPBOARD_CHANGE_COUNT: AtomicI64 = AtomicI64::new(0);
 static WAYLAND_CLIPBOARD_MONITOR_START: OnceLock<()> = OnceLock::new();
-static KDE_BLUR_APPLIED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 pub(crate) fn clipboard_change_count() -> i64 {
     if is_wayland_session() {
@@ -464,27 +469,18 @@ pub(crate) fn setup_hotkey(_cx: &mut App) {
 }
 
 // ---------------------------------------------------------------------------
-// Autostart (Phase 3) — replaces launch_agent on Linux
+// Autostart (Phase 3) — XDG counterpart to macOS launch_agent
 // ---------------------------------------------------------------------------
 
-/// Ensure the app is registered for autostart via XDG autostart.
-pub(crate) fn ensure_launch_agent_registered() {
-    let Some(autostart_dir) = dirs::config_dir().map(|d| d.join("autostart")) else {
-        eprintln!("warning: unable to determine XDG config directory for autostart");
-        return;
-    };
+fn autostart_desktop_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("autostart").join("pasta.desktop"))
+}
 
-    if let Err(err) = std::fs::create_dir_all(&autostart_dir) {
-        eprintln!("warning: unable to create autostart directory '{autostart_dir:?}': {err}");
-        return;
-    }
-
-    let desktop_path = autostart_dir.join("pasta.desktop");
+fn render_autostart_entry() -> String {
     let exe_path = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "pasta-launcher".to_owned());
-
-    let desktop_entry = format!(
+    format!(
         "[Desktop Entry]\n\
          Type=Application\n\
          Name=Pasta\n\
@@ -493,11 +489,59 @@ pub(crate) fn ensure_launch_agent_registered() {
          Terminal=false\n\
          StartupNotify=false\n\
          X-GNOME-Autostart-enabled=true\n"
-    );
+    )
+}
 
-    match std::fs::write(&desktop_path, desktop_entry) {
-        Ok(()) => eprintln!("info: autostart registered at {desktop_path:?}"),
-        Err(err) => eprintln!("warning: failed to write autostart file '{desktop_path:?}': {err}"),
+pub(crate) fn launch_agent_is_installed() -> bool {
+    autostart_desktop_path().is_some_and(|path| path.exists())
+}
+
+/// Called once on startup. If an autostart entry already exists, refresh its
+/// Exec= line so app updates keep working. Never create a new entry here —
+/// that is reserved for an explicit user opt-in via the tray menu.
+pub(crate) fn ensure_launch_agent_registered() {
+    let Some(desktop_path) = autostart_desktop_path() else {
+        return;
+    };
+    if !desktop_path.exists() {
+        return;
+    }
+    let entry = render_autostart_entry();
+    let should_write = match std::fs::read_to_string(&desktop_path) {
+        Ok(existing) => existing != entry,
+        Err(_) => true,
+    };
+    if should_write && let Err(err) = std::fs::write(&desktop_path, entry) {
+        eprintln!("warning: unable to refresh autostart entry: {err}");
+    }
+}
+
+pub(crate) fn install_launch_agent() -> std::io::Result<()> {
+    let Some(desktop_path) = autostart_desktop_path() else {
+        return Err(std::io::Error::other("config directory unavailable"));
+    };
+    if let Some(parent) = desktop_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let entry = render_autostart_entry();
+    let should_write = match std::fs::read_to_string(&desktop_path) {
+        Ok(existing) => existing != entry,
+        Err(_) => true,
+    };
+    if should_write {
+        std::fs::write(&desktop_path, entry)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn uninstall_launch_agent() -> std::io::Result<()> {
+    let Some(desktop_path) = autostart_desktop_path() else {
+        return Ok(());
+    };
+    match std::fs::remove_file(&desktop_path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
     }
 }
 
@@ -519,6 +563,7 @@ struct PastaTray {
     secret_auto_clear: bool,
     pasta_brain_enabled: bool,
     neural_status: NeuralStatus,
+    launch_at_login_enabled: bool,
 }
 
 impl PastaTray {
@@ -529,6 +574,7 @@ impl PastaTray {
         self.secret_auto_clear = style.secret_auto_clear;
         self.pasta_brain_enabled = style.pasta_brain_enabled;
         self.neural_status = neural_status;
+        self.launch_at_login_enabled = launch_agent_is_installed();
     }
 }
 
@@ -621,7 +667,9 @@ impl Tray for PastaTray {
                         checked: self.theme_mode == ThemeMode::System,
                         activate: Box::new(|tray: &mut Self| {
                             tray.theme_mode = ThemeMode::System;
-                            let _ = tray.menu_tx.send(MenuCommand::SetThemeMode(ThemeMode::System));
+                            let _ = tray
+                                .menu_tx
+                                .send(MenuCommand::SetThemeMode(ThemeMode::System));
                         }),
                         ..Default::default()
                     }
@@ -631,7 +679,9 @@ impl Tray for PastaTray {
                         checked: self.theme_mode == ThemeMode::Light,
                         activate: Box::new(|tray: &mut Self| {
                             tray.theme_mode = ThemeMode::Light;
-                            let _ = tray.menu_tx.send(MenuCommand::SetThemeMode(ThemeMode::Light));
+                            let _ = tray
+                                .menu_tx
+                                .send(MenuCommand::SetThemeMode(ThemeMode::Light));
                         }),
                         ..Default::default()
                     }
@@ -641,7 +691,9 @@ impl Tray for PastaTray {
                         checked: self.theme_mode == ThemeMode::Dark,
                         activate: Box::new(|tray: &mut Self| {
                             tray.theme_mode = ThemeMode::Dark;
-                            let _ = tray.menu_tx.send(MenuCommand::SetThemeMode(ThemeMode::Dark));
+                            let _ = tray
+                                .menu_tx
+                                .send(MenuCommand::SetThemeMode(ThemeMode::Dark));
                         }),
                         ..Default::default()
                     }
@@ -657,7 +709,7 @@ impl Tray for PastaTray {
                 label: "Syntax Highlighting".into(),
                 submenu: vec![
                     CheckmarkItem {
-                        label: "Enabled".into(),
+                        label: "Enable".into(),
                         checked: self.syntax_highlighting,
                         activate: Box::new(|tray: &mut Self| {
                             tray.syntax_highlighting = true;
@@ -667,7 +719,7 @@ impl Tray for PastaTray {
                     }
                     .into(),
                     CheckmarkItem {
-                        label: "Disabled".into(),
+                        label: "Disable".into(),
                         checked: !self.syntax_highlighting,
                         activate: Box::new(|tray: &mut Self| {
                             tray.syntax_highlighting = false;
@@ -687,7 +739,7 @@ impl Tray for PastaTray {
                 label: "Secret Copy Auto-Clear".into(),
                 submenu: vec![
                     CheckmarkItem {
-                        label: "Enabled (30s)".into(),
+                        label: "Enable (30s)".into(),
                         checked: self.secret_auto_clear,
                         activate: Box::new(|tray: &mut Self| {
                             tray.secret_auto_clear = true;
@@ -697,7 +749,7 @@ impl Tray for PastaTray {
                     }
                     .into(),
                     CheckmarkItem {
-                        label: "Disabled".into(),
+                        label: "Disable".into(),
                         checked: !self.secret_auto_clear,
                         activate: Box::new(|tray: &mut Self| {
                             tray.secret_auto_clear = false;
@@ -717,7 +769,7 @@ impl Tray for PastaTray {
                 label: "Pasta Brain".into(),
                 submenu: vec![
                     CheckmarkItem {
-                        label: "Enabled".into(),
+                        label: "Enable".into(),
                         checked: self.pasta_brain_enabled,
                         activate: Box::new(|tray: &mut Self| {
                             tray.pasta_brain_enabled = true;
@@ -727,7 +779,7 @@ impl Tray for PastaTray {
                     }
                     .into(),
                     CheckmarkItem {
-                        label: "Disabled".into(),
+                        label: "Disable".into(),
                         checked: !self.pasta_brain_enabled,
                         activate: Box::new(|tray: &mut Self| {
                             tray.pasta_brain_enabled = false;
@@ -746,6 +798,31 @@ impl Tray for PastaTray {
                     }
                     .into(),
                 ],
+                ..Default::default()
+            }
+            .into(),
+        );
+
+        items.push(MenuItem::Separator);
+
+        items.push(
+            CheckmarkItem {
+                label: "Launch at Login".into(),
+                checked: self.launch_at_login_enabled,
+                activate: Box::new(|tray: &mut Self| {
+                    let _ = tray.menu_tx.send(MenuCommand::ToggleLaunchAtLogin);
+                }),
+                ..Default::default()
+            }
+            .into(),
+        );
+
+        items.push(
+            StandardItem {
+                label: "Clear Clipboard History…".into(),
+                activate: Box::new(|tray: &mut Self| {
+                    let _ = tray.menu_tx.send(MenuCommand::RequestClearHistory);
+                }),
                 ..Default::default()
             }
             .into(),
@@ -798,6 +875,7 @@ pub(crate) fn setup_status_item(cx: &mut App) {
         secret_auto_clear: style.secret_auto_clear,
         pasta_brain_enabled: style.pasta_brain_enabled,
         neural_status,
+        launch_at_login_enabled: launch_agent_is_installed(),
     };
 
     match tray.assume_sni_available(true).spawn() {
@@ -828,6 +906,16 @@ pub(crate) fn update_brain_menu_state(cx: &App) {
     });
 }
 
+pub(crate) fn update_launch_at_login_menu_state(cx: &App) {
+    let Some(registration) = cx.try_global::<StatusItemRegistration>() else {
+        return;
+    };
+    let installed = launch_agent_is_installed();
+    let _ = registration._handle.update(|tray| {
+        tray.launch_at_login_enabled = installed;
+    });
+}
+
 /// Map a menu tag integer to a MenuCommand. Stub for tests.
 #[cfg(test)]
 pub(crate) fn menu_command_from_tag(tag: isize) -> Option<crate::MenuCommand> {
@@ -846,6 +934,8 @@ pub(crate) fn menu_command_from_tag(tag: isize) -> Option<crate::MenuCommand> {
         MENU_TAG_BRAIN_ON => Some(MenuCommand::SetPastaBrain(true)),
         MENU_TAG_BRAIN_OFF => Some(MenuCommand::SetPastaBrain(false)),
         MENU_TAG_BRAIN_DOWNLOAD => Some(MenuCommand::DownloadBrain),
+        MENU_TAG_CLEAR_HISTORY => Some(MenuCommand::RequestClearHistory),
+        MENU_TAG_LAUNCH_AT_LOGIN => Some(MenuCommand::ToggleLaunchAtLogin),
         t if t >= MENU_TAG_FONT_BASE && t < MENU_TAG_FONT_BASE + FontChoice::ALL.len() as isize => {
             Some(MenuCommand::SetFont(
                 FontChoice::ALL[(t - MENU_TAG_FONT_BASE) as usize],
@@ -874,7 +964,7 @@ fn ui_style_state_path() -> Option<PathBuf> {
 fn default_ui_style_state(default_family: gpui::SharedString) -> UiStyleState {
     UiStyleState {
         family: default_family,
-        surface_alpha: 0.10,
+        surface_alpha: 1.00,
         theme_mode: ThemeMode::System,
         syntax_highlighting: true,
         secret_auto_clear: true,
@@ -909,7 +999,7 @@ fn load_ui_style_state(default_family: gpui::SharedString) -> UiStyleState {
     if !family.is_empty() {
         style.family = family.to_owned().into();
     }
-    style.surface_alpha = persisted.surface_alpha.clamp(0.10, 1.0);
+    style.surface_alpha = persisted.surface_alpha.clamp(0.45, 1.0);
     style.theme_mode = persisted.theme_mode;
     style.syntax_highlighting = persisted.syntax_highlighting;
     style.secret_auto_clear = persisted.secret_auto_clear;
@@ -1042,10 +1132,11 @@ pub(crate) fn apply_style_to_open_window(cx: &mut App) {
 // Touch ID / Auth (Phase 3)
 // ---------------------------------------------------------------------------
 
-/// Authenticate the user (Touch ID on macOS). Stub always returns true.
-pub(crate) fn authenticate_with_touch_id(_reason: &str) -> bool {
-    // On Linux, skip biometric auth for MVP. Always grant access.
-    true
+/// Authenticate the user. On Linux this goes through polkit; the system's
+/// polkit agent shows the prompt and routes through PAM, which picks up
+/// howdy or fingerprint modules when the distro has them configured.
+pub(crate) fn authenticate_with_touch_id(reason: &str) -> bool {
+    polkit::authenticate(polkit::ACTION_REVEAL_SECRET, reason)
 }
 
 // ---------------------------------------------------------------------------
@@ -1254,21 +1345,10 @@ fn try_apply_kde_wayland_blur(window: &Window) {
         return;
     }
 
-    let surface_key = format!("{:p}", surface_ptr);
-    let applied = KDE_BLUR_APPLIED.get_or_init(|| Mutex::new(HashSet::new()));
-    {
-        let guard = match applied.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        if guard.contains(&surface_key) {
-            return;
-        }
-    }
-
-    let backend = unsafe {
-        wayland_client::backend::Backend::from_foreign_display(display_ptr.cast())
-    };
+    // No surface-pointer dedup: the Wayland client recycles pointers across
+    // window lifetimes, and KWin handles duplicate blur proxies idempotently.
+    let backend =
+        unsafe { wayland_client::backend::Backend::from_foreign_display(display_ptr.cast()) };
     let conn = Connection::from_backend(backend);
     let (globals, mut event_queue) = match registry_queue_init::<KdeBlurState>(&conn) {
         Ok(parts) => parts,
@@ -1296,24 +1376,13 @@ fn try_apply_kde_wayland_blur(window: &Window) {
     };
 
     let region = compositor.create_region(&qh, ());
-    add_rounded_blur_region(
-        &region,
-        LAUNCHER_WIDTH as i32,
-        LAUNCHER_HEIGHT as i32,
-        22,
-    );
+    add_rounded_blur_region(&region, LAUNCHER_WIDTH as i32, LAUNCHER_HEIGHT as i32, 22);
 
     let blur = blur_manager.create(&surface, &qh, ());
     blur.set_region(Some(&region));
     blur.commit();
     surface.commit();
     let _ = event_queue.roundtrip(&mut KdeBlurState);
-
-    let mut guard = match applied.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    guard.insert(surface_key);
 }
 
 fn add_rounded_blur_region(region: &WlRegion, width: i32, height: i32, radius: i32) {
@@ -1330,8 +1399,8 @@ fn add_rounded_blur_region(region: &WlRegion, width: i32, height: i32, radius: i
     // Approximate rounded corners with horizontal scanlines.
     for y in 0..radius {
         let dy = (radius - y) as f32 - 0.5;
-        let inset = (radius as f32 - (radius as f32 * radius as f32 - dy * dy).sqrt())
-            .floor() as i32;
+        let inset =
+            (radius as f32 - (radius as f32 * radius as f32 - dy * dy).sqrt()).floor() as i32;
         let span = width - inset * 2;
         if span > 0 {
             region.add(inset, y, span, 1);
