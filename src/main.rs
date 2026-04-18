@@ -86,11 +86,14 @@ unsafe extern "C" {}
 
 const LAUNCHER_WIDTH: f32 = 860.0;
 const LAUNCHER_HEIGHT: f32 = 560.0;
+#[cfg(target_os = "macos")]
 const TOP_OFFSET: f32 = 146.0;
+#[cfg(target_os = "macos")]
 const LAUNCH_AGENT_LABEL: &str = "com.pasta.launcher";
 const PREVIEW_LINE_LIMIT: usize = 4;
 const PREVIEW_WRAP_RUN: usize = 96;
 const WINDOW_OPEN_DURATION_MS: u64 = 120;
+#[cfg(not(target_os = "linux"))]
 const WINDOW_CLOSE_DURATION_MS: u64 = 95;
 const WINDOW_CLOSE_EARLY_EXIT_ALPHA: f32 = 0.08;
 const MAX_VISIBLE_TAG_CHIPS: usize = 5;
@@ -159,23 +162,41 @@ impl ThemeMode {
     }
 }
 
+// Menu-item tag constants. Used by the macOS NSMenu dispatch table and by the
+// Linux tray-menu unit tests; the Linux runtime dispatches without integer
+// tags. Gate accordingly so release builds on Linux don't flag them unused.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MENU_TAG_SHOW: isize = 1;
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MENU_TAG_QUIT: isize = 2;
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MENU_TAG_FONT_BASE: isize = 100;
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MENU_TAG_ABOUT: isize = 200;
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MENU_TAG_SYNTAX_ON: isize = 300;
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MENU_TAG_SYNTAX_OFF: isize = 301;
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MENU_TAG_SECRET_CLEAR_ON: isize = 302;
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MENU_TAG_SECRET_CLEAR_OFF: isize = 303;
-
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MENU_TAG_BRAIN_ON: isize = 304;
-
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MENU_TAG_BRAIN_OFF: isize = 305;
-
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MENU_TAG_BRAIN_DOWNLOAD: isize = 306;
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MENU_TAG_THEME_SYSTEM: isize = 307;
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MENU_TAG_THEME_LIGHT: isize = 308;
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MENU_TAG_THEME_DARK: isize = 309;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_CLEAR_HISTORY: isize = 310;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_LAUNCH_AT_LOGIN: isize = 311;
 
 static MENU_COMMAND_TX: OnceLock<mpsc::Sender<MenuCommand>> = OnceLock::new();
 
@@ -190,6 +211,9 @@ pub(crate) enum MenuCommand {
     SetSecretAutoClear(bool),
     SetPastaBrain(bool),
     DownloadBrain,
+    RequestClearHistory,
+    PerformClearHistory,
+    ToggleLaunchAtLogin,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -466,9 +490,33 @@ pub(crate) fn spawn_neural_init(storage: Arc<ClipboardStorage>) {
     if let Ok(mut status) = NEURAL_STATUS.lock() {
         *status = NeuralStatus::Loading;
     }
+
+    // Pin the fastembed cache to a stable, user-scoped location so the model isn't
+    // re-downloaded whenever the app launches from a different working directory
+    // (e.g. Finder vs. Terminal vs. the .app bundle). FASTEMBED_CACHE_DIR is read
+    // by fastembed at TextEmbedding::try_new time.
+    let cache_dir = dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("pasta-launcher")
+        .join("fastembed");
+    let _ = fs::create_dir_all(&cache_dir);
+    // SAFETY: called once during startup before any fastembed init reads the env;
+    // no other thread is racing this write. (Rust 2024 marks set_var as unsafe.)
+    unsafe {
+        env::set_var("FASTEMBED_CACHE_DIR", &cache_dir);
+    }
+    let model_dir = cache_dir.join("models--Qdrant--all-MiniLM-L6-v2-onnx");
+    let model_cached = model_dir.exists();
+
     std::thread::Builder::new()
         .name("pasta-neural-init".into())
         .spawn(move || {
+            if !model_cached {
+                show_macos_notification(
+                    "Pasta Brain",
+                    "Downloading semantic search model (~90 MB)…",
+                );
+            }
             eprintln!("info: initializing neural embedder (may download model on first run)...");
             match neural_embed::NeuralEmbedder::try_new() {
                 Ok(embedder) => {
@@ -477,6 +525,12 @@ pub(crate) fn spawn_neural_init(storage: Arc<ClipboardStorage>) {
                         *status = NeuralStatus::Ready;
                     }
                     eprintln!("info: neural embedder ready");
+                    if !model_cached {
+                        show_macos_notification(
+                            "Pasta Brain",
+                            "Model downloaded. Semantic search is ready.",
+                        );
+                    }
                 }
                 Err(err) => {
                     if let Ok(mut status) = NEURAL_STATUS.lock() {
@@ -484,6 +538,10 @@ pub(crate) fn spawn_neural_init(storage: Arc<ClipboardStorage>) {
                     }
                     eprintln!("warning: neural embedder unavailable: {err}");
                     eprintln!("warning: semantic search will use feature-hash only");
+                    show_macos_notification(
+                        "Pasta Brain",
+                        "Model unavailable — using keyword search. Retry from the menu bar.",
+                    );
                 }
             }
         })
