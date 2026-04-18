@@ -200,9 +200,14 @@ impl GpuiElement for TextInputElement {
         if let Some(selection) = prepaint.selection.take() {
             window.paint_quad(selection);
         }
-        let line = prepaint.line.take().unwrap();
-        line.paint(bounds.origin, window.line_height(), window, cx)
-            .unwrap();
+        let Some(line) = prepaint.line.take() else {
+            // Prepaint should always populate `line`; if it didn't, bail out rather
+            // than aborting the process like an unwrap would.
+            return;
+        };
+        if let Err(err) = line.paint(bounds.origin, window.line_height(), window, cx) {
+            eprintln!("warning: query_input paint failed: {err}");
+        }
 
         if self.enabled
             && focus_handle.is_focused(window)
@@ -747,7 +752,9 @@ impl LauncherView {
         let content = self.text_input_content(target).to_owned();
         let selection = clamp_text_range(&content, &self.text_input_state(target).selected_range);
         if !selection.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(content[selection.clone()].to_string()));
+            cx.write_to_clipboard(ClipboardItem::new_string(
+                content[selection.clone()].to_string(),
+            ));
             #[cfg(target_os = "linux")]
             write_clipboard_text(&content[selection]);
         }
@@ -760,7 +767,9 @@ impl LauncherView {
         let content = self.text_input_content(target).to_owned();
         let selection = clamp_text_range(&content, &self.text_input_state(target).selected_range);
         if !selection.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(content[selection.clone()].to_string()));
+            cx.write_to_clipboard(ClipboardItem::new_string(
+                content[selection.clone()].to_string(),
+            ));
             #[cfg(target_os = "linux")]
             write_clipboard_text(&content[selection]);
             self.replace_text_in_range(None, "", window, cx);

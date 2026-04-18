@@ -2260,10 +2260,8 @@ impl LauncherView {
             modifiers.control && !modifiers.platform
         };
 
-        let command_navigation = action_mod
-            && !modifiers.shift
-            && !modifiers.alt
-            && !modifiers.function;
+        let command_navigation =
+            action_mod && !modifiers.shift && !modifiers.alt && !modifiers.function;
 
         if self.info_editor_target_id.is_some() {
             self.handle_info_editor_keystroke(event, cx);
@@ -2347,105 +2345,57 @@ impl LauncherView {
                 self.delete_selected_item(cx);
                 return;
             }
-            "d" if action_mod
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "d" if action_mod && !modifiers.alt && !modifiers.function => {
                 self.delete_selected_item(cx);
                 return;
             }
-            "r" if action_mod
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "r" if action_mod && !modifiers.alt && !modifiers.function => {
                 self.reveal_and_copy_selected_secret(cx);
                 return;
             }
-            "s" if action_mod
-                && modifiers.shift
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "s" if action_mod && modifiers.shift && !modifiers.alt && !modifiers.function => {
                 self.toggle_selected_item_secret_state(cx);
                 return;
             }
-            "h" if action_mod
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "h" if action_mod && !modifiers.alt && !modifiers.function => {
                 self.show_command_help = !self.show_command_help;
                 cx.notify();
                 return;
             }
-            "t" if action_mod
-                && modifiers.shift
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "t" if action_mod && modifiers.shift && !modifiers.alt && !modifiers.function => {
                 self.remove_custom_tags_from_selected(cx);
                 return;
             }
-            "t" if action_mod
-                && !modifiers.shift
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "t" if action_mod && !modifiers.shift && !modifiers.alt && !modifiers.function => {
                 self.add_custom_tags_to_selected(cx);
                 return;
             }
-            "b" if action_mod
-                && modifiers.shift
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "b" if action_mod && modifiers.shift && !modifiers.alt && !modifiers.function => {
                 self.remove_bowl_from_selected(cx);
                 return;
             }
-            "b" if action_mod
-                && !modifiers.shift
-                && modifiers.alt
-                && !modifiers.function =>
-            {
+            "b" if action_mod && !modifiers.shift && modifiers.alt && !modifiers.function => {
                 self.import_bowl_from_picker(cx);
                 return;
             }
-            "b" if action_mod
-                && !modifiers.shift
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "b" if action_mod && !modifiers.shift && !modifiers.alt && !modifiers.function => {
                 self.start_bowl_editor_for_selected(cx);
                 return;
             }
-            "p" if action_mod
-                && !modifiers.shift
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "p" if action_mod && !modifiers.shift && !modifiers.alt && !modifiers.function => {
                 self.start_parameter_editor_for_selected(cx);
                 return;
             }
-            "i" if action_mod
-                && !modifiers.shift
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "i" if action_mod && !modifiers.shift && !modifiers.alt && !modifiers.function => {
                 self.start_info_editor_for_selected(cx);
                 return;
             }
-            "q" if action_mod
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "q" if action_mod && !modifiers.alt && !modifiers.function => {
                 self.begin_close_transition(LauncherExitIntent::Hide);
                 cx.notify();
                 return;
             }
-            "backspace"
-                if action_mod
-                    && !modifiers.alt
-                    && !modifiers.function =>
-            {
+            "backspace" if action_mod && !modifiers.alt && !modifiers.function => {
                 self.delete_selected_item(cx);
                 return;
             }

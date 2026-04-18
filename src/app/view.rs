@@ -102,16 +102,13 @@ impl Render for LauncherView {
                             .text_color(palette.title_text)
                             .child("PASTA"),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(palette.muted_text)
-                            .child(if cfg!(target_os = "macos") {
-                                "⌥ + SPACE"
-                            } else {
-                                "Meta + Space"
-                            }),
-                    ),
+                    .child(div().text_xs().text_color(palette.muted_text).child(
+                        if cfg!(target_os = "macos") {
+                            "⌥ + SPACE"
+                        } else {
+                            "Meta + Space"
+                        },
+                    )),
             )
             .child({
                 let mut query_container = div()
@@ -1369,10 +1366,8 @@ impl Render for LauncherView {
                         div()
                             .w_full()
                             .flex()
-                            .flex_row()
-                            .flex_wrap()
-                            .items_start()
-                            .gap_2()
+                            .flex_col()
+                            .gap_1()
                             .child(render_help_run(
                                 if cfg!(target_os = "macos") {
                                     &["⏎ copy", "⌘R reveal secret", "⌘J / ⌘K / ⌘L / ⌘; navigate"]
@@ -1843,39 +1838,38 @@ impl LauncherView {
         for tag in item_tags.iter() {
             tag_row = tag_row.child(result_meta_chip(tag, palette));
         }
-        row = row.child(
-            div()
-                .w_full()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(tag_row)
-                .child({
-                    let mut meta_row = div()
-                        .w_full()
-                        .flex()
-                        .justify_between()
-                        .items_center()
-                        .gap_2();
-                    if let Some(bowl_name) = &row_data.bowl_name {
-                        meta_row = meta_row.child(
+        row =
+            row.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(tag_row)
+                    .child({
+                        let mut meta_row = div()
+                            .w_full()
+                            .flex()
+                            .justify_between()
+                            .items_center()
+                            .gap_2();
+                        if let Some(bowl_name) = &row_data.bowl_name {
+                            meta_row =
+                                meta_row.child(div().min_w(px(0.0)).overflow_hidden().child(
+                                    result_meta_chip(&format!("BOWL:{bowl_name}"), palette),
+                                ));
+                        } else {
+                            meta_row = meta_row.child(div().min_w(px(0.0)));
+                        }
+                        meta_row.child(
                             div()
-                                .min_w(px(0.0))
-                                .overflow_hidden()
-                                .child(result_meta_chip(&format!("BOWL:{bowl_name}"), palette)),
-                        );
-                    } else {
-                        meta_row = meta_row.child(div().min_w(px(0.0)));
-                    }
-                    meta_row.child(
-                        div()
-                            .flex_none()
-                            .text_xs()
-                            .text_color(palette.row_meta_text)
-                            .child(row_data.created_label.clone()),
-                    )
-                }),
-        );
+                                .flex_none()
+                                .text_xs()
+                                .text_color(palette.row_meta_text)
+                                .child(row_data.created_label.clone()),
+                        )
+                    }),
+            );
 
         let preview_block = div()
             .w_full()
@@ -1883,7 +1877,8 @@ impl LauncherView {
             .text_sm()
             .text_color(palette.row_text)
             .whitespace_normal()
-            .line_clamp(4);
+            .max_h(px(72.0))
+            .overflow_hidden();
         row = row.child(preview_block.child(syntax_styled_text(
             &item_preview,
             preview_language,
@@ -1947,14 +1942,17 @@ fn render_help_run(tips: &[&str], palette: Palette) -> impl IntoElement {
     for tip in tips {
         chips = chips.child(
             div()
+                .flex_shrink_0()
                 .text_xs()
+                .line_height(px(14.0))
                 .text_color(palette.muted_text)
                 .bg(help_chip_bg)
                 .border_1()
                 .border_color(help_chip_border)
                 .rounded_md()
                 .px_1()
-                .py(px(1.0))
+                .py(px(3.0))
+                .mb(px(4.0))
                 .child((*tip).to_owned()),
         );
     }

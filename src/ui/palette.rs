@@ -60,7 +60,7 @@ pub(crate) fn palette_for(appearance: WindowAppearance, surface_alpha: f32) -> P
     };
 
     // Scale window surface elements by the fixed alpha factor.
-    let alpha_scale = surface_alpha.clamp(0.10, 1.0);
+    let alpha_scale = surface_alpha.clamp(0.45, 1.0);
     palette.window_bg = scale_alpha(palette.window_bg, alpha_scale);
     palette.window_border = scale_alpha(palette.window_border, alpha_scale);
     palette.list_divider = scale_alpha(palette.list_divider, alpha_scale);

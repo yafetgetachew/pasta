@@ -18,7 +18,7 @@ fn ui_style_state_path() -> Option<PathBuf> {
 fn default_ui_style_state(default_family: SharedString) -> UiStyleState {
     UiStyleState {
         family: default_family,
-        surface_alpha: 0.10,
+        surface_alpha: 1.00,
         theme_mode: ThemeMode::System,
         syntax_highlighting: true,
         secret_auto_clear: true,
@@ -54,7 +54,7 @@ fn load_ui_style_state(default_family: SharedString) -> UiStyleState {
     if !family.is_empty() {
         style.family = family.to_owned().into();
     }
-    style.surface_alpha = persisted.surface_alpha.clamp(0.10, 1.0);
+    style.surface_alpha = persisted.surface_alpha.clamp(0.45, 1.0);
     style.theme_mode = persisted.theme_mode;
     style.syntax_highlighting = persisted.syntax_highlighting;
     style.secret_auto_clear = persisted.secret_auto_clear;
