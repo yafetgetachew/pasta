@@ -280,7 +280,7 @@ pub(crate) fn setup_status_item(cx: &mut App) {
         menu.addItem_(brain_parent);
 
         let analytics_parent = menu_item(
-            "Share Anonymous Analytics",
+            "Share Detailed Analytics",
             "",
             handler,
             selector("menuAction:"),

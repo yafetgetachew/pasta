@@ -184,10 +184,8 @@ fn handle_menu_command(command: MenuCommand, cx: &mut App) {
             cx.global_mut::<UiStyleState>().analytics_opt_in = enabled;
             persist_ui_style_state(cx);
             update_analytics_menu_state(cx);
-            if enabled {
-                let storage = cx.global::<StorageState>().storage.clone();
-                maybe_send_heartbeat(storage, true);
-            }
+            let storage = cx.global::<StorageState>().storage.clone();
+            send_heartbeat_now(storage, enabled);
         }
         MenuCommand::DownloadBrain => {
             let storage = cx.global::<StorageState>().storage.clone();

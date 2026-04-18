@@ -18,7 +18,7 @@ mod touch_id;
 mod window;
 
 #[cfg(target_os = "macos")]
-pub(crate) use analytics::maybe_send_heartbeat;
+pub(crate) use analytics::{maybe_send_heartbeat, send_heartbeat_now};
 #[cfg(target_os = "macos")]
 pub(crate) use clipboard::{
     clipboard_change_count, clipboard_text_hash, parse_custom_tags_input, process_secret_autoclear,

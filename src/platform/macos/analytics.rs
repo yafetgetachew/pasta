@@ -22,16 +22,23 @@ struct AnalyticsState {
     last_sent_epoch: Option<u64>,
 }
 
+// Baseline fields (install_id, event, app_version, clipboard_count) are always
+// transmitted — they are the minimum required to distinguish installs and track
+// the single headline metric. Fields wrapped in Option + skip_serializing_if are
+// only attached when the user has opted in to detailed analytics from the menu.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Serialize)]
 struct AnalyticsEvent<'a> {
     install_id: &'a str,
     event: &'a str,
     app_version: &'a str,
-    os: &'a str,
-    os_version: String,
     clipboard_count: usize,
-    timestamp: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    os: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    os_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timestamp: Option<u64>,
 }
 
 #[cfg(target_os = "macos")]
@@ -154,12 +161,11 @@ fn post_event_via_curl(payload: &str) {
     let _ = status;
 }
 
+// Baseline heartbeat (install_id + app_version + clipboard_count) runs for every
+// user — opt-out is not offered for those three metrics. `detailed_opt_in` only
+// governs whether the optional fields (os, os_version, timestamp) ride along.
 #[cfg(target_os = "macos")]
-pub(crate) fn maybe_send_heartbeat(storage: Arc<ClipboardStorage>, opt_in: bool) {
-    if !opt_in {
-        return;
-    }
-
+pub(crate) fn maybe_send_heartbeat(storage: Arc<ClipboardStorage>, detailed_opt_in: bool) {
     let state = load_analytics_state();
     let now = unix_now();
     if let Some(last) = state.last_sent_epoch
@@ -167,7 +173,19 @@ pub(crate) fn maybe_send_heartbeat(storage: Arc<ClipboardStorage>, opt_in: bool)
     {
         return;
     }
+    spawn_heartbeat(storage, detailed_opt_in);
+}
 
+// Unthrottled variant used when the user explicitly flips the detailed-analytics
+// toggle in the menu. Bypasses the 24h throttle so the server sees the updated
+// detail level immediately, rather than silently waiting out the window.
+#[cfg(target_os = "macos")]
+pub(crate) fn send_heartbeat_now(storage: Arc<ClipboardStorage>, detailed_opt_in: bool) {
+    spawn_heartbeat(storage, detailed_opt_in);
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_heartbeat(storage: Arc<ClipboardStorage>, detailed_opt_in: bool) {
     std::thread::Builder::new()
         .name("pasta-analytics-heartbeat".into())
         .spawn(move || {
@@ -180,10 +198,10 @@ pub(crate) fn maybe_send_heartbeat(storage: Arc<ClipboardStorage>, opt_in: bool)
                 install_id: &install_id,
                 event: "heartbeat",
                 app_version: env!("CARGO_PKG_VERSION"),
-                os: "macos",
-                os_version: macos_product_version(),
                 clipboard_count,
-                timestamp: unix_now(),
+                os: detailed_opt_in.then_some("macos"),
+                os_version: detailed_opt_in.then(macos_product_version),
+                timestamp: detailed_opt_in.then(unix_now),
             };
             let Ok(payload) = serde_json::to_string(&event) else {
                 return;
@@ -212,5 +230,53 @@ mod tests {
         let fingerprint = format!("sha256:{hex}");
         assert!(fingerprint.starts_with("sha256:"));
         assert_eq!(fingerprint.len(), "sha256:".len() + 64);
+    }
+
+    #[test]
+    fn baseline_payload_carries_only_mandatory_fields() {
+        let event = AnalyticsEvent {
+            install_id: "sha256:abc",
+            event: "heartbeat",
+            app_version: "0.1.0",
+            clipboard_count: 5,
+            os: None,
+            os_version: None,
+            timestamp: None,
+        };
+        let json = serde_json::to_string(&event).expect("serialize baseline event");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse baseline json");
+        let obj = value.as_object().expect("baseline json is an object");
+        assert!(obj.contains_key("install_id"));
+        assert!(obj.contains_key("app_version"));
+        assert!(obj.contains_key("clipboard_count"));
+        assert!(obj.contains_key("event"));
+        assert!(!obj.contains_key("os"));
+        assert!(!obj.contains_key("os_version"));
+        assert!(!obj.contains_key("timestamp"));
+    }
+
+    #[test]
+    fn detailed_payload_includes_opt_in_fields() {
+        let event = AnalyticsEvent {
+            install_id: "sha256:abc",
+            event: "heartbeat",
+            app_version: "0.1.0",
+            clipboard_count: 5,
+            os: Some("macos"),
+            os_version: Some("14.4.1".to_owned()),
+            timestamp: Some(1_700_000_000),
+        };
+        let json = serde_json::to_string(&event).expect("serialize detailed event");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("parse detailed json");
+        let obj = value.as_object().expect("detailed json is an object");
+        assert_eq!(obj.get("os").and_then(|v| v.as_str()), Some("macos"));
+        assert_eq!(
+            obj.get("os_version").and_then(|v| v.as_str()),
+            Some("14.4.1")
+        );
+        assert_eq!(
+            obj.get("timestamp").and_then(|v| v.as_u64()),
+            Some(1_700_000_000)
+        );
     }
 }
