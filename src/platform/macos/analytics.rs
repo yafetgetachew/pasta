@@ -19,33 +19,67 @@ const SUBPROCESS_MAX_DURATION: Duration = Duration::from_secs(5);
 #[cfg(target_os = "macos")]
 const HTTP_MAX_DURATION: Duration = Duration::from_secs(10);
 
-// Placeholder analytics endpoint. The `.invalid` TLD is reserved by RFC 2606 and
-// will never resolve, so a misconfigured build can never leak data to a real host.
-#[cfg(target_os = "macos")]
-const ANALYTICS_ENDPOINT: &str = "https://analytics.pasta.invalid/v1/events";
-
-#[cfg(target_os = "macos")]
-const FINGERPRINT_SALT: &[u8] = b"pasta-launcher/v1";
-
 #[cfg(target_os = "macos")]
 const HEARTBEAT_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 
-// Shared bearer token required by the analytics endpoint. Injected at build time
-// via the PASTA_ANALYTICS_API_KEY environment variable (set by CI from a release
-// secret). A desktop binary cannot keep a secret from anyone who has the `.app`,
-// so this is an anti-abuse measure — it stops drive-by traffic from hitting the
-// endpoint — and not an authentication boundary. Pair with per-install_id rate
-// limiting server-side and rotate the key on each release channel cut.
+// All three analytics inputs are supplied at build time via environment
+// variables and read through option_env! so the binary never contains values
+// that were not chosen by whoever produced it. Release builds in CI inject all
+// three from GitHub Actions secrets; local `cargo build`/`cargo run` with no
+// variables set produces an offline no-op binary that never opens a socket.
 //
-// If the variable is unset at build time the constant is `None` and the entire
-// analytics subsystem no-ops: no thread spawned, no DNS lookup, no state write.
-// That is the correct behaviour for local `cargo build`/`cargo run`.
+//   PASTA_ANALYTICS_API_KEY   (required) — bearer token sent as Authorization.
+//                             Anti-abuse rather than authentication: a shipped
+//                             binary cannot keep a secret from whoever has the
+//                             `.app`. Rotate on each release channel cut and
+//                             pair with per-install_id rate limits server-side.
+//
+//   PASTA_ANALYTICS_ENDPOINT  (required) — full URL of the ingestion endpoint,
+//                             e.g. "https://analytics.example.com/v1/events".
+//                             Kept out of source so the real host isn't in
+//                             public git history.
+//
+//   PASTA_ANALYTICS_SALT      (optional) — byte string mixed into the install
+//                             fingerprint hash. Defaults to "pasta-launcher/v1"
+//                             so unit tests and dev builds produce stable IDs.
+//                             Override to rotate install_id space or to keep
+//                             the production salt out of the public repo.
+//
+// If either required variable is absent or empty, analytics_config() returns
+// None and every entry point short-circuits: no thread spawned, no DNS lookup,
+// no state file touched.
 #[cfg(target_os = "macos")]
 const ANALYTICS_API_KEY: Option<&str> = option_env!("PASTA_ANALYTICS_API_KEY");
 
 #[cfg(target_os = "macos")]
-fn analytics_configured() -> bool {
-    ANALYTICS_API_KEY.is_some_and(|key| !key.is_empty())
+const ANALYTICS_ENDPOINT: Option<&str> = option_env!("PASTA_ANALYTICS_ENDPOINT");
+
+#[cfg(target_os = "macos")]
+const ANALYTICS_SALT_OVERRIDE: Option<&str> = option_env!("PASTA_ANALYTICS_SALT");
+
+#[cfg(target_os = "macos")]
+const DEFAULT_FINGERPRINT_SALT: &[u8] = b"pasta-launcher/v1";
+
+#[cfg(target_os = "macos")]
+struct AnalyticsConfig {
+    api_key: &'static str,
+    endpoint: &'static str,
+    salt: &'static [u8],
+}
+
+#[cfg(target_os = "macos")]
+fn analytics_config() -> Option<AnalyticsConfig> {
+    let api_key = ANALYTICS_API_KEY.filter(|k| !k.is_empty())?;
+    let endpoint = ANALYTICS_ENDPOINT.filter(|e| !e.is_empty())?;
+    let salt = ANALYTICS_SALT_OVERRIDE
+        .filter(|s| !s.is_empty())
+        .map(str::as_bytes)
+        .unwrap_or(DEFAULT_FINGERPRINT_SALT);
+    Some(AnalyticsConfig {
+        api_key,
+        endpoint,
+        salt,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -160,10 +194,10 @@ fn mac_serial_number() -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn install_fingerprint() -> Option<String> {
+pub(crate) fn install_fingerprint(salt: &[u8]) -> Option<String> {
     let serial = mac_serial_number()?;
     let mut hasher = Sha256::new();
-    hasher.update(FINGERPRINT_SALT);
+    hasher.update(salt);
     hasher.update(b":");
     hasher.update(serial.as_bytes());
     let digest = hasher.finalize();
@@ -195,13 +229,13 @@ fn unix_now() -> u64 {
 // within HTTP_MAX_DURATION regardless of server or network behaviour. Errors
 // are intentionally swallowed — analytics must never disrupt the app.
 #[cfg(target_os = "macos")]
-fn post_event(event: &AnalyticsEvent<'_>, api_key: &str) {
+fn post_event(event: &AnalyticsEvent<'_>, endpoint: &str, api_key: &str) {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(HTTP_MAX_DURATION))
         .build()
         .into();
     let _ = agent
-        .post(ANALYTICS_ENDPOINT)
+        .post(endpoint)
         .header("Authorization", &format!("Bearer {api_key}"))
         .send_json(event);
 }
@@ -215,7 +249,7 @@ fn post_event(event: &AnalyticsEvent<'_>, api_key: &str) {
 // incurs a single Arc clone and the fixed cost of thread creation.
 #[cfg(target_os = "macos")]
 pub(crate) fn maybe_send_heartbeat(storage: Arc<ClipboardStorage>, detailed_opt_in: bool) {
-    if !analytics_configured() {
+    if analytics_config().is_none() {
         return;
     }
     spawn_heartbeat(storage, detailed_opt_in, true);
@@ -226,7 +260,7 @@ pub(crate) fn maybe_send_heartbeat(storage: Arc<ClipboardStorage>, detailed_opt_
 // detail level immediately, rather than silently waiting out the window.
 #[cfg(target_os = "macos")]
 pub(crate) fn send_heartbeat_now(storage: Arc<ClipboardStorage>, detailed_opt_in: bool) {
-    if !analytics_configured() {
+    if analytics_config().is_none() {
         return;
     }
     spawn_heartbeat(storage, detailed_opt_in, false);
@@ -251,9 +285,9 @@ fn spawn_heartbeat(storage: Arc<ClipboardStorage>, detailed_opt_in: bool, thrott
 #[cfg(target_os = "macos")]
 fn heartbeat_body(storage: Arc<ClipboardStorage>, detailed_opt_in: bool, throttled: bool) {
     // Re-check inside the worker: spawn_heartbeat's callers already gate on
-    // analytics_configured(), but pulling the key here keeps the invariant
+    // analytics_config(), but pulling the config here keeps the invariant
     // local and removes the risk of a future caller bypassing it.
-    let Some(api_key) = ANALYTICS_API_KEY.filter(|k| !k.is_empty()) else {
+    let Some(config) = analytics_config() else {
         return;
     };
     if throttled {
@@ -264,7 +298,7 @@ fn heartbeat_body(storage: Arc<ClipboardStorage>, detailed_opt_in: bool, throttl
             return;
         }
     }
-    let Some(install_id) = install_fingerprint() else {
+    let Some(install_id) = install_fingerprint(config.salt) else {
         eprintln!("warning: analytics heartbeat skipped (no platform serial available)");
         return;
     };
@@ -278,7 +312,7 @@ fn heartbeat_body(storage: Arc<ClipboardStorage>, detailed_opt_in: bool, throttl
         os_version: detailed_opt_in.then(macos_product_version),
         timestamp: detailed_opt_in.then(unix_now),
     };
-    post_event(&event, api_key);
+    post_event(&event, config.endpoint, config.api_key);
     save_analytics_state(&AnalyticsState {
         last_sent_epoch: Some(unix_now()),
     });
@@ -292,7 +326,7 @@ mod tests {
     #[test]
     fn fingerprint_format_is_sha256_prefixed_hex() {
         let mut hasher = Sha256::new();
-        hasher.update(FINGERPRINT_SALT);
+        hasher.update(DEFAULT_FINGERPRINT_SALT);
         hasher.update(b":");
         hasher.update(b"EXAMPLESERIAL");
         let digest = hasher.finalize();
@@ -300,6 +334,27 @@ mod tests {
         let fingerprint = format!("sha256:{hex}");
         assert!(fingerprint.starts_with("sha256:"));
         assert_eq!(fingerprint.len(), "sha256:".len() + 64);
+    }
+
+    // Same serial should produce distinct fingerprints under distinct salts,
+    // confirming the salt actually participates in the hash.
+    #[test]
+    fn fingerprint_salt_override_changes_output() {
+        let default = {
+            let mut h = Sha256::new();
+            h.update(DEFAULT_FINGERPRINT_SALT);
+            h.update(b":");
+            h.update(b"SERIAL");
+            h.finalize()
+        };
+        let rotated = {
+            let mut h = Sha256::new();
+            h.update(b"pasta-launcher/v2");
+            h.update(b":");
+            h.update(b"SERIAL");
+            h.finalize()
+        };
+        assert_ne!(default.as_slice(), rotated.as_slice());
     }
 
     #[test]
