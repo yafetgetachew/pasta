@@ -1,78 +1,10 @@
 #[cfg(target_os = "macos")]
 use crate::*;
-#[cfg(target_os = "macos")]
-use cocoa::appkit::{
-    NSColor, NSView, NSViewHeightSizable, NSViewWidthSizable, NSVisualEffectBlendingMode,
-    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
-};
-#[cfg(target_os = "macos")]
-use cocoa::base::YES;
-#[cfg(target_os = "macos")]
-use cocoa::foundation::NSPoint;
 
-#[cfg(target_os = "macos")]
-const PASTA_BACKDROP_TAG: isize = 48_221;
-
-#[cfg(target_os = "macos")]
-fn install_foggy_backdrop(window: &Window, theme_mode: ThemeMode) {
-    let Ok(handle) = HasWindowHandle::window_handle(window) else {
-        return;
-    };
-    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
-        return;
-    };
-
-    unsafe {
-        let ns_view: id = handle.ns_view.as_ptr().cast();
-        if ns_view == nil {
-            return;
-        }
-
-        let ns_window: id = msg_send![ns_view, window];
-        if ns_window == nil {
-            return;
-        }
-
-        let content_view: id = msg_send![ns_window, contentView];
-        if content_view == nil {
-            return;
-        }
-
-        let clear = NSColor::clearColor(nil);
-        let _: () = msg_send![ns_window, setBackgroundColor: clear];
-
-        let existing: id = msg_send![content_view, viewWithTag: PASTA_BACKDROP_TAG];
-        let bounds = NSView::bounds(content_view);
-        let backdrop = if existing != nil {
-            existing
-        } else {
-            let backdrop =
-                NSVisualEffectView::initWithFrame_(NSVisualEffectView::alloc(nil), bounds);
-            backdrop.autorelease();
-            let _: () = msg_send![backdrop, setTag: PASTA_BACKDROP_TAG];
-            backdrop.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable);
-            let _: () = msg_send![ns_window, setContentView: backdrop];
-            backdrop
-        };
-
-        if ns_view != backdrop && ns_view.superview() != backdrop {
-            ns_view.removeFromSuperview();
-            ns_view.setFrameOrigin(NSPoint::new(0.0, 0.0));
-            ns_view.setFrameSize(bounds.size);
-            ns_view.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable);
-            backdrop.addSubview_(ns_view);
-        }
-
-        backdrop.setBlendingMode_(NSVisualEffectBlendingMode::BehindWindow);
-        backdrop.setState_(NSVisualEffectState::Active);
-        backdrop.setEmphasized_(YES);
-        backdrop.setMaterial_(match theme_mode {
-            ThemeMode::Light => NSVisualEffectMaterial::UnderWindowBackground,
-            ThemeMode::Dark | ThemeMode::System => NSVisualEffectMaterial::HudWindow,
-        });
-    }
-}
-
+// Applies theme-specific window chrome: a vibrant NSAppearance override so the
+// system blur layer (installed by GPUI via WindowBackgroundAppearance::Blurred)
+// picks the right tint, plus translucency and shadow. The actual backdrop is
+// owned by GPUI — we deliberately do not touch the content-view hierarchy here.
 #[cfg(target_os = "macos")]
 pub(crate) fn apply_window_foggy_theme(window: &Window, theme_mode: ThemeMode) {
     let Ok(handle) = HasWindowHandle::window_handle(window) else {
@@ -108,8 +40,6 @@ pub(crate) fn apply_window_foggy_theme(window: &Window, theme_mode: ThemeMode) {
         let _: () = msg_send![ns_window, setOpaque: false];
         let _: () = msg_send![ns_window, setHasShadow: true];
     }
-
-    install_foggy_backdrop(window, theme_mode);
 }
 
 #[cfg(target_os = "macos")]
