@@ -18,7 +18,7 @@ fn ui_style_state_path() -> Option<PathBuf> {
 fn default_ui_style_state(default_family: SharedString) -> UiStyleState {
     UiStyleState {
         family: default_family,
-        surface_alpha: 0.90,
+        surface_alpha: 1.00,
         syntax_highlighting: true,
         secret_auto_clear: true,
         pasta_brain_enabled: true,
