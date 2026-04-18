@@ -395,28 +395,6 @@ pub(crate) fn setup_status_item(cx: &mut App) {
 
         menu.addItem_(NSMenuItem::separatorItem(nil));
 
-        let launch_at_login_item = menu_item(
-            "Launch at Login",
-            "",
-            handler,
-            selector("menuAction:"),
-            MENU_TAG_LAUNCH_AT_LOGIN,
-        );
-        let login_enabled = launch_agent_is_installed();
-        let _: () = msg_send![launch_at_login_item, setState: if login_enabled { 1_isize } else { 0_isize }];
-        menu.addItem_(launch_at_login_item);
-
-        let clear_history_item = menu_item(
-            "Clear Clipboard History…",
-            "",
-            handler,
-            selector("menuAction:"),
-            MENU_TAG_CLEAR_HISTORY,
-        );
-        menu.addItem_(clear_history_item);
-
-        menu.addItem_(NSMenuItem::separatorItem(nil));
-
         let close_item = menu_item(
             "Close Pasta",
             "",
