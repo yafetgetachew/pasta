@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Pasta
+GenericName=Clipboard Launcher
+Comment=Search, transform, and paste your clipboard history
+Exec=pasta-launcher
+Icon=com.pasta.launcher
+Terminal=false
+Categories=Utility;
+Keywords=clipboard;paste;history;launcher;secrets;
+StartupNotify=true
+StartupWMClass=pasta-launcher
+X-GNOME-Autostart-enabled=true

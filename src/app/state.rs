@@ -1,8 +1,5 @@
-#[cfg(target_os = "macos")]
 use crate::storage::SearchExecution;
-#[cfg(target_os = "macos")]
 use crate::*;
-#[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) struct SearchRequest {
@@ -12,7 +9,6 @@ pub(crate) struct SearchRequest {
     pub(crate) execution: SearchExecution,
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) struct SearchResponse {
     pub(crate) query_generation: u64,
     pub(crate) execution: SearchExecution,
@@ -20,7 +16,6 @@ pub(crate) struct SearchResponse {
     pub(crate) row_presentations: Vec<CachedRowPresentation>,
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) struct TextInputState {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) selected_range: Range<usize>,
@@ -31,7 +26,6 @@ pub(crate) struct TextInputState {
     pub(crate) is_selecting: bool,
 }
 
-#[cfg(target_os = "macos")]
 impl TextInputState {
     pub(crate) fn new<T>(cx: &mut Context<T>) -> Self {
         Self {
@@ -63,7 +57,6 @@ impl TextInputState {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) struct CachedRowPresentation {
     pub(crate) created_label: String,
     pub(crate) detected_language: Option<LanguageTag>,
@@ -76,7 +69,6 @@ pub(crate) struct CachedRowPresentation {
     pub(crate) masked_preview: String,
 }
 
-#[cfg(target_os = "macos")]
 impl CachedRowPresentation {
     pub(crate) fn from_record(item: &ClipboardRecord) -> Self {
         let detected_language = detect_language(item.item_type, &item.content);
@@ -117,7 +109,6 @@ impl CachedRowPresentation {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn start_search_worker(
     storage: Arc<ClipboardStorage>,
 ) -> (
@@ -176,11 +167,11 @@ pub(crate) fn start_search_worker(
     (request_tx, result_rx, latest_query_generation)
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) struct LauncherView {
     pub(crate) storage: Arc<ClipboardStorage>,
     pub(crate) font_family: SharedString,
     pub(crate) surface_alpha: f32,
+    pub(crate) theme_mode: ThemeMode,
     pub(crate) syntax_highlighting: bool,
     pub(crate) pasta_brain_enabled: bool,
     pub(crate) query_input_state: TextInputState,
@@ -196,6 +187,7 @@ pub(crate) struct LauncherView {
     pub(crate) search_generation_token: Arc<AtomicU64>,
     pub(crate) latest_applied_search_execution: SearchExecution,
     pub(crate) query: String,
+    pub(crate) last_query_edit_at: Option<Instant>,
     pub(crate) tag_search_suggestions: Vec<String>,
     pub(crate) items: Vec<ClipboardRecord>,
     pub(crate) row_presentations: Vec<CachedRowPresentation>,

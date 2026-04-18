@@ -1,9 +1,6 @@
-#[cfg(target_os = "macos")]
 use super::LanguageTag;
-#[cfg(target_os = "macos")]
 use crate::*;
 
-#[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 pub(crate) struct Palette {
     pub(crate) dark: bool,
@@ -21,7 +18,6 @@ pub(crate) struct Palette {
     pub(crate) selected_border: gpui::Rgba,
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn palette_for(appearance: WindowAppearance, surface_alpha: f32) -> Palette {
     let dark = matches!(
         appearance,
@@ -31,18 +27,18 @@ pub(crate) fn palette_for(appearance: WindowAppearance, surface_alpha: f32) -> P
     let mut palette = if dark {
         Palette {
             dark,
-            window_bg: rgba(0x0b0f148c),
-            window_border: rgba(0xffffff16),
-            title_text: rgba(0xcbd5e1d9),
-            query_placeholder: rgba(0x94a3b8d9),
+            window_bg: rgba(0x08131f99),
+            window_border: rgba(0x7dd3fc33),
+            title_text: rgba(0xe0f2fed9),
+            query_placeholder: rgba(0x7dd3fcd9),
             query_active: rgba(0xf8fafcfa),
-            muted_text: rgba(0x94a3b8d0),
-            list_divider: rgba(0xffffff14),
+            muted_text: rgba(0x93c5fdd0),
+            list_divider: rgba(0x7dd3fc26),
             row_text: rgba(0xe2e8f0f5),
-            row_meta_text: rgba(0x94a3b8cc),
-            row_hover_bg: rgba(0xffffff0c),
-            selected_bg: rgba(0xffffff10),
-            selected_border: rgba(0xffffff22),
+            row_meta_text: rgba(0x93c5fdcc),
+            row_hover_bg: rgba(0x38bdf81f),
+            selected_bg: rgba(0x22d3ee33),
+            selected_border: rgba(0x67e8f944),
         }
     } else {
         Palette {
@@ -75,7 +71,6 @@ pub(crate) fn palette_for(appearance: WindowAppearance, surface_alpha: f32) -> P
     palette
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn scale_alpha(color: gpui::Rgba, scale: f32) -> gpui::Rgba {
     gpui::Rgba {
         r: color.r,
@@ -85,7 +80,6 @@ pub(crate) fn scale_alpha(color: gpui::Rgba, scale: f32) -> gpui::Rgba {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn type_color(item_type: ClipboardItemType, dark: bool) -> gpui::Hsla {
     match item_type {
         ClipboardItemType::Text => {
@@ -119,14 +113,12 @@ pub(crate) fn type_color(item_type: ClipboardItemType, dark: bool) -> gpui::Hsla
     }
 }
 
-#[cfg(target_os = "macos")]
 fn push_unique_chip(chips: &mut Vec<String>, label: &str) {
     if !chips.iter().any(|existing| existing == label) {
         chips.push(label.to_owned());
     }
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn visible_tag_chips(
     item_type: ClipboardItemType,
     language: Option<LanguageTag>,
@@ -234,7 +226,6 @@ pub(crate) fn visible_tag_chips(
     chips
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn tag_chip_color(label: &str, dark: bool) -> gpui::Hsla {
     if label.starts_with("OPEN ") {
         if dark {

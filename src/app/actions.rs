@@ -1,28 +1,17 @@
-#[cfg(target_os = "macos")]
 use super::state::{CachedRowPresentation, SearchRequest, SearchResponse, TextInputState};
-#[cfg(target_os = "macos")]
 use crate::storage::{
     SEMANTIC_MIN_QUERY_CHARS, SEMANTIC_SOURCE_TEXT_LIMIT, SearchExecution, bounded_text_prefix,
     encode_f32_vec_base64, semantic_embedding,
 };
-#[cfg(target_os = "macos")]
 use crate::*;
-#[cfg(target_os = "macos")]
 use serde_json::Value;
-#[cfg(target_os = "macos")]
 use std::collections::{HashMap, HashSet};
-#[cfg(target_os = "macos")]
 use std::sync::atomic::Ordering;
-#[cfg(target_os = "macos")]
 use toml::Value as TomlValue;
 
-#[cfg(target_os = "macos")]
 const TAG_SEARCH_AUTOCOMPLETE_LIMIT: usize = 6;
-#[cfg(target_os = "macos")]
 const SEARCH_SEMANTIC_DELAY_MS: u64 = 90;
-#[cfg(target_os = "macos")]
 const SEARCH_NEURAL_DELAY_MS: u64 = 320;
-#[cfg(target_os = "macos")]
 const SEARCH_NEURAL_MIN_QUERY_CHARS: usize = 5;
 
 impl LauncherView {
@@ -30,6 +19,7 @@ impl LauncherView {
         storage: Arc<ClipboardStorage>,
         font_family: SharedString,
         surface_alpha: f32,
+        theme_mode: ThemeMode,
         syntax_highlighting: bool,
         pasta_brain_enabled: bool,
         search_request_tx: mpsc::Sender<SearchRequest>,
@@ -40,6 +30,7 @@ impl LauncherView {
             storage,
             font_family,
             surface_alpha,
+            theme_mode,
             syntax_highlighting,
             pasta_brain_enabled,
             query_input_state: TextInputState::new(cx),
@@ -55,6 +46,7 @@ impl LauncherView {
             search_generation_token,
             latest_applied_search_execution: SearchExecution::Fast,
             query: String::new(),
+            last_query_edit_at: None,
             tag_search_suggestions: Vec::new(),
             items: Vec::new(),
             row_presentations: Vec::new(),
@@ -106,6 +98,7 @@ impl LauncherView {
 
     pub(crate) fn reset_for_show(&mut self) {
         self.query.clear();
+        self.last_query_edit_at = None;
         self.tag_search_suggestions.clear();
         self.query_input_state.reset();
         self.info_editor_input_state.reset();
@@ -184,10 +177,14 @@ impl LauncherView {
     }
 
     pub(crate) fn query_did_change(&mut self, cx: &mut Context<Self>) {
+        let selection_changed = self.selected_index != 0;
         self.selected_index = 0;
+        self.last_query_edit_at = Some(Instant::now());
         self.mark_selection_changed(cx);
-        self.reset_results_scroll_to_top();
-        self.refresh_tag_search_suggestions();
+        if selection_changed {
+            self.reset_results_scroll_to_top();
+        }
+        self.refresh_tag_search_suggestions_async(cx);
         self.schedule_query_refresh();
         self.schedule_delayed_query_refresh(
             SearchExecution::Semantic,
@@ -198,10 +195,28 @@ impl LauncherView {
         cx.notify();
     }
 
-    fn refresh_tag_search_suggestions(&mut self) {
-        self.tag_search_suggestions = self
-            .storage
-            .suggest_search_tokens(&self.query, TAG_SEARCH_AUTOCOMPLETE_LIMIT);
+    fn refresh_tag_search_suggestions_async(&self, cx: &mut Context<Self>) {
+        let storage = self.storage.clone();
+        let query = self.query.clone();
+        let background_query = query.clone();
+        let expected_generation = self.search_generation;
+
+        cx.spawn(async move |this, cx| {
+            let suggestions = cx
+                .background_executor()
+                .spawn(async move {
+                    storage.suggest_search_tokens(&background_query, TAG_SEARCH_AUTOCOMPLETE_LIMIT)
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                if view.search_generation != expected_generation || view.query != query {
+                    return;
+                }
+                view.tag_search_suggestions = suggestions;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn set_query_text(&mut self, query: String) {
@@ -272,20 +287,46 @@ impl LauncherView {
     }
 
     pub(crate) fn begin_open_transition(&mut self) {
-        self.pending_exit = None;
-        self.transition_from = 0.0;
-        self.transition_alpha = self.transition_from;
-        self.transition_target = 1.0;
-        self.transition_started_at = Instant::now();
-        self.transition_duration = Duration::from_millis(WINDOW_OPEN_DURATION_MS);
+        #[cfg(target_os = "linux")]
+        {
+            self.pending_exit = None;
+            self.transition_from = 1.0;
+            self.transition_alpha = 1.0;
+            self.transition_target = 1.0;
+            self.transition_started_at = Instant::now();
+            self.transition_duration = Duration::ZERO;
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.pending_exit = None;
+            self.transition_from = 0.0;
+            self.transition_alpha = self.transition_from;
+            self.transition_target = 1.0;
+            self.transition_started_at = Instant::now();
+            self.transition_duration = Duration::from_millis(WINDOW_OPEN_DURATION_MS);
+        }
     }
 
     pub(crate) fn begin_close_transition(&mut self, intent: LauncherExitIntent) {
-        self.pending_exit = Some(intent);
-        self.transition_from = self.transition_alpha.clamp(0.0, 1.0);
-        self.transition_target = 0.0;
-        self.transition_started_at = Instant::now();
-        self.transition_duration = Duration::from_millis(WINDOW_CLOSE_DURATION_MS);
+        #[cfg(target_os = "linux")]
+        {
+            self.pending_exit = Some(intent);
+            self.transition_from = 0.0;
+            self.transition_alpha = 0.0;
+            self.transition_target = 0.0;
+            self.transition_started_at = Instant::now();
+            self.transition_duration = Duration::ZERO;
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.pending_exit = Some(intent);
+            self.transition_from = self.transition_alpha.clamp(0.0, 1.0);
+            self.transition_target = 0.0;
+            self.transition_started_at = Instant::now();
+            self.transition_duration = Duration::from_millis(WINDOW_CLOSE_DURATION_MS);
+        }
     }
 
     pub(crate) fn transition_running(&self) -> bool {
@@ -478,8 +519,13 @@ impl LauncherView {
             return false;
         }
 
+        let previous_selected_id = self.items.get(self.selected_index).map(|item| item.id);
+        let next_selected_id = response.items.get(self.selected_index).map(|item| item.id);
         self.set_search_results(response.items, response.row_presentations);
         self.latest_applied_search_execution = response.execution;
+        if previous_selected_id != next_selected_id {
+            self.selection_changed_at = Instant::now();
+        }
         if self.selected_index == 0 {
             self.reset_results_scroll_to_top();
         }
@@ -599,6 +645,11 @@ impl LauncherView {
 
         self.mark_self_clipboard_write(&item.content, cx);
         cx.write_to_clipboard(ClipboardItem::new_string(item.content.clone()));
+        // On Wayland, the GPUI window must stay alive to serve paste requests.
+        // Since Pasta destroys the window on hide, also write via wl-clipboard-rs
+        // which forks a background process to serve the data independently.
+        #[cfg(target_os = "linux")]
+        write_clipboard_text(&item.content);
         if item.item_type == ClipboardItemType::Password {
             self.schedule_secret_autoclear(&item.content, cx);
             self.revealed_secret_id = Some(item.id);
@@ -1929,6 +1980,8 @@ impl LauncherView {
         };
 
         self.mark_self_clipboard_write(&rendered, cx);
+        #[cfg(target_os = "linux")]
+        write_clipboard_text(&rendered);
         cx.write_to_clipboard(ClipboardItem::new_string(rendered));
         self.parameter_fill_target_id = None;
         self.parameter_fill_values.clear();
@@ -2166,6 +2219,8 @@ impl LauncherView {
 
         self.mark_self_clipboard_write(&transformed, cx);
         cx.write_to_clipboard(ClipboardItem::new_string(transformed.clone()));
+        #[cfg(target_os = "linux")]
+        write_clipboard_text(&transformed);
 
         let mut notification = status_message.to_owned();
         if let Err(err) = self.storage.upsert_clipboard_item(&transformed) {
@@ -2195,11 +2250,18 @@ impl LauncherView {
         let key = event.keystroke.key.as_str();
         let modifiers = &event.keystroke.modifiers;
         let no_modifiers = !modifiers.modified();
-        let command_navigation = modifiers.platform
-            && !modifiers.shift
-            && !modifiers.control
-            && !modifiers.alt
-            && !modifiers.function;
+
+        // On macOS, Cmd (modifiers.platform) is the action modifier.
+        // On Linux, Ctrl (modifiers.control) is the standard app shortcut
+        // modifier — GPUI maps modifiers.platform to Super/Meta on Linux.
+        let action_mod = if cfg!(target_os = "macos") {
+            modifiers.platform && !modifiers.control
+        } else {
+            modifiers.control && !modifiers.platform
+        };
+
+        let command_navigation =
+            action_mod && !modifiers.shift && !modifiers.alt && !modifiers.function;
 
         if self.info_editor_target_id.is_some() {
             self.handle_info_editor_keystroke(event, cx);
@@ -2283,118 +2345,57 @@ impl LauncherView {
                 self.delete_selected_item(cx);
                 return;
             }
-            "d" if modifiers.platform
-                && !modifiers.control
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "d" if action_mod && !modifiers.alt && !modifiers.function => {
                 self.delete_selected_item(cx);
                 return;
             }
-            "r" if modifiers.platform
-                && !modifiers.control
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "r" if action_mod && !modifiers.alt && !modifiers.function => {
                 self.reveal_and_copy_selected_secret(cx);
                 return;
             }
-            "s" if modifiers.platform
-                && modifiers.shift
-                && !modifiers.control
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "s" if action_mod && modifiers.shift && !modifiers.alt && !modifiers.function => {
                 self.toggle_selected_item_secret_state(cx);
                 return;
             }
-            "h" if modifiers.platform
-                && !modifiers.control
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "h" if action_mod && !modifiers.alt && !modifiers.function => {
                 self.show_command_help = !self.show_command_help;
                 cx.notify();
                 return;
             }
-            "t" if modifiers.platform
-                && modifiers.shift
-                && !modifiers.control
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "t" if action_mod && modifiers.shift && !modifiers.alt && !modifiers.function => {
                 self.remove_custom_tags_from_selected(cx);
                 return;
             }
-            "t" if modifiers.platform
-                && !modifiers.shift
-                && !modifiers.control
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "t" if action_mod && !modifiers.shift && !modifiers.alt && !modifiers.function => {
                 self.add_custom_tags_to_selected(cx);
                 return;
             }
-            "b" if modifiers.platform
-                && modifiers.shift
-                && !modifiers.control
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "b" if action_mod && modifiers.shift && !modifiers.alt && !modifiers.function => {
                 self.remove_bowl_from_selected(cx);
                 return;
             }
-            "b" if modifiers.platform
-                && !modifiers.shift
-                && !modifiers.control
-                && modifiers.alt
-                && !modifiers.function =>
-            {
+            "b" if action_mod && !modifiers.shift && modifiers.alt && !modifiers.function => {
                 self.import_bowl_from_picker(cx);
                 return;
             }
-            "b" if modifiers.platform
-                && !modifiers.shift
-                && !modifiers.control
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "b" if action_mod && !modifiers.shift && !modifiers.alt && !modifiers.function => {
                 self.start_bowl_editor_for_selected(cx);
                 return;
             }
-            "p" if modifiers.platform
-                && !modifiers.shift
-                && !modifiers.control
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "p" if action_mod && !modifiers.shift && !modifiers.alt && !modifiers.function => {
                 self.start_parameter_editor_for_selected(cx);
                 return;
             }
-            "i" if modifiers.platform
-                && !modifiers.shift
-                && !modifiers.control
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "i" if action_mod && !modifiers.shift && !modifiers.alt && !modifiers.function => {
                 self.start_info_editor_for_selected(cx);
                 return;
             }
-            "q" if modifiers.platform
-                && !modifiers.control
-                && !modifiers.alt
-                && !modifiers.function =>
-            {
+            "q" if action_mod && !modifiers.alt && !modifiers.function => {
                 self.begin_close_transition(LauncherExitIntent::Hide);
                 cx.notify();
                 return;
             }
-            "backspace"
-                if modifiers.platform
-                    && !modifiers.control
-                    && !modifiers.alt
-                    && !modifiers.function =>
-            {
+            "backspace" if action_mod && !modifiers.alt && !modifiers.function => {
                 self.delete_selected_item(cx);
                 return;
             }
@@ -2403,12 +2404,10 @@ impl LauncherView {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn is_parameter_word_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':')
 }
 
-#[cfg(target_os = "macos")]
 fn first_parameter_name_issue_index(names: &[String]) -> usize {
     let mut seen = HashSet::new();
 
@@ -2427,7 +2426,6 @@ fn first_parameter_name_issue_index(names: &[String]) -> usize {
     0
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Clone)]
 pub(super) struct ParameterClickableCandidate {
     pub(super) target: String,
@@ -2435,12 +2433,10 @@ pub(super) struct ParameterClickableCandidate {
     pub(super) suggested_name: Option<String>,
 }
 
-#[cfg(target_os = "macos")]
 fn is_sub_split_delimiter(ch: char) -> bool {
     matches!(ch, '/' | '.' | ':')
 }
 
-#[cfg(target_os = "macos")]
 fn token_is_sub_splittable(target: &str) -> bool {
     target.chars().any(is_sub_split_delimiter)
         && target
@@ -2450,7 +2446,6 @@ fn token_is_sub_splittable(target: &str) -> bool {
             <= 8
 }
 
-#[cfg(target_os = "macos")]
 fn sub_split_token(target: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
@@ -2470,7 +2465,6 @@ fn sub_split_token(target: &str) -> Vec<String> {
     parts
 }
 
-#[cfg(target_os = "macos")]
 pub(super) fn expand_candidates_with_splits(
     candidates: Vec<ParameterClickableCandidate>,
     split_tokens: &HashSet<String>,
@@ -2501,7 +2495,6 @@ pub(super) fn expand_candidates_with_splits(
     expanded
 }
 
-#[cfg(target_os = "macos")]
 pub(super) fn parameter_clickable_candidates(
     content: &str,
     force_full: bool,
@@ -2523,12 +2516,10 @@ pub(super) fn parameter_clickable_candidates(
     dedupe_parameter_candidates(parameter_word_candidates(content))
 }
 
-#[cfg(target_os = "macos")]
 pub(super) fn has_structured_parameter_candidates(content: &str) -> bool {
     !parameter_structured_candidates(content).is_empty()
 }
 
-#[cfg(target_os = "macos")]
 fn parameter_structured_candidates(content: &str) -> Vec<ParameterClickableCandidate> {
     let trimmed = content.trim();
     if trimmed.is_empty() {
@@ -2561,7 +2552,6 @@ fn parameter_structured_candidates(content: &str) -> Vec<ParameterClickableCandi
     Vec::new()
 }
 
-#[cfg(target_os = "macos")]
 fn collect_json_parameter_candidates(
     value: &Value,
     path: String,
@@ -2610,7 +2600,6 @@ fn collect_json_parameter_candidates(
     }
 }
 
-#[cfg(target_os = "macos")]
 fn parameter_toml_scalar_candidates(content: &str) -> Vec<ParameterClickableCandidate> {
     let Ok(toml_value) = toml::from_str::<TomlValue>(content) else {
         return Vec::new();
@@ -2621,7 +2610,6 @@ fn parameter_toml_scalar_candidates(content: &str) -> Vec<ParameterClickableCand
     candidates
 }
 
-#[cfg(target_os = "macos")]
 fn collect_toml_parameter_candidates(
     value: &TomlValue,
     path: String,
@@ -2675,7 +2663,6 @@ fn collect_toml_parameter_candidates(
     }
 }
 
-#[cfg(target_os = "macos")]
 fn parameter_yaml_scalar_candidates(content: &str) -> Vec<ParameterClickableCandidate> {
     if !looks_like_yaml_document(content) {
         return Vec::new();
@@ -2743,7 +2730,6 @@ fn parameter_yaml_scalar_candidates(content: &str) -> Vec<ParameterClickableCand
     candidates
 }
 
-#[cfg(target_os = "macos")]
 fn normalize_yaml_scalar(raw: &str) -> Option<String> {
     let mut value = raw.trim();
     if value.is_empty() {
@@ -2777,7 +2763,6 @@ fn normalize_yaml_scalar(raw: &str) -> Option<String> {
     Some(stripped.to_owned())
 }
 
-#[cfg(target_os = "macos")]
 fn looks_like_yaml_document(content: &str) -> bool {
     let mut yamlish_lines = 0_usize;
     let mut other_lines = 0_usize;
@@ -2820,7 +2805,6 @@ fn looks_like_yaml_document(content: &str) -> bool {
     yamlish_lines >= 2 && yamlish_lines >= other_lines
 }
 
-#[cfg(target_os = "macos")]
 fn parameter_xml_scalar_candidates(content: &str) -> Vec<ParameterClickableCandidate> {
     let trimmed = content.trim();
     if !trimmed.starts_with('<') || !trimmed.contains("</") {
@@ -2843,7 +2827,6 @@ fn parameter_xml_scalar_candidates(content: &str) -> Vec<ParameterClickableCandi
     candidates
 }
 
-#[cfg(target_os = "macos")]
 fn parse_xml_tag_value(line: &str) -> Option<(String, String)> {
     let open_end = line.find('>')?;
     if open_end <= 1 {
@@ -2876,7 +2859,6 @@ fn parse_xml_tag_value(line: &str) -> Option<(String, String)> {
     Some((tag.to_owned(), value.to_owned()))
 }
 
-#[cfg(target_os = "macos")]
 fn parameter_assignment_line_candidates(content: &str) -> Vec<ParameterClickableCandidate> {
     let mut candidates = Vec::new();
     for line in content.lines().take(700) {
@@ -2914,7 +2896,6 @@ fn parameter_assignment_line_candidates(content: &str) -> Vec<ParameterClickable
     candidates
 }
 
-#[cfg(target_os = "macos")]
 fn parameter_word_candidates(content: &str) -> Vec<ParameterClickableCandidate> {
     let mut candidates = Vec::new();
     let mut current_start: Option<usize> = None;
@@ -2939,7 +2920,6 @@ fn parameter_word_candidates(content: &str) -> Vec<ParameterClickableCandidate> 
     candidates
 }
 
-#[cfg(target_os = "macos")]
 fn dedupe_parameter_candidates(
     candidates: Vec<ParameterClickableCandidate>,
 ) -> Vec<ParameterClickableCandidate> {
@@ -2965,7 +2945,6 @@ fn dedupe_parameter_candidates(
     deduped
 }
 
-#[cfg(target_os = "macos")]
 fn push_structured_parameter_candidate(
     candidates: &mut Vec<ParameterClickableCandidate>,
     key_or_path: String,
@@ -2989,7 +2968,6 @@ fn push_structured_parameter_candidate(
     });
 }
 
-#[cfg(target_os = "macos")]
 fn push_freetext_parameter_candidate(
     candidates: &mut Vec<ParameterClickableCandidate>,
     key: Option<&str>,
@@ -3013,7 +2991,6 @@ fn push_freetext_parameter_candidate(
     });
 }
 
-#[cfg(target_os = "macos")]
 fn parameter_name_from_path(path: &str) -> Option<String> {
     let mut output = String::new();
     let mut previous_was_separator = false;
@@ -3052,7 +3029,6 @@ fn parameter_name_from_path(path: &str) -> Option<String> {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn preview_for_parameter_candidate(value: &str, max_chars: usize) -> String {
     let collapsed = value
         .replace(['\n', '\r', '\t'], " ")
@@ -3068,7 +3044,6 @@ fn preview_for_parameter_candidate(value: &str, max_chars: usize) -> String {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn apply_search_suggestion_to_query(query: &str, suggestion: &str) -> Option<String> {
     let normalized_suggestion = suggestion.trim();
     if normalized_suggestion.is_empty() {
@@ -3107,7 +3082,6 @@ fn apply_search_suggestion_to_query(query: &str, suggestion: &str) -> Option<Str
     }
 }
 
-#[cfg(target_os = "macos")]
 fn should_schedule_delayed_search(
     query: &str,
     pasta_brain_enabled: bool,
@@ -3133,7 +3107,6 @@ fn should_schedule_delayed_search(
     }
 }
 
-#[cfg(target_os = "macos")]
 fn raw_tag_search_effective_query(query: &str) -> Option<&str> {
     let trimmed_start = query.trim_start();
     let effective_query = trimmed_start.strip_prefix(':')?.trim_start();
@@ -3149,7 +3122,6 @@ fn raw_tag_search_effective_query(query: &str) -> Option<&str> {
     Some(effective_query)
 }
 
-#[cfg(target_os = "macos")]
 fn build_bowl_export_bundle(
     bowl_name: &str,
     items: &[ClipboardRecord],
@@ -3172,7 +3144,6 @@ fn build_bowl_export_bundle(
     }
 }
 
-#[cfg(target_os = "macos")]
 fn build_bowl_export_item(
     item: &ClipboardRecord,
     storage: Option<&ClipboardStorage>,
@@ -3235,7 +3206,6 @@ fn build_bowl_export_item(
     }
 }
 
-#[cfg(target_os = "macos")]
 fn build_bowl_export_template_content(content: &str, parameters: &[ClipboardParameter]) -> String {
     if parameters.is_empty() {
         return content.to_owned();
@@ -3266,7 +3236,6 @@ fn build_bowl_export_template_content(content: &str, parameters: &[ClipboardPara
     output
 }
 
-#[cfg(target_os = "macos")]
 fn export_parameter_default_value(parameter: &ClipboardParameter) -> String {
     let placeholder = format!("{{{{{}}}}}", parameter.name.trim());
     if parameter.target.trim() == placeholder {
@@ -3276,7 +3245,6 @@ fn export_parameter_default_value(parameter: &ClipboardParameter) -> String {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn suggested_bowl_export_filename(bowl_name: &str) -> String {
     let sanitized: String = bowl_name
         .trim()
@@ -3297,7 +3265,6 @@ fn suggested_bowl_export_filename(bowl_name: &str) -> String {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn is_parameter_key_token(value: &str) -> bool {
     let trimmed = value.trim();
     !trimmed.is_empty()
@@ -3307,7 +3274,6 @@ fn is_parameter_key_token(value: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
-#[cfg(target_os = "macos")]
 fn is_valid_parameter_name(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
@@ -3319,7 +3285,7 @@ fn is_valid_parameter_name(name: &str) -> bool {
     chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
-#[cfg(all(target_os = "macos", test))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

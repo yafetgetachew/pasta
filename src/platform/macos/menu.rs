@@ -63,6 +63,18 @@ pub(crate) fn menu_command_from_tag(tag: isize) -> Option<MenuCommand> {
         return Some(MenuCommand::ShowAbout);
     }
 
+    if tag == MENU_TAG_THEME_SYSTEM {
+        return Some(MenuCommand::SetThemeMode(ThemeMode::System));
+    }
+
+    if tag == MENU_TAG_THEME_LIGHT {
+        return Some(MenuCommand::SetThemeMode(ThemeMode::Light));
+    }
+
+    if tag == MENU_TAG_THEME_DARK {
+        return Some(MenuCommand::SetThemeMode(ThemeMode::Dark));
+    }
+
     if tag == MENU_TAG_SYNTAX_ON {
         return Some(MenuCommand::SetSyntaxHighlighting(true));
     }
@@ -97,6 +109,14 @@ pub(crate) fn menu_command_from_tag(tag: isize) -> Option<MenuCommand> {
 
     if tag == MENU_TAG_LAUNCH_AT_LOGIN {
         return Some(MenuCommand::ToggleLaunchAtLogin);
+    }
+
+    if tag == MENU_TAG_ANALYTICS_ON {
+        return Some(MenuCommand::SetAnalyticsOptIn(true));
+    }
+
+    if tag == MENU_TAG_ANALYTICS_OFF {
+        return Some(MenuCommand::SetAnalyticsOptIn(false));
     }
 
     None
@@ -169,6 +189,35 @@ pub(crate) fn setup_status_item(cx: &mut App) {
         }
         font_parent.setSubmenu_(font_menu);
         menu.addItem_(font_parent);
+
+        let theme_parent = menu_item("Theme", "", handler, selector("menuAction:"), -1);
+        let theme_menu = NSMenu::new(nil);
+        let theme_system = menu_item(
+            "System",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_THEME_SYSTEM,
+        );
+        let theme_light = menu_item(
+            "Light",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_THEME_LIGHT,
+        );
+        let theme_dark = menu_item(
+            "Dark",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_THEME_DARK,
+        );
+        theme_menu.addItem_(theme_system);
+        theme_menu.addItem_(theme_light);
+        theme_menu.addItem_(theme_dark);
+        theme_parent.setSubmenu_(theme_menu);
+        menu.addItem_(theme_parent);
 
         let syntax_parent = menu_item(
             "Syntax Highlighting",
@@ -259,8 +308,27 @@ pub(crate) fn setup_status_item(cx: &mut App) {
             MENU_TAG_BRAIN_DOWNLOAD,
         );
 
-        // Set initial checkmark state
-        let brain_enabled = cx.global::<UiStyleState>().pasta_brain_enabled;
+        let style = cx.global::<UiStyleState>();
+        let brain_enabled = style.pasta_brain_enabled;
+        let syntax_enabled = style.syntax_highlighting;
+        let secret_enabled = style.secret_auto_clear;
+        let theme_mode = style.theme_mode;
+        let _: () = msg_send![
+            theme_system,
+            setState: if theme_mode == ThemeMode::System { 1_isize } else { 0_isize }
+        ];
+        let _: () = msg_send![
+            theme_light,
+            setState: if theme_mode == ThemeMode::Light { 1_isize } else { 0_isize }
+        ];
+        let _: () = msg_send![
+            theme_dark,
+            setState: if theme_mode == ThemeMode::Dark { 1_isize } else { 0_isize }
+        ];
+        let _: () = msg_send![syntax_on, setState: if syntax_enabled { 1_isize } else { 0_isize }];
+        let _: () = msg_send![syntax_off, setState: if syntax_enabled { 0_isize } else { 1_isize }];
+        let _: () = msg_send![secret_on, setState: if secret_enabled { 1_isize } else { 0_isize }];
+        let _: () = msg_send![secret_off, setState: if secret_enabled { 0_isize } else { 1_isize }];
         let _: () = msg_send![brain_on, setState: if brain_enabled { 1_isize } else { 0_isize }];
         let _: () = msg_send![brain_off, setState: if brain_enabled { 0_isize } else { 1_isize }];
 
@@ -270,6 +338,38 @@ pub(crate) fn setup_status_item(cx: &mut App) {
         brain_menu.addItem_(brain_download);
         brain_parent.setSubmenu_(brain_menu);
         menu.addItem_(brain_parent);
+
+        let analytics_parent = menu_item(
+            "Share Detailed Analytics",
+            "",
+            handler,
+            selector("menuAction:"),
+            -1,
+        );
+        let analytics_menu = NSMenu::new(nil);
+        let analytics_on = menu_item(
+            "Enable",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_ANALYTICS_ON,
+        );
+        let analytics_off = menu_item(
+            "Disable",
+            "",
+            handler,
+            selector("menuAction:"),
+            MENU_TAG_ANALYTICS_OFF,
+        );
+        let analytics_enabled = cx.global::<UiStyleState>().analytics_opt_in;
+        let _: () =
+            msg_send![analytics_on, setState: if analytics_enabled { 1_isize } else { 0_isize }];
+        let _: () =
+            msg_send![analytics_off, setState: if analytics_enabled { 0_isize } else { 1_isize }];
+        analytics_menu.addItem_(analytics_on);
+        analytics_menu.addItem_(analytics_off);
+        analytics_parent.setSubmenu_(analytics_menu);
+        menu.addItem_(analytics_parent);
 
         menu.addItem_(NSMenuItem::separatorItem(nil));
 
@@ -315,15 +415,20 @@ pub(crate) fn setup_status_item(cx: &mut App) {
             _status_item: StrongPtr::retain(status_item as id),
             _menu: StrongPtr::retain(menu as id),
             _handler: StrongPtr::retain(handler as id),
+            theme_system_item: StrongPtr::retain(theme_system as id),
+            theme_light_item: StrongPtr::retain(theme_light as id),
+            theme_dark_item: StrongPtr::retain(theme_dark as id),
+            syntax_on_item: StrongPtr::retain(syntax_on as id),
+            syntax_off_item: StrongPtr::retain(syntax_off as id),
+            secret_on_item: StrongPtr::retain(secret_on as id),
+            secret_off_item: StrongPtr::retain(secret_off as id),
             brain_on_item: StrongPtr::retain(brain_on as id),
             brain_off_item: StrongPtr::retain(brain_off as id),
             brain_download_item: StrongPtr::retain(brain_download as id),
-            secret_on_item: StrongPtr::retain(secret_on as id),
-            secret_off_item: StrongPtr::retain(secret_off as id),
-            syntax_on_item: StrongPtr::retain(syntax_on as id),
-            syntax_off_item: StrongPtr::retain(syntax_off as id),
             font_menu: StrongPtr::retain(font_menu as id),
             launch_at_login_item: StrongPtr::retain(launch_at_login_item as id),
+            analytics_on_item: StrongPtr::retain(analytics_on as id),
+            analytics_off_item: StrongPtr::retain(analytics_off as id),
         });
     }
 }
@@ -340,13 +445,44 @@ pub(crate) fn update_launch_at_login_menu_state(cx: &App) {
 #[cfg(target_os = "macos")]
 pub(crate) fn update_brain_menu_state(cx: &App) {
     let style = cx.global::<UiStyleState>();
-    let enabled = style.pasta_brain_enabled;
     let reg = cx.global::<StatusItemRegistration>();
+    let theme_mode = style.theme_mode;
+    let syntax_enabled = style.syntax_highlighting;
+    let secret_enabled = style.secret_auto_clear;
+    let brain_enabled = style.pasta_brain_enabled;
     unsafe {
+        let _: () = msg_send![
+            *reg.theme_system_item,
+            setState: if theme_mode == ThemeMode::System { 1_isize } else { 0_isize }
+        ];
+        let _: () = msg_send![
+            *reg.theme_light_item,
+            setState: if theme_mode == ThemeMode::Light { 1_isize } else { 0_isize }
+        ];
+        let _: () = msg_send![
+            *reg.theme_dark_item,
+            setState: if theme_mode == ThemeMode::Dark { 1_isize } else { 0_isize }
+        ];
+        let _: () = msg_send![
+            *reg.syntax_on_item,
+            setState: if syntax_enabled { 1_isize } else { 0_isize }
+        ];
+        let _: () = msg_send![
+            *reg.syntax_off_item,
+            setState: if syntax_enabled { 0_isize } else { 1_isize }
+        ];
+        let _: () = msg_send![
+            *reg.secret_on_item,
+            setState: if secret_enabled { 1_isize } else { 0_isize }
+        ];
+        let _: () = msg_send![
+            *reg.secret_off_item,
+            setState: if secret_enabled { 0_isize } else { 1_isize }
+        ];
         let _: () =
-            msg_send![*reg.brain_on_item, setState: if enabled { 1_isize } else { 0_isize }];
+            msg_send![*reg.brain_on_item, setState: if brain_enabled { 1_isize } else { 0_isize }];
         let _: () =
-            msg_send![*reg.brain_off_item, setState: if enabled { 0_isize } else { 1_isize }];
+            msg_send![*reg.brain_off_item, setState: if brain_enabled { 0_isize } else { 1_isize }];
 
         // Update download item title based on neural status
         let neural_status = NEURAL_STATUS
@@ -384,6 +520,18 @@ pub(crate) fn update_syntax_menu_state(cx: &App) {
             msg_send![*reg.syntax_on_item, setState: if enabled { 1_isize } else { 0_isize }];
         let _: () =
             msg_send![*reg.syntax_off_item, setState: if enabled { 0_isize } else { 1_isize }];
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn update_analytics_menu_state(cx: &App) {
+    let enabled = cx.global::<UiStyleState>().analytics_opt_in;
+    let reg = cx.global::<StatusItemRegistration>();
+    unsafe {
+        let _: () =
+            msg_send![*reg.analytics_on_item, setState: if enabled { 1_isize } else { 0_isize }];
+        let _: () =
+            msg_send![*reg.analytics_off_item, setState: if enabled { 0_isize } else { 1_isize }];
     }
 }
 
