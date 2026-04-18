@@ -1,11 +1,7 @@
-#[cfg(target_os = "macos")]
 use std::ops::Range;
-#[cfg(target_os = "macos")]
 use std::sync::OnceLock;
 
-#[cfg(target_os = "macos")]
 use gpui::{HighlightStyle, StyledText};
-#[cfg(target_os = "macos")]
 use syntect::{
     easy::HighlightLines,
     highlighting::{Style as SyntectStyle, Theme, ThemeSet},
@@ -13,17 +9,14 @@ use syntect::{
     util::LinesWithEndings,
 };
 
-#[cfg(target_os = "macos")]
 use super::LanguageTag;
 
-#[cfg(target_os = "macos")]
 struct UiSyntaxHighlighter {
     syntax_set: SyntaxSet,
     dark_theme: Theme,
     light_theme: Theme,
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn syntax_styled_text(
     text: &str,
     language: Option<LanguageTag>,
@@ -47,7 +40,6 @@ pub(crate) fn syntax_styled_text(
     }
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn syntax_highlights(
     text: &str,
     language: LanguageTag,
@@ -97,7 +89,6 @@ pub(crate) fn syntax_highlights(
     highlights
 }
 
-#[cfg(target_os = "macos")]
 fn syntect_style_to_highlight(style: SyntectStyle) -> HighlightStyle {
     let rgba = gpui::Rgba {
         r: style.foreground.r as f32 / 255.0,
@@ -109,7 +100,6 @@ fn syntect_style_to_highlight(style: SyntectStyle) -> HighlightStyle {
     HighlightStyle::color(hsla)
 }
 
-#[cfg(target_os = "macos")]
 fn ui_syntax_highlighter() -> Option<&'static UiSyntaxHighlighter> {
     static SYNTAX_HIGHLIGHTER: OnceLock<Option<UiSyntaxHighlighter>> = OnceLock::new();
     SYNTAX_HIGHLIGHTER
@@ -135,7 +125,6 @@ fn ui_syntax_highlighter() -> Option<&'static UiSyntaxHighlighter> {
         .as_ref()
 }
 
-#[cfg(target_os = "macos")]
 fn select_syntect_theme(theme_set: &ThemeSet, preferred_names: &[&str]) -> Option<Theme> {
     preferred_names
         .iter()
@@ -143,7 +132,6 @@ fn select_syntect_theme(theme_set: &ThemeSet, preferred_names: &[&str]) -> Optio
         .or_else(|| theme_set.themes.values().next().cloned())
 }
 
-#[cfg(target_os = "macos")]
 fn syntect_syntax_for_language<'a>(
     syntax_set: &'a SyntaxSet,
     language: LanguageTag,

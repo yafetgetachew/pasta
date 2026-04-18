@@ -1,9 +1,9 @@
 #![allow(unexpected_cfgs)]
+#![allow(unused_imports)] // Phase 0: many imports used only by macOS or Linux platform code
 
 mod neural_embed;
 mod storage;
 
-#[cfg(target_os = "macos")]
 use std::{
     borrow::Cow,
     collections::HashSet,
@@ -33,7 +33,6 @@ use global_hotkey::{
     GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
     hotkey::{Code, HotKey, Modifiers},
 };
-#[cfg(target_os = "macos")]
 use gpui::{
     App, Application, Bounds, ClickEvent, ClipboardItem, Context, CursorStyle,
     Element as GpuiElement, ElementId, ElementInputHandler, Entity, EntityInputHandler,
@@ -54,20 +53,15 @@ use objc::{
     runtime::{Class, Object, Sel},
     sel, sel_impl,
 };
-#[cfg(target_os = "macos")]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-#[cfg(target_os = "macos")]
 use serde::{Deserialize, Serialize};
-#[cfg(target_os = "macos")]
 use sha2::{Digest, Sha256};
-#[cfg(target_os = "macos")]
 use storage::{
     BowlExportBundle, BowlExportItem, BowlExportParameter, ClipboardItemType, ClipboardParameter,
     ClipboardRecord, ClipboardStorage, SearchQuery, bowl_name_from_tags, parse_search_query,
     render_parameterized_content, tags_without_bowl,
 };
 
-#[cfg(target_os = "macos")]
 actions!(
     pasta_query_input,
     [
@@ -90,131 +84,137 @@ actions!(
 #[link(name = "LocalAuthentication", kind = "framework")]
 unsafe extern "C" {}
 
-#[cfg(target_os = "macos")]
 const LAUNCHER_WIDTH: f32 = 860.0;
-#[cfg(target_os = "macos")]
 const LAUNCHER_HEIGHT: f32 = 560.0;
 #[cfg(target_os = "macos")]
 const TOP_OFFSET: f32 = 146.0;
 #[cfg(target_os = "macos")]
 const LAUNCH_AGENT_LABEL: &str = "com.pasta.launcher";
-#[cfg(target_os = "macos")]
 const PREVIEW_LINE_LIMIT: usize = 4;
-#[cfg(target_os = "macos")]
 const PREVIEW_WRAP_RUN: usize = 96;
-#[cfg(target_os = "macos")]
 const WINDOW_OPEN_DURATION_MS: u64 = 120;
-#[cfg(target_os = "macos")]
+#[cfg(not(target_os = "linux"))]
 const WINDOW_CLOSE_DURATION_MS: u64 = 95;
-#[cfg(target_os = "macos")]
 const WINDOW_CLOSE_EARLY_EXIT_ALPHA: f32 = 0.08;
-#[cfg(target_os = "macos")]
 const MAX_VISIBLE_TAG_CHIPS: usize = 5;
 
-#[cfg(target_os = "macos")]
 const RESULT_ROW_HEIGHT: f32 = 118.0;
-#[cfg(target_os = "macos")]
 const RESULTS_LIST_WIDTH_RATIO: f32 = 0.47;
-#[cfg(target_os = "macos")]
 const PREVIEW_SETTLE_DELAY_MS: u64 = 80;
-#[cfg(target_os = "macos")]
 const PREVIEW_PANE_TEXT_LIMIT: usize = 24_000;
-#[cfg(target_os = "macos")]
 const PREVIEW_PANE_SYNTAX_MAX_CHARS: usize = 12_000;
-#[cfg(target_os = "macos")]
 const PREVIEW_PANE_SYNTAX_MAX_LINES: usize = 320;
+
 #[cfg(target_os = "macos")]
 const NS_WINDOW_COLLECTION_BEHAVIOR_MOVE_TO_ACTIVE_SPACE: usize = 1 << 1;
 
-#[cfg(target_os = "macos")]
 #[derive(Clone)]
 struct StorageState {
     storage: Arc<ClipboardStorage>,
 }
 
-#[cfg(target_os = "macos")]
 impl Global for StorageState {}
 
-#[cfg(target_os = "macos")]
 #[derive(Clone)]
-struct UiStyleState {
-    family: SharedString,
-    surface_alpha: f32,
-    syntax_highlighting: bool,
-    secret_auto_clear: bool,
-    pasta_brain_enabled: bool,
-    analytics_opt_in: bool,
+pub(crate) struct UiStyleState {
+    pub family: SharedString,
+    pub surface_alpha: f32,
+    pub theme_mode: ThemeMode,
+    pub syntax_highlighting: bool,
+    pub secret_auto_clear: bool,
+    pub pasta_brain_enabled: bool,
+    pub analytics_opt_in: bool,
 }
 
-#[cfg(target_os = "macos")]
 impl Global for UiStyleState {}
 
-#[cfg(target_os = "macos")]
 #[derive(Debug, Serialize, Deserialize)]
-struct PersistedUiStyleState {
-    family: String,
-    surface_alpha: f32,
-    syntax_highlighting: bool,
-    secret_auto_clear: bool,
-    #[serde(default = "default_pasta_brain_enabled")]
-    pasta_brain_enabled: bool,
+pub(crate) struct PersistedUiStyleState {
+    pub(crate) family: String,
+    pub(crate) surface_alpha: f32,
     #[serde(default)]
-    analytics_opt_in: bool,
+    pub(crate) theme_mode: ThemeMode,
+    pub(crate) syntax_highlighting: bool,
+    pub(crate) secret_auto_clear: bool,
+    #[serde(default = "default_pasta_brain_enabled")]
+    pub(crate) pasta_brain_enabled: bool,
+    #[serde(default)]
+    pub(crate) analytics_opt_in: bool,
 }
 
-#[cfg(target_os = "macos")]
 fn default_pasta_brain_enabled() -> bool {
     true
 }
 
-#[cfg(target_os = "macos")]
-const MENU_TAG_SHOW: isize = 1;
-#[cfg(target_os = "macos")]
-const MENU_TAG_QUIT: isize = 2;
-#[cfg(target_os = "macos")]
-const MENU_TAG_FONT_BASE: isize = 100;
-#[cfg(target_os = "macos")]
-const MENU_TAG_ABOUT: isize = 200;
-#[cfg(target_os = "macos")]
-const MENU_TAG_SYNTAX_ON: isize = 300;
-#[cfg(target_os = "macos")]
-const MENU_TAG_SYNTAX_OFF: isize = 301;
-#[cfg(target_os = "macos")]
-const MENU_TAG_SECRET_CLEAR_ON: isize = 302;
-#[cfg(target_os = "macos")]
-const MENU_TAG_SECRET_CLEAR_OFF: isize = 303;
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ThemeMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
 
-#[cfg(target_os = "macos")]
-const MENU_TAG_BRAIN_ON: isize = 304;
+impl ThemeMode {
+    pub(crate) fn apply(self, appearance: WindowAppearance) -> WindowAppearance {
+        match self {
+            Self::System => appearance,
+            Self::Light => WindowAppearance::Light,
+            Self::Dark => WindowAppearance::Dark,
+        }
+    }
+}
 
-#[cfg(target_os = "macos")]
-const MENU_TAG_BRAIN_OFF: isize = 305;
+// Menu-item tag constants. Used by the macOS NSMenu dispatch table and by the
+// Linux tray-menu unit tests; the Linux runtime dispatches without integer
+// tags. Gate accordingly so release builds on Linux don't flag them unused.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_SHOW: isize = 1;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_QUIT: isize = 2;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_FONT_BASE: isize = 100;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_ABOUT: isize = 200;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_SYNTAX_ON: isize = 300;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_SYNTAX_OFF: isize = 301;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_SECRET_CLEAR_ON: isize = 302;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_SECRET_CLEAR_OFF: isize = 303;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_BRAIN_ON: isize = 304;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_BRAIN_OFF: isize = 305;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_BRAIN_DOWNLOAD: isize = 306;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_THEME_SYSTEM: isize = 307;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_THEME_LIGHT: isize = 308;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_THEME_DARK: isize = 309;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_CLEAR_HISTORY: isize = 310;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_LAUNCH_AT_LOGIN: isize = 311;
 
-#[cfg(target_os = "macos")]
-const MENU_TAG_BRAIN_DOWNLOAD: isize = 306;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_ANALYTICS_ON: isize = 312;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const MENU_TAG_ANALYTICS_OFF: isize = 313;
 
-#[cfg(target_os = "macos")]
-const MENU_TAG_CLEAR_HISTORY: isize = 307;
-
-#[cfg(target_os = "macos")]
-const MENU_TAG_LAUNCH_AT_LOGIN: isize = 308;
-
-#[cfg(target_os = "macos")]
-const MENU_TAG_ANALYTICS_ON: isize = 309;
-
-#[cfg(target_os = "macos")]
-const MENU_TAG_ANALYTICS_OFF: isize = 310;
-
-#[cfg(target_os = "macos")]
 static MENU_COMMAND_TX: OnceLock<mpsc::Sender<MenuCommand>> = OnceLock::new();
 
-#[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
-enum MenuCommand {
+pub(crate) enum MenuCommand {
     ShowLauncher,
     QuitApp,
     SetFont(FontChoice),
     ShowAbout,
+    SetThemeMode(ThemeMode),
     SetSyntaxHighlighting(bool),
     SetSecretAutoClear(bool),
     SetPastaBrain(bool),
@@ -225,21 +225,18 @@ enum MenuCommand {
     ToggleLaunchAtLogin,
 }
 
-#[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NeuralStatus {
     Loading,
     Ready,
     Failed,
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) static NEURAL_STATUS: std::sync::Mutex<NeuralStatus> =
     std::sync::Mutex::new(NeuralStatus::Loading);
 
-#[cfg(target_os = "macos")]
-#[derive(Clone, Copy)]
-enum FontChoice {
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum FontChoice {
     MesloLg,
     Iosevka,
     IbmPlexMono,
@@ -249,9 +246,8 @@ enum FontChoice {
     InputMono,
 }
 
-#[cfg(target_os = "macos")]
 impl FontChoice {
-    const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::MesloLg,
         Self::Iosevka,
         Self::IbmPlexMono,
@@ -261,7 +257,7 @@ impl FontChoice {
         Self::InputMono,
     ];
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::MesloLg => "Meslo LG",
             Self::Iosevka => "Iosevka",
@@ -273,7 +269,7 @@ impl FontChoice {
         }
     }
 
-    fn candidates(self) -> &'static [&'static str] {
+    pub(crate) fn candidates(self) -> &'static [&'static str] {
         match self {
             Self::MesloLg => &[
                 "MesloLGS NF",
@@ -320,28 +316,24 @@ impl FontChoice {
     }
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 enum LauncherExitIntent {
     Hide,
     Quit,
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TagEditorMode {
     Add,
     Remove,
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ParameterEditorStage {
     SelectValue,
     EnterName,
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TextInputTarget {
     Query,
@@ -352,7 +344,6 @@ enum TextInputTarget {
     ParameterFill,
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TransformAction {
     ShellQuote,
@@ -371,7 +362,6 @@ enum TransformAction {
     PublicCertPemInfo,
 }
 
-#[cfg(target_os = "macos")]
 fn transform_action_for_shortcut(
     key: &str,
     modifiers: &gpui::Modifiers,
@@ -411,25 +401,17 @@ fn transform_action_for_shortcut(
     }
 }
 
-#[cfg(target_os = "macos")]
 mod app;
-#[cfg(target_os = "macos")]
 mod platform;
-#[cfg(target_os = "macos")]
 mod transforms;
-#[cfg(target_os = "macos")]
 mod ui;
 
-#[cfg(target_os = "macos")]
 use app::*;
-#[cfg(target_os = "macos")]
-use platform::macos::*;
-#[cfg(target_os = "macos")]
+use platform::*;
 use transforms::*;
-#[cfg(target_os = "macos")]
 use ui::*;
 
-#[cfg(all(target_os = "macos", test))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -537,7 +519,6 @@ mod tests {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn spawn_neural_init(storage: Arc<ClipboardStorage>) {
     if let Ok(mut status) = NEURAL_STATUS.lock() {
         *status = NeuralStatus::Loading;
@@ -647,9 +628,6 @@ fn main() {
             storage: storage.clone(),
         });
 
-        // Initialize neural embedder on a background thread to avoid blocking the UI.
-        // If this fails (e.g. no internet on first launch), search degrades gracefully
-        // to the existing feature-hash approach.
         spawn_neural_init(storage.clone());
 
         load_embedded_ui_font(cx);
@@ -691,7 +669,92 @@ fn main() {
     });
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn main() {
-    eprintln!("This app currently supports macOS only.");
+    Application::new().run(|cx: &mut App| {
+        let (menu_tx, menu_rx) = mpsc::channel::<MenuCommand>();
+        let _ = MENU_COMMAND_TX.set(menu_tx);
+
+        let storage = match ClipboardStorage::bootstrap("PastaClipboard") {
+            Ok(storage) => Arc::new(storage),
+            Err(primary_err) => {
+                eprintln!(
+                    "warning: failed to initialize persistent clipboard storage: {primary_err}"
+                );
+                match ClipboardStorage::bootstrap_fallback("PastaClipboard") {
+                    Ok(storage) => {
+                        eprintln!("warning: using fallback clipboard storage for this session");
+                        show_macos_notification(
+                            "Pasta",
+                            "Storage fallback mode is active for this session.",
+                        );
+                        Arc::new(storage)
+                    }
+                    Err(fallback_err) => {
+                        eprintln!(
+                            "error: failed to initialize clipboard storage fallback: {fallback_err}"
+                        );
+                        cx.quit();
+                        return;
+                    }
+                }
+            }
+        };
+
+        if let Some(initial_snapshot) = read_clipboard_snapshot()
+            && !initial_snapshot.is_transient
+        {
+            let _ = if initial_snapshot.is_concealed {
+                storage.upsert_clipboard_item_with_hint(&initial_snapshot.text, true)
+            } else {
+                storage.upsert_clipboard_item(&initial_snapshot.text)
+            };
+        }
+
+        cx.set_global(StorageState {
+            storage: storage.clone(),
+        });
+
+        spawn_neural_init(storage.clone());
+
+        load_embedded_ui_font(cx);
+        cx.bind_keys([
+            KeyBinding::new("backspace", QueryBackspace, Some("PastaTextInput")),
+            KeyBinding::new("left", QueryLeft, Some("PastaTextInput")),
+            KeyBinding::new("right", QueryRight, Some("PastaTextInput")),
+            KeyBinding::new("shift-left", QuerySelectLeft, Some("PastaTextInput")),
+            KeyBinding::new("shift-right", QuerySelectRight, Some("PastaTextInput")),
+            KeyBinding::new("ctrl-a", QuerySelectAll, Some("PastaTextInput")),
+            KeyBinding::new("ctrl-v", QueryPaste, Some("PastaTextInput")),
+            KeyBinding::new("ctrl-c", QueryCopy, Some("PastaTextInput")),
+            KeyBinding::new("ctrl-x", QueryCut, Some("PastaTextInput")),
+            KeyBinding::new("home", QueryHome, Some("PastaTextInput")),
+            KeyBinding::new("end", QueryEnd, Some("PastaTextInput")),
+        ]);
+
+        // load_embedded_ui_font now loads fonts into the text system and
+        // sets UiStyleState from persisted preferences (or defaults).
+
+        cx.set_global(LauncherState { window: None });
+        let background_anchor_window = create_background_anchor_window(cx);
+        cx.set_global(BackgroundAnchorState {
+            window: background_anchor_window,
+        });
+        cx.set_global(AutoClearState::default());
+        cx.set_global(SelfClipboardWriteState::default());
+
+        // Platform setup
+        configure_background_mode();
+        ensure_launch_agent_registered();
+        setup_status_item(cx);
+        setup_hotkey(cx);
+
+        // These runtime spawners need real implementations in later phases.
+        // For now they just set up the event loops with stubbed platform calls.
+        spawn_hotkey_listener(cx);
+        spawn_menu_command_listener(cx, menu_rx);
+        spawn_launcher_transition_loop(cx);
+        spawn_clipboard_watcher(cx);
+        show_launcher(cx);
+    });
 }

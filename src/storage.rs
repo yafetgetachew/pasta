@@ -163,6 +163,9 @@ struct ScoredRecord {
 struct IndexedRecord {
     record: ClipboardRecord,
     content_hash: String,
+    content_lower: String,
+    description_lower: String,
+    search_tokens: Vec<String>,
 }
 
 #[derive(Default)]
@@ -183,16 +186,19 @@ pub struct ClipboardStorage {
 
 impl ClipboardStorage {
     pub fn bootstrap(app_dir_name: &str) -> Result<Self> {
-        let data_dir = dirs::data_local_dir()
-            .or_else(dirs::home_dir)
-            .context("unable to determine data directory")?
-            .join(app_dir_name);
-        fs::create_dir_all(&data_dir).context("unable to create data directory")?;
-
-        let db_path = data_dir.join("clipboard.db");
+        let db_path = primary_db_path(app_dir_name)?;
+        let crypto = match CryptoBox::load_or_create() {
+            Ok(crypto) => crypto,
+            Err(err) => {
+                eprintln!(
+                    "warning: secure storage unavailable; using ephemeral encryption for this session: {err}"
+                );
+                CryptoBox::ephemeral()
+            }
+        };
         let storage = Self {
             db_path,
-            crypto: CryptoBox::load_or_create()?,
+            crypto,
             semantic_embedding_cache: Arc::new(Mutex::new(HashMap::new())),
             neural_embedding_cache: Arc::new(Mutex::new(HashMap::new())),
             neural_embedder: Arc::new(Mutex::new(None)),
@@ -205,19 +211,14 @@ impl ClipboardStorage {
     }
 
     pub fn bootstrap_fallback(app_dir_name: &str) -> Result<Self> {
-        let data_dir = dirs::cache_dir()
-            .or_else(dirs::home_dir)
-            .context("unable to determine fallback data directory")?
-            .join(app_dir_name);
-        fs::create_dir_all(&data_dir).context("unable to create fallback data directory")?;
+        let db_path = fallback_db_path(app_dir_name)?;
 
         // Previous fallback sessions leave behind db files encrypted with an ephemeral
         // key that can never be decrypted again; sweep them so they do not accumulate.
-        sweep_orphaned_fallback_dbs(&data_dir, std::process::id());
+        if let Some(data_dir) = db_path.parent() {
+            sweep_orphaned_fallback_dbs(data_dir, std::process::id());
+        }
 
-        // Fallback storage is intentionally isolated from the primary DB because
-        // keychain access may be unavailable in this mode.
-        let db_path = data_dir.join(format!("clipboard-fallback-{}.db", std::process::id()));
         let storage = Self {
             db_path,
             crypto: CryptoBox::ephemeral(),
@@ -433,7 +434,8 @@ impl ClipboardStorage {
                 continue;
             }
 
-            let lexical_match = record_matches_query(record, effective_query, tag_only);
+            let lexical_match =
+                record_matches_query_indexed(record, effective_query, tag_only, Some(indexed));
             if !use_semantic_search {
                 if lexical_match {
                     output.push(record.clone());
@@ -1264,6 +1266,21 @@ impl ClipboardStorage {
         let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
         let parameters: Vec<ClipboardParameter> =
             serde_json::from_str(&parameters_json).unwrap_or_default();
+        let content_lower = content.to_lowercase();
+        let description_lower = description.to_lowercase();
+        let fuzzy_search_text = if description_lower.is_empty() {
+            bounded_text_prefix(&content_lower, SEARCH_FUZZY_TEXT_LIMIT).to_owned()
+        } else {
+            format!(
+                "{} {}",
+                bounded_text_prefix(&content_lower, SEARCH_FUZZY_TEXT_LIMIT),
+                bounded_text_prefix(&description_lower, SEARCH_FUZZY_TEXT_LIMIT.min(512))
+            )
+        };
+        let search_tokens: Vec<String> = tokenize_search_terms(&fuzzy_search_text)
+            .into_iter()
+            .map(|s| s.to_owned())
+            .collect();
         Ok(Some(IndexedRecord {
             record: ClipboardRecord {
                 id,
@@ -1275,6 +1292,9 @@ impl ClipboardStorage {
                 created_at,
             },
             content_hash,
+            content_lower,
+            description_lower,
+            search_tokens,
         }))
     }
 
@@ -1371,6 +1391,85 @@ impl ClipboardStorage {
         }
         embedding
     }
+}
+
+fn primary_db_path(app_dir_name: &str) -> Result<PathBuf> {
+    let data_dir = dirs::data_local_dir()
+        .or_else(dirs::home_dir)
+        .context("unable to determine data directory")?
+        .join(app_dir_name);
+    fs::create_dir_all(&data_dir).context("unable to create data directory")?;
+
+    let db_path = data_dir.join("clipboard.db");
+    verify_sqlite_path(&db_path)?;
+    Ok(db_path)
+}
+
+fn sweep_orphaned_fallback_dbs(data_dir: &std::path::Path, current_pid: u32) {
+    let Ok(entries) = fs::read_dir(data_dir) else {
+        return;
+    };
+    let current_marker = format!("-{current_pid}.db");
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if !name.starts_with("clipboard-fallback-") {
+            continue;
+        }
+        // Keep the file that belongs to the current process; SQLite may also create
+        // -wal and -shm sidecars which we intentionally leave alone for the live db
+        // and prune for stale ones below.
+        if name.ends_with(&current_marker)
+            || name.ends_with(&format!("-{current_pid}.db-wal"))
+            || name.ends_with(&format!("-{current_pid}.db-shm"))
+        {
+            continue;
+        }
+        let _ = fs::remove_file(entry.path());
+    }
+}
+
+fn fallback_db_path(app_dir_name: &str) -> Result<PathBuf> {
+    let candidate_roots = [
+        dirs::cache_dir(),
+        dirs::data_local_dir(),
+        dirs::home_dir().map(|path| path.join(".cache")),
+        Some(std::env::temp_dir()),
+        Some(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+    ];
+
+    for data_dir in candidate_roots
+        .into_iter()
+        .flatten()
+        .map(|root| root.join(app_dir_name))
+    {
+        if fs::create_dir_all(&data_dir).is_err() {
+            continue;
+        }
+
+        let db_path = data_dir.join(format!("clipboard-fallback-{}.db", std::process::id()));
+        if verify_sqlite_path(&db_path).is_ok() {
+            return Ok(db_path);
+        }
+    }
+
+    Err(anyhow!("unable to create fallback data directory"))
+}
+
+fn verify_sqlite_path(path: &PathBuf) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("unable to create {:?}", parent))?;
+    }
+
+    Connection::open(path)
+        .with_context(|| format!("unable to open sqlite database at {:?}", path))?
+        .close()
+        .map_err(|(_, err)| anyhow!(err))
+        .context("unable to close sqlite database probe")?;
+
+    Ok(())
 }
 
 pub(crate) fn parse_search_query(query: &str) -> SearchQuery {
@@ -1659,32 +1758,6 @@ impl CryptoBox {
         let mut key = [0_u8; 32];
         OsRng.fill_bytes(&mut key);
         Self { key }
-    }
-}
-
-fn sweep_orphaned_fallback_dbs(data_dir: &std::path::Path, current_pid: u32) {
-    let Ok(entries) = fs::read_dir(data_dir) else {
-        return;
-    };
-    let current_marker = format!("-{current_pid}.db");
-    for entry in entries.flatten() {
-        let file_name = entry.file_name();
-        let Some(name) = file_name.to_str() else {
-            continue;
-        };
-        if !name.starts_with("clipboard-fallback-") {
-            continue;
-        }
-        // Keep the file that belongs to the current process; SQLite may also create
-        // -wal and -shm sidecars which we intentionally leave alone for the live db
-        // and prune for stale ones below.
-        if name.ends_with(&current_marker)
-            || name.ends_with(&format!("-{current_pid}.db-wal"))
-            || name.ends_with(&format!("-{current_pid}.db-shm"))
-        {
-            continue;
-        }
-        let _ = fs::remove_file(entry.path());
     }
 }
 
@@ -3297,7 +3370,17 @@ pub(crate) fn decode_f32_vec_base64(encoded: &str) -> Option<Vec<f32>> {
     )
 }
 
+#[cfg(test)]
 pub(crate) fn record_matches_query(record: &ClipboardRecord, query: &str, tag_only: bool) -> bool {
+    record_matches_query_indexed(record, query, tag_only, None)
+}
+
+fn record_matches_query_indexed(
+    record: &ClipboardRecord,
+    query: &str,
+    tag_only: bool,
+    indexed: Option<&IndexedRecord>,
+) -> bool {
     if tag_only {
         let tag_terms: Vec<&str> = query
             .split_whitespace()
@@ -3314,8 +3397,23 @@ pub(crate) fn record_matches_query(record: &ClipboardRecord, query: &str, tag_on
             .all(|term| record_matches_tag(record, term));
     }
 
-    let content = record.content.to_lowercase();
-    let description = record.description.to_lowercase();
+    // Use pre-computed lowercase fields from the index when available,
+    // falling back to computing them on-the-fly for non-indexed callers.
+    let owned_content;
+    let owned_description;
+    let content: &str = if let Some(idx) = indexed {
+        &idx.content_lower
+    } else {
+        owned_content = record.content.to_lowercase();
+        &owned_content
+    };
+    let description: &str = if let Some(idx) = indexed {
+        &idx.description_lower
+    } else {
+        owned_description = record.description.to_lowercase();
+        &owned_description
+    };
+
     if content.contains(query) {
         return true;
     }
@@ -3332,19 +3430,27 @@ pub(crate) fn record_matches_query(record: &ClipboardRecord, query: &str, tag_on
         return false;
     }
 
+    // Use pre-computed search tokens from the index when available.
+    if let Some(idx) = indexed {
+        let token_refs: Vec<&str> = idx.search_tokens.iter().map(|s| s.as_str()).collect();
+        return query_terms
+            .iter()
+            .all(|term| term_matches_record(record, term, content, description, &token_refs));
+    }
+
     let fuzzy_search_text = if description.is_empty() {
-        bounded_text_prefix(&content, SEARCH_FUZZY_TEXT_LIMIT).to_owned()
+        bounded_text_prefix(content, SEARCH_FUZZY_TEXT_LIMIT).to_owned()
     } else {
         format!(
             "{} {}",
-            bounded_text_prefix(&content, SEARCH_FUZZY_TEXT_LIMIT),
-            bounded_text_prefix(&description, SEARCH_FUZZY_TEXT_LIMIT.min(512))
+            bounded_text_prefix(content, SEARCH_FUZZY_TEXT_LIMIT),
+            bounded_text_prefix(description, SEARCH_FUZZY_TEXT_LIMIT.min(512))
         )
     };
     let content_terms = tokenize_search_terms(&fuzzy_search_text);
     query_terms
         .iter()
-        .all(|term| term_matches_record(record, term, &content, &description, &content_terms))
+        .all(|term| term_matches_record(record, term, content, description, &content_terms))
 }
 
 pub fn render_parameterized_content(
@@ -3445,6 +3551,16 @@ fn searchable_tag_terms(record: &ClipboardRecord) -> HashSet<String> {
             continue;
         }
         insert_tag_variants(raw, &mut terms);
+    }
+
+    // Merge the UI-facing language detector so `:yaml` (and friends) match items the
+    // user sees labeled that way, even when the stricter storage-side detector
+    // abstained at insert time.
+    if let Some(language) = crate::ui::detect_language(record.item_type, &record.content)
+        && let Some(alias) = language.storage_alias()
+    {
+        terms.insert(alias.to_owned());
+        insert_language_aliases(alias, &mut terms);
     }
 
     if terms.contains("multiline") {
@@ -3894,6 +4010,24 @@ mod tests {
         };
 
         assert!(record_matches_query(&record, "rs", true));
+    }
+
+    #[test]
+    fn tag_search_matches_ui_detected_language_when_stored_tag_missing() {
+        // Content the loose UI detector labels YAML but the strict storage
+        // detector skips at insert time (no doc marker, few indented lines).
+        let record = ClipboardRecord {
+            id: 4,
+            item_type: ClipboardItemType::Text,
+            content: "name: widget\nversion: 1.2.3".to_owned(),
+            description: String::new(),
+            tags: vec!["text".to_owned()],
+            parameters: Vec::new(),
+            created_at: "2026-03-11T00:00:00Z".to_owned(),
+        };
+
+        assert!(record_matches_query(&record, "yaml", true));
+        assert!(record_matches_query(&record, "yml", true));
     }
 
     #[test]

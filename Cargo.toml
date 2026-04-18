@@ -3,33 +3,21 @@ name = "pasta-launcher"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-aes-gcm = "0.10.3"
-anyhow = "1.0.100"
-base64 = "0.22.1"
-chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
-dirs = "5.0.1"
-fastembed = { version = "4", default-features = false, features = ["hf-hub"] }
-futures = "0.3.31"
-global-hotkey = "0.7.0"
-gpui = { version = "0.2.2", default-features = false, features = ["font-kit"] }
-keyring = { version = "3.6.2", default-features = false, features = ["apple-native"] }
-ort = { version = "2.0.0-rc.9", features = ["download-binaries"] }
-raw-window-handle = "0.6.2"
-rusqlite = { version = "0.32.1", features = ["bundled"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
-serde_yaml = "0.9.34"
-sha2 = "0.10.9"
-toml = "0.8.23"
-unicode-segmentation = "1.12.0"
-ureq = { version = "3.3.0", features = ["json"] }
+# Dev builds: opt-level 1 gives ~5-10x faster runtime vs 0, with minimal compile-time cost.
+[profile.dev]
+opt-level = 1
 
-[target.'cfg(target_os = "macos")'.dependencies]
-block = "0.1.6"
-cocoa = "0.26.0"
-objc = "0.2.7"
-syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
+# Heavy deps compiled at full speed even in dev mode.
+[profile.dev.package.rusqlite]
+opt-level = 3
+[profile.dev.package.syntect]
+opt-level = 3
+[profile.dev.package.fastembed]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.aes-gcm]
+opt-level = 3
 
 # Release binary size/perf tuning. Keep default opt-level = 3 so the interactive
 # launcher stays responsive; shave size via LTO + single codegen unit + symbol
@@ -40,3 +28,48 @@ syntect = { version = "5.3.0", default-features = false, features = ["default-fa
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+[dependencies]
+aes-gcm = "0.10.3"
+anyhow = "1.0.100"
+base64 = "0.22.1"
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
+dirs = "5.0.1"
+fastembed = { version = "4", default-features = false, features = ["hf-hub"] }
+futures = "0.3.31"
+ort = { version = "2.0.0-rc.9", features = ["download-binaries"] }
+raw-window-handle = "0.6.2"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+serde_yaml = "0.9.34"
+sha2 = "0.10.9"
+syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
+toml = "0.8.23"
+unicode-segmentation = "1.12.0"
+ureq = { version = "3.3.0", features = ["json"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block = "0.1.6"
+cocoa = "0.26.0"
+global-hotkey = "0.7.0"
+gpui = { version = "0.2.2", default-features = false, features = ["font-kit"] }
+keyring = { version = "3.6.2", default-features = false, features = ["apple-native"] }
+objc = "0.2.7"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.12.2"
+gpui = { version = "0.2.2", default-features = false, features = ["font-kit", "wayland", "x11"] }
+keyring = { version = "3.6.2", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+hotkey-listener = "0.3"
+nix = "0.23.2"
+notify-rust = "4"
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+wl-clipboard-rs = "0.9"
+wayland-client = { version = "0.31.11", features = ["system"] }
+wayland-backend = { version = "0.3.15", features = ["client_system"] }
+wayland-protocols = { version = "0.32.9", features = ["client", "staging"] }
+wayland-protocols-plasma = { version = "0.2", features = ["client"] }
+wayland-protocols-wlr = { version = "0.3.9", features = ["client"] }
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }

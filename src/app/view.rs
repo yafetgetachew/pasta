@@ -1,22 +1,19 @@
-#[cfg(target_os = "macos")]
 use super::actions::{
     expand_candidates_with_splits, has_structured_parameter_candidates,
     parameter_clickable_candidates,
 };
-#[cfg(target_os = "macos")]
 use super::query_input::TextInputElement;
-#[cfg(target_os = "macos")]
 use super::state::CachedRowPresentation;
-#[cfg(target_os = "macos")]
 use crate::*;
-#[cfg(target_os = "macos")]
 use gpui::{AnyElement, StatefulInteractiveElement};
 
-#[cfg(target_os = "macos")]
 impl Render for LauncherView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.apply_pending_text_input_focus(window);
-        let palette = palette_for(window.appearance(), self.surface_alpha);
+        let palette = palette_for(
+            self.theme_mode.apply(window.appearance()),
+            self.surface_alpha,
+        );
         let info_editor_open = self.info_editor_target_id.is_some();
         let tag_editor_open = self.tag_editor_target_id.is_some();
         let bowl_editor_open = self.bowl_editor_target_id.is_some();
@@ -105,12 +102,13 @@ impl Render for LauncherView {
                             .text_color(palette.title_text)
                             .child("PASTA"),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(palette.muted_text)
-                            .child("⌥ + SPACE"),
-                    ),
+                    .child(div().text_xs().text_color(palette.muted_text).child(
+                        if cfg!(target_os = "macos") {
+                            "⌥ + SPACE"
+                        } else {
+                            "Meta + Space"
+                        },
+                    )),
             )
             .child({
                 let mut query_container = div()
@@ -310,7 +308,11 @@ impl Render for LauncherView {
                             .mt_1()
                             .text_xs()
                             .text_color(palette.muted_text)
-                            .child("⌘V paste"),
+                            .child(if cfg!(target_os = "macos") {
+                                "⌘V paste"
+                            } else {
+                                "Ctrl+V paste"
+                            }),
                     ),
             );
         }
@@ -419,7 +421,11 @@ impl Render for LauncherView {
                             .mt_1()
                             .text_xs()
                             .text_color(palette.muted_text)
-                            .child("comma-separated • ⌘V"),
+                            .child(if cfg!(target_os = "macos") {
+                                "comma-separated • ⌘V"
+                            } else {
+                                "comma-separated • Ctrl+V"
+                            }),
                     ),
             );
         }
@@ -567,9 +573,13 @@ impl Render for LauncherView {
             }
 
             let help_text = if self.bowl_editor_suggestions.is_empty() {
-                "single bowl • blank = remove • ⌘V"
+                if cfg!(target_os = "macos") {
+                    "single bowl • blank = remove • ⌘V"
+                } else {
+                    "single bowl • blank = remove • Ctrl+V"
+                }
             } else {
-                "single bowl • ↹ autocomplete • blank = remove"
+                "single bowl • Tab autocomplete • blank = remove"
             };
             bowl_panel = bowl_panel.child(
                 div()
@@ -648,7 +658,12 @@ impl Render for LauncherView {
                             .py(px(1.0))
                             .cursor_pointer()
                             .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
-                                let additive = event.modifiers().platform;
+                                let mods = event.modifiers();
+                                let additive = if cfg!(target_os = "macos") {
+                                    mods.platform
+                                } else {
+                                    mods.control
+                                };
                                 this.select_parameter_clickable_range(range_ix, additive, cx);
                             }))
                             .child(token),
@@ -792,12 +807,24 @@ impl Render for LauncherView {
                                     if auto_named_candidates {
                                         "pick one or more fields"
                                     } else {
-                                        "pick values • ⌘+click to split"
+                                        if cfg!(target_os = "macos") {
+                                            "pick values • ⌘+click to split"
+                                        } else {
+                                            "pick values • Ctrl+click to split"
+                                        }
                                     }
                                 } else if auto_named_candidates {
-                                    "Enter saves • ⌘+click toggles"
+                                    if cfg!(target_os = "macos") {
+                                        "Enter saves • ⌘+click toggles"
+                                    } else {
+                                        "Enter saves • Ctrl+click toggles"
+                                    }
                                 } else {
-                                    "Enter then name • ⌘+click splits or toggles"
+                                    if cfg!(target_os = "macos") {
+                                        "Enter then name • ⌘+click splits or toggles"
+                                    } else {
+                                        "Enter then name • Ctrl+click splits or toggles"
+                                    }
                                 }),
                         ),
                 );
@@ -1339,26 +1366,42 @@ impl Render for LauncherView {
                         div()
                             .w_full()
                             .flex()
-                            .flex_row()
-                            .flex_wrap()
-                            .items_start()
-                            .gap_2()
+                            .flex_col()
+                            .gap_1()
                             .child(render_help_run(
-                                &["⏎ copy", "⌘R reveal secret", "⌘J / ⌘K / ⌘L / ⌘; navigate"],
+                                if cfg!(target_os = "macos") {
+                                    &["⏎ copy", "⌘R reveal secret", "⌘J / ⌘K / ⌘L / ⌘; navigate"]
+                                } else {
+                                    &["⏎ copy", "Ctrl+R reveal secret", "Ctrl+J/K/L/; navigate"]
+                                },
                                 palette,
                             ))
                             .child(render_help_run(
-                                &["⌘I edit info", "⌘P parametrize", "Tab transforms"],
+                                if cfg!(target_os = "macos") {
+                                    &["⌘I edit info", "⌘P parametrize", "Tab transforms"]
+                                } else {
+                                    &["Ctrl+I edit info", "Ctrl+P parametrize", "Tab transforms"]
+                                },
                                 palette,
                             ))
                             .child(render_help_run(
-                                &[
-                                    "⌘T add tags",
-                                    "⌘⇧T remove tags",
-                                    "⌘B set bowl",
-                                    "⌘⇧B remove bowl",
-                                    "⌥⌘B import bowl",
-                                ],
+                                if cfg!(target_os = "macos") {
+                                    &[
+                                        "⌘T add tags",
+                                        "⌘⇧T remove tags",
+                                        "⌘B set bowl",
+                                        "⌘⇧B remove bowl",
+                                        "⌥⌘B import bowl",
+                                    ]
+                                } else {
+                                    &[
+                                        "Ctrl+T add tags",
+                                        "Ctrl+Shift+T remove tags",
+                                        "Ctrl+B set bowl",
+                                        "Ctrl+Shift+B remove bowl",
+                                        "Ctrl+Alt+B import bowl",
+                                    ]
+                                },
                                 palette,
                             ))
                             .child(render_help_run(
@@ -1366,13 +1409,23 @@ impl Render for LauncherView {
                                 palette,
                             ))
                             .child(render_help_run(
-                                &[
-                                    "⌘⇧S toggle secret",
-                                    "⌘D delete",
-                                    "Esc close",
-                                    "⌘Q quit",
-                                    "⌘H hide help",
-                                ],
+                                if cfg!(target_os = "macos") {
+                                    &[
+                                        "⌘⇧S toggle secret",
+                                        "⌘D delete",
+                                        "Esc close",
+                                        "⌘Q quit",
+                                        "⌘H hide help",
+                                    ]
+                                } else {
+                                    &[
+                                        "Ctrl+Shift+S toggle secret",
+                                        "Ctrl+D delete",
+                                        "Esc close",
+                                        "Ctrl+Q quit",
+                                        "Ctrl+H hide help",
+                                    ]
+                                },
                                 palette,
                             )),
                     )
@@ -1381,12 +1434,15 @@ impl Render for LauncherView {
                     .w_full()
                     .text_xs()
                     .text_color(palette.muted_text)
-                    .child("⌘H commands")
+                    .child(if cfg!(target_os = "macos") {
+                        "⌘H commands"
+                    } else {
+                        "Ctrl+H commands"
+                    })
             })
     }
 }
 
-#[cfg(target_os = "macos")]
 impl LauncherView {
     fn render_tag_search_suggestions(
         &self,
@@ -1518,14 +1574,26 @@ impl LauncherView {
         };
         let created_detail = format_timestamp_detail(&item.created_at);
         let primary_action_hint = if is_masked_secret {
-            "⌘R Reveal"
+            if cfg!(target_os = "macos") {
+                "⌘R Reveal"
+            } else {
+                "Ctrl+R Reveal"
+            }
         } else {
             "⏎ Copy"
         };
         let secret_action_hint = if item.item_type == ClipboardItemType::Password {
-            "⌘⇧S Unmark secret"
+            if cfg!(target_os = "macos") {
+                "⌘⇧S Unmark secret"
+            } else {
+                "Ctrl+Shift+S Unmark secret"
+            }
         } else {
-            "⌘⇧S Mark secret"
+            if cfg!(target_os = "macos") {
+                "⌘⇧S Mark secret"
+            } else {
+                "Ctrl+Shift+S Mark secret"
+            }
         };
         let preview_syntax_enabled = self.syntax_highlighting
             && self.query.trim().is_empty()
@@ -1565,32 +1633,33 @@ impl LauncherView {
             );
         }
 
-        pane = pane
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .justify_between()
-                    .items_start()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_1()
-                            .child(result_meta_chip(primary_action_hint, palette))
-                            .child(result_meta_chip(secret_action_hint, palette)),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(palette.row_meta_text)
-                            .child(created_detail),
-                    ),
-            )
-            .child(tag_row);
+        pane = pane.child(
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap_1()
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .items_start()
+                        .gap_1()
+                        .child(result_meta_chip(primary_action_hint, palette))
+                        .child(result_meta_chip(secret_action_hint, palette)),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .text_xs()
+                        .text_color(palette.row_meta_text)
+                        .child(created_detail),
+                )
+                .child(tag_row),
+        );
 
         if !item.description.trim().is_empty() {
             pane = pane.child(
@@ -1758,48 +1827,49 @@ impl LauncherView {
                 }));
         }
 
-        let mut tag_row = div().flex().items_center().gap_1().overflow_hidden();
+        let mut tag_row = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .content_start()
+            .gap_1()
+            .overflow_hidden();
         for tag in item_tags.iter() {
             tag_row = tag_row.child(result_meta_chip(tag, palette));
         }
-
-        let tag_lane = div()
-            .w(relative(0.5))
-            .min_w(px(0.0))
-            .overflow_hidden()
-            .child(tag_row);
-
-        let mut right_meta = div().w_full().flex().items_center().justify_end().gap_1();
-        if let Some(bowl_name) = &row_data.bowl_name {
-            right_meta = right_meta.child(
+        row =
+            row.child(
                 div()
-                    .max_w(relative(0.68))
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .child(
-                        div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(tag_row)
+                    .child({
+                        let mut meta_row = div()
                             .w_full()
                             .flex()
-                            .justify_end()
-                            .child(result_meta_chip(&format!("BOWL:{bowl_name}"), palette)),
-                    ),
+                            .justify_between()
+                            .items_center()
+                            .gap_2();
+                        if let Some(bowl_name) = &row_data.bowl_name {
+                            meta_row =
+                                meta_row.child(div().min_w(px(0.0)).overflow_hidden().child(
+                                    result_meta_chip(&format!("BOWL:{bowl_name}"), palette),
+                                ));
+                        } else {
+                            meta_row = meta_row.child(div().min_w(px(0.0)));
+                        }
+                        meta_row.child(
+                            div()
+                                .flex_none()
+                                .text_xs()
+                                .text_color(palette.row_meta_text)
+                                .child(row_data.created_label.clone()),
+                        )
+                    }),
             );
-        }
-        right_meta = right_meta.child(
-            div()
-                .flex_none()
-                .text_xs()
-                .text_color(palette.row_meta_text)
-                .child(row_data.created_label.clone()),
-        );
-
-        let top_row = div()
-            .w_full()
-            .flex()
-            .items_center()
-            .child(tag_lane)
-            .child(div().w(relative(0.5)).min_w(px(0.0)).child(right_meta));
-        row = row.child(top_row);
 
         let preview_block = div()
             .w_full()
@@ -1807,7 +1877,8 @@ impl LauncherView {
             .text_sm()
             .text_color(palette.row_text)
             .whitespace_normal()
-            .line_clamp(4);
+            .max_h(px(72.0))
+            .overflow_hidden();
         row = row.child(preview_block.child(syntax_styled_text(
             &item_preview,
             preview_language,
@@ -1824,7 +1895,6 @@ impl LauncherView {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn search_suggestion_heading(query: &str) -> &'static str {
     match parse_search_query(query) {
         SearchQuery::TagOnly { .. } => "Tag suggestions",
@@ -1833,7 +1903,6 @@ fn search_suggestion_heading(query: &str) -> &'static str {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn search_suggestion_label(query: &str, suggestion: &str) -> String {
     match parse_search_query(query) {
         SearchQuery::TagOnly { .. } => format!(":{suggestion}"),
@@ -1843,7 +1912,6 @@ fn search_suggestion_label(query: &str, suggestion: &str) -> String {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn result_meta_chip(label: &str, palette: Palette) -> impl IntoElement {
     div()
         .flex_none()
@@ -1865,7 +1933,6 @@ fn result_meta_chip(label: &str, palette: Palette) -> impl IntoElement {
         .child(label.to_owned())
 }
 
-#[cfg(target_os = "macos")]
 fn render_help_run(tips: &[&str], palette: Palette) -> impl IntoElement {
     let help_chip_bg = scale_alpha(palette.row_hover_bg, if palette.dark { 0.9 } else { 1.0 });
     let help_chip_border =
@@ -1875,14 +1942,17 @@ fn render_help_run(tips: &[&str], palette: Palette) -> impl IntoElement {
     for tip in tips {
         chips = chips.child(
             div()
+                .flex_shrink_0()
                 .text_xs()
+                .line_height(px(14.0))
                 .text_color(palette.muted_text)
                 .bg(help_chip_bg)
                 .border_1()
                 .border_color(help_chip_border)
                 .rounded_md()
                 .px_1()
-                .py(px(1.0))
+                .py(px(3.0))
+                .mb(px(4.0))
                 .child((*tip).to_owned()),
         );
     }

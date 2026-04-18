@@ -1,6 +1,47 @@
 #[cfg(target_os = "macos")]
 use crate::*;
 
+// Applies theme-specific window chrome: a vibrant NSAppearance override so the
+// system blur layer (installed by GPUI via WindowBackgroundAppearance::Blurred)
+// picks the right tint, plus translucency and shadow. The actual backdrop is
+// owned by GPUI — we deliberately do not touch the content-view hierarchy here.
+#[cfg(target_os = "macos")]
+pub(crate) fn apply_window_foggy_theme(window: &Window, theme_mode: ThemeMode) {
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+
+    unsafe {
+        let ns_view: id = handle.ns_view.as_ptr().cast();
+        if ns_view == nil {
+            return;
+        }
+
+        let ns_window: id = msg_send![ns_view, window];
+        if ns_window == nil {
+            return;
+        }
+
+        let appearance_name = match theme_mode {
+            ThemeMode::System => nil,
+            ThemeMode::Light => NSString::alloc(nil).init_str("NSAppearanceNameVibrantLight"),
+            ThemeMode::Dark => NSString::alloc(nil).init_str("NSAppearanceNameVibrantDark"),
+        };
+
+        let appearance: id = if appearance_name == nil {
+            nil
+        } else {
+            msg_send![class!(NSAppearance), appearanceNamed: appearance_name]
+        };
+        let _: () = msg_send![ns_window, setAppearance: appearance];
+        let _: () = msg_send![ns_window, setOpaque: false];
+        let _: () = msg_send![ns_window, setHasShadow: true];
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn launcher_window_bounds(cx: &mut App) -> (Bounds<gpui::Pixels>, Option<gpui::DisplayId>) {
     let size = size(px(LAUNCHER_WIDTH), px(LAUNCHER_HEIGHT));
@@ -76,6 +117,7 @@ pub(crate) fn create_launcher_window(cx: &mut App) -> Option<WindowHandle<Launch
             let search_request_tx = search_request_tx.clone();
             let search_generation_token = search_generation_token.clone();
             set_window_move_to_active_space(window);
+            apply_window_foggy_theme(window, style.theme_mode);
             window.on_window_should_close(cx, |_, cx| {
                 cx.hide();
                 false
@@ -86,6 +128,7 @@ pub(crate) fn create_launcher_window(cx: &mut App) -> Option<WindowHandle<Launch
                     storage.clone(),
                     style.family.clone(),
                     style.surface_alpha,
+                    style.theme_mode,
                     style.syntax_highlighting,
                     style.pasta_brain_enabled,
                     search_request_tx,

@@ -1,15 +1,16 @@
-#[cfg(target_os = "macos")]
 use crate::*;
-#[cfg(target_os = "macos")]
 use chrono::{DateTime, Local};
 
-#[cfg(target_os = "macos")]
 pub(crate) fn masked_secret_preview(content: &str) -> String {
     let width = content.chars().count().clamp(8, 32);
-    format!("{}  (secret, ⌘R reveal)", "•".repeat(width))
+    let hint = if cfg!(target_os = "macos") {
+        "⌘R reveal"
+    } else {
+        "Ctrl+R reveal"
+    };
+    format!("{}  (secret, {hint})", "•".repeat(width))
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn preview_content(content: &str) -> String {
     let wrapped = expanded_preview_content(content);
     let mut lines = wrapped.lines();
@@ -25,13 +26,11 @@ pub(crate) fn preview_content(content: &str) -> String {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn expanded_preview_content(content: &str) -> String {
     let normalized = content.replace('\r', "").replace('\t', "    ");
     wrap_long_words(&normalized, PREVIEW_WRAP_RUN)
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn bounded_preview_content(content: &str, limit: usize) -> (String, bool) {
     if content.len() <= limit {
         return (content.to_owned(), false);
@@ -47,7 +46,6 @@ pub(crate) fn bounded_preview_content(content: &str, limit: usize) -> (String, b
     (bounded, true)
 }
 
-#[cfg(target_os = "macos")]
 fn wrap_long_words(input: &str, max_run: usize) -> String {
     let mut out = String::with_capacity(input.len() + (input.len() / max_run.max(1)));
     let mut run = 0_usize;
@@ -69,7 +67,6 @@ fn wrap_long_words(input: &str, max_run: usize) -> String {
     out
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn format_timestamp(timestamp: &str) -> String {
     timestamp
         .split('T')
@@ -79,7 +76,6 @@ pub(crate) fn format_timestamp(timestamp: &str) -> String {
         .unwrap_or_else(|| "now".to_owned())
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn format_timestamp_detail(timestamp: &str) -> String {
     DateTime::parse_from_rfc3339(timestamp)
         .map(|value| {

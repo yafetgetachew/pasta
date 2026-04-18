@@ -19,6 +19,7 @@ fn default_ui_style_state(default_family: SharedString) -> UiStyleState {
     UiStyleState {
         family: default_family,
         surface_alpha: 1.00,
+        theme_mode: ThemeMode::System,
         syntax_highlighting: true,
         secret_auto_clear: true,
         pasta_brain_enabled: true,
@@ -55,6 +56,7 @@ fn load_ui_style_state(default_family: SharedString) -> UiStyleState {
         style.family = family.to_owned().into();
     }
     style.surface_alpha = persisted.surface_alpha.clamp(0.45, 1.0);
+    style.theme_mode = persisted.theme_mode;
     style.syntax_highlighting = persisted.syntax_highlighting;
     style.secret_auto_clear = persisted.secret_auto_clear;
     style.pasta_brain_enabled = persisted.pasta_brain_enabled;
@@ -71,6 +73,7 @@ fn save_ui_style_state(style: &UiStyleState) {
     let serialized = match serde_json::to_string_pretty(&PersistedUiStyleState {
         family: style.family.to_string(),
         surface_alpha: style.surface_alpha.clamp(0.45, 1.0),
+        theme_mode: style.theme_mode,
         syntax_highlighting: style.syntax_highlighting,
         secret_auto_clear: style.secret_auto_clear,
         pasta_brain_enabled: style.pasta_brain_enabled,
@@ -175,10 +178,12 @@ pub(crate) fn apply_style_to_open_window(cx: &mut App) {
         .try_global::<LauncherState>()
         .and_then(|state| state.window)
     {
-        let _ = window.update(cx, |view, _window, cx| {
+        let _ = window.update(cx, |view, window, cx| {
             view.font_family = style.family.clone();
             view.surface_alpha = style.surface_alpha;
+            view.theme_mode = style.theme_mode;
             view.syntax_highlighting = style.syntax_highlighting;
+            crate::platform::macos::window::apply_window_foggy_theme(window, style.theme_mode);
             cx.notify();
         });
     }
