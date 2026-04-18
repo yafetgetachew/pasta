@@ -755,6 +755,10 @@ fn main() {
         spawn_menu_command_listener(cx, menu_rx);
         spawn_launcher_transition_loop(cx);
         spawn_clipboard_watcher(cx);
+
+        let analytics_opt_in = cx.global::<UiStyleState>().analytics_opt_in;
+        maybe_send_heartbeat(storage.clone(), analytics_opt_in);
+
         show_launcher(cx);
     });
 }

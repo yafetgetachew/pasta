@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::Instant;
 
 use gpui::{App, Styled, Window, WindowHandle};
@@ -34,7 +34,10 @@ use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_device_v1
 };
 use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
 use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_offer_v1::ZwlrDataControlOfferV1;
+mod analytics;
 mod polkit;
+
+pub(crate) use analytics::{maybe_send_heartbeat, send_heartbeat_now};
 
 use wl_clipboard_rs::copy::{MimeType as CopyMimeType, Options as CopyOptions, Source};
 use wl_clipboard_rs::paste::{
@@ -562,6 +565,7 @@ struct PastaTray {
     syntax_highlighting: bool,
     secret_auto_clear: bool,
     pasta_brain_enabled: bool,
+    analytics_opt_in: bool,
     neural_status: NeuralStatus,
     launch_at_login_enabled: bool,
 }
@@ -573,6 +577,7 @@ impl PastaTray {
         self.syntax_highlighting = style.syntax_highlighting;
         self.secret_auto_clear = style.secret_auto_clear;
         self.pasta_brain_enabled = style.pasta_brain_enabled;
+        self.analytics_opt_in = style.analytics_opt_in;
         self.neural_status = neural_status;
         self.launch_at_login_enabled = launch_agent_is_installed();
     }
@@ -803,6 +808,36 @@ impl Tray for PastaTray {
             .into(),
         );
 
+        items.push(
+            SubMenu {
+                label: "Usage Analytics".into(),
+                submenu: vec![
+                    CheckmarkItem {
+                        label: "Share OS details".into(),
+                        checked: self.analytics_opt_in,
+                        activate: Box::new(|tray: &mut Self| {
+                            tray.analytics_opt_in = true;
+                            let _ = tray.menu_tx.send(MenuCommand::SetAnalyticsOptIn(true));
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                    CheckmarkItem {
+                        label: "Baseline only".into(),
+                        checked: !self.analytics_opt_in,
+                        activate: Box::new(|tray: &mut Self| {
+                            tray.analytics_opt_in = false;
+                            let _ = tray.menu_tx.send(MenuCommand::SetAnalyticsOptIn(false));
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                ],
+                ..Default::default()
+            }
+            .into(),
+        );
+
         items.push(MenuItem::Separator);
 
         items.push(
@@ -874,6 +909,7 @@ pub(crate) fn setup_status_item(cx: &mut App) {
         syntax_highlighting: style.syntax_highlighting,
         secret_auto_clear: style.secret_auto_clear,
         pasta_brain_enabled: style.pasta_brain_enabled,
+        analytics_opt_in: style.analytics_opt_in,
         neural_status,
         launch_at_login_enabled: launch_agent_is_installed(),
     };
@@ -934,20 +970,6 @@ pub(crate) fn update_font_menu_state(cx: &App) {
     update_brain_menu_state(cx);
 }
 
-// Analytics is macOS-only today; these are no-op entry points so the shared
-// menu-command handler compiles on Linux without platform-specific branches.
-pub(crate) fn maybe_send_heartbeat(
-    _storage: Arc<crate::storage::ClipboardStorage>,
-    _detailed_opt_in: bool,
-) {
-}
-
-pub(crate) fn send_heartbeat_now(
-    _storage: Arc<crate::storage::ClipboardStorage>,
-    _detailed_opt_in: bool,
-) {
-}
-
 /// Map a menu tag integer to a MenuCommand. Stub for tests.
 #[cfg(test)]
 pub(crate) fn menu_command_from_tag(tag: isize) -> Option<crate::MenuCommand> {
@@ -1001,6 +1023,7 @@ fn default_ui_style_state(default_family: gpui::SharedString) -> UiStyleState {
         syntax_highlighting: true,
         secret_auto_clear: true,
         pasta_brain_enabled: true,
+        analytics_opt_in: false,
     }
 }
 
@@ -1036,6 +1059,7 @@ fn load_ui_style_state(default_family: gpui::SharedString) -> UiStyleState {
     style.syntax_highlighting = persisted.syntax_highlighting;
     style.secret_auto_clear = persisted.secret_auto_clear;
     style.pasta_brain_enabled = persisted.pasta_brain_enabled;
+    style.analytics_opt_in = persisted.analytics_opt_in;
     style
 }
 
@@ -1051,6 +1075,7 @@ fn save_ui_style_state(style: &UiStyleState) {
         syntax_highlighting: style.syntax_highlighting,
         secret_auto_clear: style.secret_auto_clear,
         pasta_brain_enabled: style.pasta_brain_enabled,
+        analytics_opt_in: style.analytics_opt_in,
     }) {
         Ok(serialized) => serialized,
         Err(err) => {
