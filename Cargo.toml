@@ -19,6 +19,16 @@ opt-level = 3
 [profile.dev.package.aes-gcm]
 opt-level = 3
 
+# Release binary size/perf tuning. Keep default opt-level = 3 so the interactive
+# launcher stays responsive; shave size via LTO + single codegen unit + symbol
+# strip instead. panic = "unwind" (default) is intentional — the neural init
+# thread and clipboard writer are best-effort and are allowed to die without
+# taking the whole app with them.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
 [dependencies]
 aes-gcm = "0.10.3"
 anyhow = "1.0.100"
