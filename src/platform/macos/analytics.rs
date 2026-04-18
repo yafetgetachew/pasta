@@ -1,9 +1,17 @@
 #[cfg(target_os = "macos")]
 use crate::*;
 #[cfg(target_os = "macos")]
-use std::process::{Command, Stdio};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 #[cfg(target_os = "macos")]
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Command, Output, Stdio};
+#[cfg(target_os = "macos")]
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+// Every subprocess this module spawns (ioreg, sw_vers, curl) must finish inside
+// this window or be killed. Analytics is a side channel; it is never allowed to
+// leak a thread waiting on a hung child.
+#[cfg(target_os = "macos")]
+const SUBPROCESS_MAX_DURATION: Duration = Duration::from_secs(5);
 
 // Placeholder analytics endpoint. The `.invalid` TLD is reserved by RFC 2606 and
 // will never resolve, so a misconfigured build can never leak data to a real host.
@@ -72,16 +80,41 @@ fn save_analytics_state(state: &AnalyticsState) {
     }
 }
 
+// Polls an already-spawned child until it exits or the deadline elapses, killing
+// it on timeout. std has no built-in timeout API for Command, and analytics is
+// never allowed to leak a thread on a hung subprocess, so we supply our own.
+#[cfg(target_os = "macos")]
+fn run_bounded(mut cmd: Command, max: Duration) -> Option<Output> {
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + max;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(_) => return None,
+        }
+    }
+    child.wait_with_output().ok()
+}
+
 // Shells out to `ioreg` rather than linking IOKit directly — keeps the dependency
 // footprint zero and avoids wiring unsafe FFI for a once-per-day read.
 #[cfg(target_os = "macos")]
 fn mac_serial_number() -> Option<String> {
-    let output = Command::new("/usr/sbin/ioreg")
-        .args(["-rd1", "-c", "IOPlatformExpertDevice"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("/usr/sbin/ioreg");
+    cmd.args(["-rd1", "-c", "IOPlatformExpertDevice"]);
+    let output = run_bounded(cmd, SUBPROCESS_MAX_DURATION)?;
     if !output.status.success() {
         return None;
     }
@@ -116,17 +149,11 @@ pub(crate) fn install_fingerprint() -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn macos_product_version() -> String {
-    Command::new("/usr/bin/sw_vers")
-        .arg("-productVersion")
-        .output()
-        .ok()
-        .and_then(|out| {
-            if out.status.success() {
-                Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-            } else {
-                None
-            }
-        })
+    let mut cmd = Command::new("/usr/bin/sw_vers");
+    cmd.arg("-productVersion");
+    run_bounded(cmd, SUBPROCESS_MAX_DURATION)
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
         .unwrap_or_else(|| "unknown".to_owned())
 }
 
@@ -138,42 +165,39 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+// Curl's own --max-time guards the transfer; run_bounded is the belt-and-
+// suspenders outer deadline (12s) in case curl itself wedges before honouring
+// its timer. Either way the thread is never stuck.
 #[cfg(target_os = "macos")]
 fn post_event_via_curl(payload: &str) {
-    let status = Command::new("/usr/bin/curl")
-        .args([
-            "-fsS",
-            "--max-time",
-            "10",
-            "-X",
-            "POST",
-            "-H",
-            "Content-Type: application/json",
-            "-d",
-            payload,
-            ANALYTICS_ENDPOINT,
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    let mut cmd = Command::new("/usr/bin/curl");
+    cmd.args([
+        "-fsS",
+        "--max-time",
+        "10",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "-d",
+        payload,
+        ANALYTICS_ENDPOINT,
+    ]);
     // Silent on failure: analytics must never disrupt the app. The `.invalid`
     // endpoint always fails DNS, which is expected until a real host is wired up.
-    let _ = status;
+    let _ = run_bounded(cmd, Duration::from_secs(12));
 }
 
 // Baseline heartbeat (install_id + app_version + clipboard_count) runs for every
 // user — opt-out is not offered for those three metrics. `detailed_opt_in` only
 // governs whether the optional fields (os, os_version, timestamp) ride along.
+//
+// The caller does no I/O: state load, throttle check, subprocess execution and
+// state save all happen inside the detached worker thread. The caller thread
+// incurs a single Arc clone and the fixed cost of thread creation.
 #[cfg(target_os = "macos")]
 pub(crate) fn maybe_send_heartbeat(storage: Arc<ClipboardStorage>, detailed_opt_in: bool) {
-    let state = load_analytics_state();
-    let now = unix_now();
-    if let Some(last) = state.last_sent_epoch
-        && now.saturating_sub(last) < HEARTBEAT_INTERVAL_SECONDS
-    {
-        return;
-    }
-    spawn_heartbeat(storage, detailed_opt_in);
+    spawn_heartbeat(storage, detailed_opt_in, true);
 }
 
 // Unthrottled variant used when the user explicitly flips the detailed-analytics
@@ -181,37 +205,56 @@ pub(crate) fn maybe_send_heartbeat(storage: Arc<ClipboardStorage>, detailed_opt_
 // detail level immediately, rather than silently waiting out the window.
 #[cfg(target_os = "macos")]
 pub(crate) fn send_heartbeat_now(storage: Arc<ClipboardStorage>, detailed_opt_in: bool) {
-    spawn_heartbeat(storage, detailed_opt_in);
+    spawn_heartbeat(storage, detailed_opt_in, false);
 }
 
+// All analytics work happens here: one detached thread, fully walled off from
+// the rest of the process. The body is wrapped in catch_unwind as belt-and-
+// suspenders — Rust already isolates spawned-thread panics from the parent,
+// but a caught panic avoids abort-on-panic builds ever propagating.
 #[cfg(target_os = "macos")]
-fn spawn_heartbeat(storage: Arc<ClipboardStorage>, detailed_opt_in: bool) {
+fn spawn_heartbeat(storage: Arc<ClipboardStorage>, detailed_opt_in: bool, throttled: bool) {
     std::thread::Builder::new()
         .name("pasta-analytics-heartbeat".into())
         .spawn(move || {
-            let Some(install_id) = install_fingerprint() else {
-                eprintln!("warning: analytics heartbeat skipped (no platform serial available)");
-                return;
-            };
-            let clipboard_count = storage.total_item_count();
-            let event = AnalyticsEvent {
-                install_id: &install_id,
-                event: "heartbeat",
-                app_version: env!("CARGO_PKG_VERSION"),
-                clipboard_count,
-                os: detailed_opt_in.then_some("macos"),
-                os_version: detailed_opt_in.then(macos_product_version),
-                timestamp: detailed_opt_in.then(unix_now),
-            };
-            let Ok(payload) = serde_json::to_string(&event) else {
-                return;
-            };
-            post_event_via_curl(&payload);
-            save_analytics_state(&AnalyticsState {
-                last_sent_epoch: Some(unix_now()),
-            });
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                heartbeat_body(storage, detailed_opt_in, throttled);
+            }));
         })
         .ok();
+}
+
+#[cfg(target_os = "macos")]
+fn heartbeat_body(storage: Arc<ClipboardStorage>, detailed_opt_in: bool, throttled: bool) {
+    if throttled {
+        let state = load_analytics_state();
+        if let Some(last) = state.last_sent_epoch
+            && unix_now().saturating_sub(last) < HEARTBEAT_INTERVAL_SECONDS
+        {
+            return;
+        }
+    }
+    let Some(install_id) = install_fingerprint() else {
+        eprintln!("warning: analytics heartbeat skipped (no platform serial available)");
+        return;
+    };
+    let clipboard_count = storage.total_item_count();
+    let event = AnalyticsEvent {
+        install_id: &install_id,
+        event: "heartbeat",
+        app_version: env!("CARGO_PKG_VERSION"),
+        clipboard_count,
+        os: detailed_opt_in.then_some("macos"),
+        os_version: detailed_opt_in.then(macos_product_version),
+        timestamp: detailed_opt_in.then(unix_now),
+    };
+    let Ok(payload) = serde_json::to_string(&event) else {
+        return;
+    };
+    post_event_via_curl(&payload);
+    save_analytics_state(&AnalyticsState {
+        last_sent_epoch: Some(unix_now()),
+    });
 }
 
 #[cfg(test)]
