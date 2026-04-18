@@ -21,3 +21,4 @@ target/
 # Environment
 .env
 .env.local
+.aider*
