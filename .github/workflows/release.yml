@@ -280,7 +280,12 @@ jobs:
           # rpmvercmp treats as a pre-release separator so 0.1.0~rc1 sorts
           # before 0.1.0. Cargo has no such restriction, so Cargo.toml and
           # Cargo.lock keep the original dashed form.
-          SPEC_VERSION="${VERSION//-/~}"
+          #
+          # We use `tr` instead of bash's ${VAR//-/~} because GitHub Actions
+          # runs the step via `sh -e`, and bash-as-sh tilde-expands the '~'
+          # replacement to $HOME (=/root in the container) *before* performing
+          # the substitution, producing garbage like '0.1.0/rootrc1'.
+          SPEC_VERSION=$(printf '%s' "${VERSION}" | tr '-' '~')
           echo "SPEC_VERSION=${SPEC_VERSION}" >> "${GITHUB_ENV}"
 
           sed -i -E "s/^Version:[[:space:]]+.*/Version:        ${SPEC_VERSION}/" packaging/linux/pasta.spec
