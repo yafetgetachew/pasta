@@ -988,6 +988,8 @@ pub(crate) fn menu_command_from_tag(tag: isize) -> Option<crate::MenuCommand> {
         MENU_TAG_BRAIN_ON => Some(MenuCommand::SetPastaBrain(true)),
         MENU_TAG_BRAIN_OFF => Some(MenuCommand::SetPastaBrain(false)),
         MENU_TAG_BRAIN_DOWNLOAD => Some(MenuCommand::DownloadBrain),
+        MENU_TAG_ANALYTICS_ON => Some(MenuCommand::SetAnalyticsOptIn(true)),
+        MENU_TAG_ANALYTICS_OFF => Some(MenuCommand::SetAnalyticsOptIn(false)),
         MENU_TAG_CLEAR_HISTORY => Some(MenuCommand::RequestClearHistory),
         MENU_TAG_LAUNCH_AT_LOGIN => Some(MenuCommand::ToggleLaunchAtLogin),
         t if t >= MENU_TAG_FONT_BASE && t < MENU_TAG_FONT_BASE + FontChoice::ALL.len() as isize => {
