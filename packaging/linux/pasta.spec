@@ -15,21 +15,15 @@ Summary:        Fast local-first clipboard launcher with search and secrets
 License:        MIT
 URL:            https://github.com/yafetgetachew/pasta
 Source0:        %{name}-%{version}.tar.gz
+# Source1 is the pre-built pasta-launcher binary, produced by the CI
+# workflow's `cargo build --release --locked` step before rpmbuild runs.
+# This spec is intentionally a CI-only packaging spec: it does not compile
+# from source, so the Rust/gcc BuildRequires have been dropped. If you ever
+# submit this to Fedora proper, restore the full %build from git history.
+Source1:        pasta-launcher
 
 ExclusiveArch:  x86_64 aarch64
 
-BuildRequires:  rust >= 1.82
-BuildRequires:  cargo
-BuildRequires:  gcc
-BuildRequires:  gcc-c++
-BuildRequires:  pkgconfig
-BuildRequires:  pkgconfig(xkbcommon)
-BuildRequires:  pkgconfig(xkbcommon-x11)
-BuildRequires:  pkgconfig(fontconfig)
-BuildRequires:  pkgconfig(wayland-client)
-BuildRequires:  pkgconfig(dbus-1)
-BuildRequires:  pkgconfig(openssl)
-BuildRequires:  pkgconfig(libsecret-1)
 BuildRequires:  desktop-file-utils
 BuildRequires:  libappstream-glib
 
@@ -57,12 +51,12 @@ out of the box.
 %autosetup -n %{name}-%{version}
 
 %build
-# Keep debug symbols stripped via our Cargo.toml [profile.release] settings.
-# `--locked` ensures reproducible builds from Cargo.lock.
-cargo build --release --locked
+# Binary is built by the CI workflow and injected via Source1; nothing to
+# compile here.
+:
 
 %install
-install -Dm0755 target/release/%{bin_name} %{buildroot}%{_bindir}/%{bin_name}
+install -Dm0755 %{SOURCE1} %{buildroot}%{_bindir}/%{bin_name}
 install -Dm0644 assets/pasta.png \
     %{buildroot}%{_datadir}/icons/hicolor/512x512/apps/%{bundle_id}.png
 install -Dm0644 packaging/linux/%{bundle_id}.desktop \

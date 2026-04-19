@@ -291,14 +291,24 @@ jobs:
 
           sed -i -E "s/^Version:[[:space:]]+.*/Version:        ${SPEC_VERSION}/" packaging/linux/pasta.spec
           sed -i -E "0,/^version = \".*\"$/ s//version = \"${VERSION}\"/" Cargo.toml
-          # Keep Cargo.lock in sync so the spec's `cargo build --locked` stays
-          # happy inside rpmbuild's sandbox.
+          # Keep Cargo.lock in sync so `cargo build --locked` is happy.
           sed -i -E "/^name = \"pasta-launcher\"$/{n;s/^version = \".*\"/version = \"${VERSION}\"/}" Cargo.lock
           grep -E '^Version:' packaging/linux/pasta.spec
           grep -E '^version'  Cargo.toml | head -1
           grep -A1 '^name = "pasta-launcher"$' Cargo.lock | head -2
 
-      - name: Stage source tarball for rpmbuild
+      - name: Build release binary
+        env:
+          PASTA_ANALYTICS_API_KEY: ${{ secrets.PASTA_ANALYTICS_API_KEY }}
+          PASTA_ANALYTICS_ENDPOINT: ${{ secrets.PASTA_ANALYTICS_ENDPOINT }}
+          PASTA_ANALYTICS_SALT: ${{ secrets.PASTA_ANALYTICS_SALT }}
+        # Build in $GITHUB_WORKSPACE so Swatinem/rust-cache's restored
+        # target/ is actually the one cargo writes into. Previously rpmbuild
+        # compiled inside ~/rpmbuild/BUILD/<...>/target/, which the cache
+        # never touched, so every tag paid for a full cold rebuild.
+        run: cargo build --release --locked
+
+      - name: Stage tarball and pre-built binary for rpmbuild
         run: |
           set -euo pipefail
           rpmdev-setuptree
@@ -312,12 +322,11 @@ jobs:
               -cf - . | tar -xf - -C "${STAGE}/pasta-${SPEC_VERSION}"
           tar -C "${STAGE}" -czf "${HOME}/rpmbuild/SOURCES/pasta-${SPEC_VERSION}.tar.gz" "pasta-${SPEC_VERSION}"
           rm -rf "${STAGE}"
+          # Spec's Source1 picks up the pre-built binary from SOURCES/.
+          install -m 0755 target/release/pasta-launcher \
+            "${HOME}/rpmbuild/SOURCES/pasta-launcher"
 
       - name: rpmbuild
-        env:
-          PASTA_ANALYTICS_API_KEY: ${{ secrets.PASTA_ANALYTICS_API_KEY }}
-          PASTA_ANALYTICS_ENDPOINT: ${{ secrets.PASTA_ANALYTICS_ENDPOINT }}
-          PASTA_ANALYTICS_SALT: ${{ secrets.PASTA_ANALYTICS_SALT }}
         run: |
           rpmbuild -bb packaging/linux/pasta.spec
 
