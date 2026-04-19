@@ -72,6 +72,23 @@ jobs:
         with:
           shared-key: macos-release
 
+      - name: Stamp version into Cargo.toml and Cargo.lock
+        env:
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          # env!("CARGO_PKG_VERSION") is baked into the binary at compile time,
+          # so the About dialog reads from whatever Cargo.toml says here. Without
+          # this step the bundle ships with plist CFBundleShortVersionString set
+          # to the tag (via APP_VERSION in build-macos-bundle.sh) but the binary
+          # still reports the version committed in Cargo.toml. BSD sed syntax:
+          # macOS runners need `-i ''` where GNU sed would take `-i`, and empty
+          # pattern reuse (s//repl/) is rejected, so we anchor the Cargo.toml
+          # substitution to the [package] stanza explicitly.
+          sed -i '' -E "/^\[package\]$/,/^\[/ s/^version = \".*\"$/version = \"${VERSION}\"/" Cargo.toml
+          sed -i '' -E "/^name = \"pasta-launcher\"$/{n;s/^version = \".*\"/version = \"${VERSION}\"/;}" Cargo.lock
+          grep -E '^version' Cargo.toml | head -1
+          grep -A1 '^name = "pasta-launcher"$' Cargo.lock | head -2
+
       - name: Build Pasta.app
         env:
           APP_VERSION: ${{ needs.resolve-version.outputs.version }}
