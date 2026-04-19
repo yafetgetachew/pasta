@@ -5,6 +5,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 #[cfg(target_os = "macos")]
 use std::process::{Command, Output, Stdio};
 #[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "macos")]
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // Every subprocess this module spawns (ioreg, sw_vers) must finish inside this
@@ -21,6 +23,12 @@ const HTTP_MAX_DURATION: Duration = Duration::from_secs(10);
 
 #[cfg(target_os = "macos")]
 const HEARTBEAT_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
+
+#[cfg(target_os = "macos")]
+const SCHEDULER_TICK: Duration = Duration::from_secs(60 * 60);
+
+#[cfg(target_os = "macos")]
+static DETAILED_OPT_IN: OnceLock<AtomicBool> = OnceLock::new();
 
 // All three analytics inputs are supplied at build time via environment
 // variables and read through option_env! so the binary never contains values
@@ -240,19 +248,36 @@ fn post_event(event: &AnalyticsEvent<'_>, endpoint: &str, api_key: &str) {
         .send_json(event);
 }
 
-// Baseline heartbeat (install_id + app_version + clipboard_count) runs for every
-// user — opt-out is not offered for those three metrics. `detailed_opt_in` only
-// governs whether the optional fields (os, os_version, timestamp) ride along.
-//
-// The caller does no I/O: state load, throttle check, subprocess execution and
-// state save all happen inside the detached worker thread. The caller thread
-// incurs a single Arc clone and the fixed cost of thread creation.
 #[cfg(target_os = "macos")]
-pub(crate) fn maybe_send_heartbeat(storage: Arc<ClipboardStorage>, detailed_opt_in: bool) {
+fn current_detailed_opt_in() -> bool {
+    DETAILED_OPT_IN
+        .get()
+        .map(|flag| flag.load(Ordering::Relaxed))
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn set_detailed_opt_in(enabled: bool) {
+    DETAILED_OPT_IN
+        .get_or_init(|| AtomicBool::new(false))
+        .store(enabled, Ordering::Relaxed);
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn start_heartbeat_scheduler(storage: Arc<ClipboardStorage>, initial_opt_in: bool) {
     if analytics_config().is_none() {
         return;
     }
-    spawn_heartbeat(storage, detailed_opt_in, true);
+    set_detailed_opt_in(initial_opt_in);
+    std::thread::Builder::new()
+        .name("pasta-analytics-scheduler".into())
+        .spawn(move || {
+            loop {
+                spawn_heartbeat(storage.clone(), current_detailed_opt_in(), true);
+                std::thread::sleep(SCHEDULER_TICK);
+            }
+        })
+        .ok();
 }
 
 // Unthrottled variant used when the user explicitly flips the detailed-analytics

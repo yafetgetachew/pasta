@@ -37,7 +37,7 @@ use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_offer_v1:
 mod analytics;
 mod polkit;
 
-pub(crate) use analytics::{maybe_send_heartbeat, send_heartbeat_now};
+pub(crate) use analytics::{send_heartbeat_now, set_detailed_opt_in, start_heartbeat_scheduler};
 
 use wl_clipboard_rs::copy::{MimeType as CopyMimeType, Options as CopyOptions, Source};
 use wl_clipboard_rs::paste::{
