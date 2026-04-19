@@ -159,13 +159,18 @@ jobs:
       - name: Install cargo-deb
         run: cargo install --locked cargo-deb
 
-      - name: Stamp version into Cargo.toml
+      - name: Stamp version into Cargo.toml and Cargo.lock
         env:
           VERSION: ${{ needs.resolve-version.outputs.version }}
         run: |
           # Rewrite only the [package] version line; cargo-deb reads it verbatim.
           sed -i -E "0,/^version = \".*\"$/ s//version = \"${VERSION}\"/" Cargo.toml
-          grep -E '^version' Cargo.toml | head -1
+          # Keep Cargo.lock in sync so `cargo build --locked` doesn't refuse to
+          # proceed. Targets the `version` line that immediately follows the
+          # `name = "pasta-launcher"` entry in the lockfile.
+          sed -i -E "/^name = \"pasta-launcher\"$/{n;s/^version = \".*\"/version = \"${VERSION}\"/}" Cargo.lock
+          grep -E '^version'  Cargo.toml | head -1
+          grep -A1 '^name = "pasta-launcher"$' Cargo.lock | head -2
 
       - name: Build release binary
         env:
@@ -266,14 +271,18 @@ jobs:
         with:
           shared-key: linux-rpm-release
 
-      - name: Stamp version into spec and Cargo.toml
+      - name: Stamp version into spec, Cargo.toml, and Cargo.lock
         env:
           VERSION: ${{ needs.resolve-version.outputs.version }}
         run: |
           sed -i -E "s/^Version:[[:space:]]+.*/Version:        ${VERSION}/" packaging/linux/pasta.spec
           sed -i -E "0,/^version = \".*\"$/ s//version = \"${VERSION}\"/" Cargo.toml
+          # Keep Cargo.lock in sync so the spec's `cargo build --locked` stays
+          # happy inside rpmbuild's sandbox.
+          sed -i -E "/^name = \"pasta-launcher\"$/{n;s/^version = \".*\"/version = \"${VERSION}\"/}" Cargo.lock
           grep -E '^Version:' packaging/linux/pasta.spec
           grep -E '^version'  Cargo.toml | head -1
+          grep -A1 '^name = "pasta-launcher"$' Cargo.lock | head -2
 
       - name: Stage source tarball for rpmbuild
         env:

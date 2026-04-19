@@ -299,6 +299,7 @@ impl FontChoice {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn matches_family(self, family: &str) -> bool {
         let fam_norm: String = family
             .chars()
