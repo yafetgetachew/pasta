@@ -664,7 +664,7 @@ fn main() {
         spawn_clipboard_watcher(cx);
 
         let analytics_opt_in = cx.global::<UiStyleState>().analytics_opt_in;
-        maybe_send_heartbeat(storage.clone(), analytics_opt_in);
+        start_heartbeat_scheduler(storage.clone(), analytics_opt_in);
 
         cx.hide();
     });
@@ -758,7 +758,7 @@ fn main() {
         spawn_clipboard_watcher(cx);
 
         let analytics_opt_in = cx.global::<UiStyleState>().analytics_opt_in;
-        maybe_send_heartbeat(storage.clone(), analytics_opt_in);
+        start_heartbeat_scheduler(storage.clone(), analytics_opt_in);
 
         show_launcher(cx);
     });

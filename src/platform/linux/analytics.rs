@@ -3,6 +3,8 @@ use crate::*;
 #[cfg(target_os = "linux")]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 #[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "linux")]
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // Outbound HTTP budget: hard ceiling for connect + TLS + write + read.
@@ -13,6 +15,12 @@ const HTTP_MAX_DURATION: Duration = Duration::from_secs(10);
 
 #[cfg(target_os = "linux")]
 const HEARTBEAT_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
+
+#[cfg(target_os = "linux")]
+const SCHEDULER_TICK: Duration = Duration::from_secs(60 * 60);
+
+#[cfg(target_os = "linux")]
+static DETAILED_OPT_IN: OnceLock<AtomicBool> = OnceLock::new();
 
 // Build-time env vars (same contract as macOS — see platform/macos/analytics.rs
 // for the full rationale around key rotation, anti-abuse and offline builds).
@@ -183,11 +191,35 @@ fn post_event(event: &AnalyticsEvent<'_>, endpoint: &str, api_key: &str) {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn maybe_send_heartbeat(storage: Arc<ClipboardStorage>, detailed_opt_in: bool) {
+fn current_detailed_opt_in() -> bool {
+    DETAILED_OPT_IN
+        .get()
+        .map(|flag| flag.load(Ordering::Relaxed))
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn set_detailed_opt_in(enabled: bool) {
+    DETAILED_OPT_IN
+        .get_or_init(|| AtomicBool::new(false))
+        .store(enabled, Ordering::Relaxed);
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn start_heartbeat_scheduler(storage: Arc<ClipboardStorage>, initial_opt_in: bool) {
     if analytics_config().is_none() {
         return;
     }
-    spawn_heartbeat(storage, detailed_opt_in, true);
+    set_detailed_opt_in(initial_opt_in);
+    std::thread::Builder::new()
+        .name("pasta-analytics-scheduler".into())
+        .spawn(move || {
+            loop {
+                spawn_heartbeat(storage.clone(), current_detailed_opt_in(), true);
+                std::thread::sleep(SCHEDULER_TICK);
+            }
+        })
+        .ok();
 }
 
 #[cfg(target_os = "linux")]

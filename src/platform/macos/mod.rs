@@ -11,7 +11,7 @@ mod style;
 mod touch_id;
 mod window;
 
-pub(crate) use analytics::{maybe_send_heartbeat, send_heartbeat_now};
+pub(crate) use analytics::{send_heartbeat_now, set_detailed_opt_in, start_heartbeat_scheduler};
 pub(crate) use clipboard::{
     clipboard_change_count, clipboard_text_hash, parse_custom_tags_input, process_secret_autoclear,
     read_clipboard_snapshot, should_ignore_self_clipboard_write, show_macos_notification,

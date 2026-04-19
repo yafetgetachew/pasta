@@ -302,6 +302,7 @@ fn handle_menu_command(command: MenuCommand, cx: &mut App) {
             cx.global_mut::<UiStyleState>().analytics_opt_in = enabled;
             persist_ui_style_state(cx);
             update_analytics_menu_state(cx);
+            set_detailed_opt_in(enabled);
             let storage = cx.global::<StorageState>().storage.clone();
             send_heartbeat_now(storage, enabled);
         }
