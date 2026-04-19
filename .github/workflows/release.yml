@@ -275,7 +275,15 @@ jobs:
         env:
           VERSION: ${{ needs.resolve-version.outputs.version }}
         run: |
-          sed -i -E "s/^Version:[[:space:]]+.*/Version:        ${VERSION}/" packaging/linux/pasta.spec
+          # RPM's Version: field rejects '-' (reserved for the Version-Release
+          # separator); the Fedora convention for pre-releases is '~', which
+          # rpmvercmp treats as a pre-release separator so 0.1.0~rc1 sorts
+          # before 0.1.0. Cargo has no such restriction, so Cargo.toml and
+          # Cargo.lock keep the original dashed form.
+          SPEC_VERSION="${VERSION//-/~}"
+          echo "SPEC_VERSION=${SPEC_VERSION}" >> "${GITHUB_ENV}"
+
+          sed -i -E "s/^Version:[[:space:]]+.*/Version:        ${SPEC_VERSION}/" packaging/linux/pasta.spec
           sed -i -E "0,/^version = \".*\"$/ s//version = \"${VERSION}\"/" Cargo.toml
           # Keep Cargo.lock in sync so the spec's `cargo build --locked` stays
           # happy inside rpmbuild's sandbox.
@@ -285,18 +293,18 @@ jobs:
           grep -A1 '^name = "pasta-launcher"$' Cargo.lock | head -2
 
       - name: Stage source tarball for rpmbuild
-        env:
-          VERSION: ${{ needs.resolve-version.outputs.version }}
         run: |
           set -euo pipefail
           rpmdev-setuptree
-          # The spec's %autosetup expects a top-level dir named pasta-<version>.
+          # %autosetup -n %{name}-%{version} expects the top-level dir inside
+          # the tarball to match the spec Version (with ~ for pre-releases),
+          # not the workflow-level VERSION (which uses -).
           STAGE="$(mktemp -d)"
-          mkdir -p "${STAGE}/pasta-${VERSION}"
+          mkdir -p "${STAGE}/pasta-${SPEC_VERSION}"
           # Exclude target/ and .git/ to keep the source tarball small.
           tar --exclude='./target' --exclude='./.git' --exclude='./dist' \
-              -cf - . | tar -xf - -C "${STAGE}/pasta-${VERSION}"
-          tar -C "${STAGE}" -czf "${HOME}/rpmbuild/SOURCES/pasta-${VERSION}.tar.gz" "pasta-${VERSION}"
+              -cf - . | tar -xf - -C "${STAGE}/pasta-${SPEC_VERSION}"
+          tar -C "${STAGE}" -czf "${HOME}/rpmbuild/SOURCES/pasta-${SPEC_VERSION}.tar.gz" "pasta-${SPEC_VERSION}"
           rm -rf "${STAGE}"
 
       - name: rpmbuild
