@@ -24,6 +24,7 @@ BuildRequires:  gcc
 BuildRequires:  gcc-c++
 BuildRequires:  pkgconfig
 BuildRequires:  pkgconfig(xkbcommon)
+BuildRequires:  pkgconfig(xkbcommon-x11)
 BuildRequires:  pkgconfig(fontconfig)
 BuildRequires:  pkgconfig(wayland-client)
 BuildRequires:  pkgconfig(dbus-1)
@@ -34,6 +35,7 @@ BuildRequires:  libappstream-glib
 
 Requires:       polkit
 Requires:       libxkbcommon
+Requires:       libxkbcommon-x11
 Requires:       fontconfig
 Requires:       libwayland-client
 Requires:       dbus-libs
@@ -79,6 +81,6 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/%{bundle_id}.desktop
 %{_datadir}/polkit-1/actions/%{bundle_id}.policy
 
 %changelog
-* Fri Apr 18 2026 Yafet Getachew <you@example.com> - 0.1.0-1
+* Sat Apr 18 2026 Yafet Getachew <you@example.com> - 0.1.0-1
 - Initial Fedora package
 - Bundles polkit action for secret reveal and clear-history flows

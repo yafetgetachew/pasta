@@ -250,6 +250,7 @@ jobs:
             rpm-build rpmdevtools \
             pkgconfig \
             libxkbcommon-devel \
+            libxkbcommon-x11-devel \
             fontconfig-devel \
             wayland-devel \
             dbus-devel \
