@@ -47,6 +47,12 @@ cp "${BIN_PATH}" "${MACOS_DIR}/${BIN_NAME}"
 chmod +x "${MACOS_DIR}/${BIN_NAME}"
 
 ICON_PATH="${ROOT_DIR}/assets/AppIcon.icns"
+ICON_SRC="${ROOT_DIR}/assets/icon.png"
+# Regenerate .icns from icon.png so the source PNG is the single source of
+# truth — avoids a committed .icns drifting out of sync with icon.png.
+if [[ -f "${ICON_SRC}" ]]; then
+  "${ROOT_DIR}/scripts/make-icon.sh" "${ICON_SRC}"
+fi
 if [[ -f "${ICON_PATH}" ]]; then
   cp "${ICON_PATH}" "${RESOURCES_DIR}/AppIcon.icns"
 else
