@@ -34,7 +34,7 @@ Paste smarter — search, transform, parametrize, and organize everything you co
 - **Pasta Bowls** — organize clips into tagged collections; export and import as YAML to share with your team.
 - **Secrets** — AES-256-GCM encrypted, stored in the macOS Keychain, masked in the UI until revealed.
 - **Syntax highlighting** out of the box for Bash, JSON, YAML, TOML, Python, Rust, Go, SQL, and [many more](https://github.com/sublimehq/Packages).
-- **Native** — glassmorphic UI, dark/light auto, GPU-accelerated rendering. No Electron, no web views. Global hotkey: `Option + Space` on macOS, `Ctrl + Space` on Linux.
+- **Native** — glassmorphic UI, dark/light auto, GPU-accelerated rendering. No Electron, no web views. Global hotkey: `Option + Space` on macOS, `Meta + Space` on Linux.
 
 <p align="center">
   <img src="docs/screenshots/syntax-highlighting.png" width="720" alt="Syntax highlighting and parametrization" />
@@ -91,7 +91,7 @@ cd pasta
 
 The install script builds the release binary, drops a `.desktop` entry and icon into `~/.local/share`, and installs the polkit policy that gates secret reveal and clear-history behind the system authentication dialog. Plain `cargo build --release` also works if you prefer to launch from the CLI.
 
-Global hotkey is `Ctrl + Space`. Tray icon requires a StatusNotifierItem host (built-in on KDE, `gnome-shell-extension-appindicator` on GNOME).
+Global hotkey is `Meta + Space`. Tray icon requires a StatusNotifierItem host (built-in on KDE, `gnome-shell-extension-appindicator` on GNOME).
 
 **Secrets on Linux.** Revealing a masked entry or clearing clipboard history triggers a polkit prompt backed by PAM. Password works out of the box. If you have [Howdy](https://github.com/boltgolt/howdy) installed and enrolled (`sudo howdy add`) and your distro's `system-auth` stack includes `pam_howdy.so`, face recognition is tried before the password field appears. Verify the action is registered with `pkaction --action-id com.pasta.launcher.reveal-secret`.
 
