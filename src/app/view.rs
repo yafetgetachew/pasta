@@ -5,7 +5,7 @@ use super::actions::{
 use super::query_input::TextInputElement;
 use super::state::CachedRowPresentation;
 use crate::*;
-use gpui::{AnyElement, StatefulInteractiveElement};
+use gpui::{AnyElement, StatefulInteractiveElement, canvas, hsla, size};
 
 impl Render for LauncherView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1236,6 +1236,7 @@ impl Render for LauncherView {
                 ("h  SHA256 hash", TransformAction::Sha256Hash),
                 ("c  Count stats", TransformAction::ContentStats),
                 ("p  Cert info", TransformAction::PublicCertPemInfo),
+                ("q  QR code", TransformAction::QrCode),
             ]
             .into_iter()
             .enumerate()
@@ -1355,80 +1356,14 @@ impl Render for LauncherView {
                     .rounded_lg()
                     .flex()
                     .flex_col()
-                    .gap_2()
+                    .gap_1()
                     .child(
                         div()
                             .text_xs()
                             .text_color(palette.title_text)
                             .child("Commands"),
                     )
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(render_help_run(
-                                if cfg!(target_os = "macos") {
-                                    &["⏎ copy", "⌘R reveal secret", "⌘J / ⌘K / ⌘L / ⌘; navigate"]
-                                } else {
-                                    &["⏎ copy", "Ctrl+R reveal secret", "Ctrl+J/K/L/; navigate"]
-                                },
-                                palette,
-                            ))
-                            .child(render_help_run(
-                                if cfg!(target_os = "macos") {
-                                    &["⌘I edit info", "⌘P parametrize", "Tab transforms"]
-                                } else {
-                                    &["Ctrl+I edit info", "Ctrl+P parametrize", "Tab transforms"]
-                                },
-                                palette,
-                            ))
-                            .child(render_help_run(
-                                if cfg!(target_os = "macos") {
-                                    &[
-                                        "⌘T add tags",
-                                        "⌘⇧T remove tags",
-                                        "⌘B set bowl",
-                                        "⌘⇧B remove bowl",
-                                        "⌥⌘B import bowl",
-                                    ]
-                                } else {
-                                    &[
-                                        "Ctrl+T add tags",
-                                        "Ctrl+Shift+T remove tags",
-                                        "Ctrl+B set bowl",
-                                        "Ctrl+Shift+B remove bowl",
-                                        "Ctrl+Alt+B import bowl",
-                                    ]
-                                },
-                                palette,
-                            ))
-                            .child(render_help_run(
-                                &[":b search bowl", ":e export bowl", "↹ autocomplete"],
-                                palette,
-                            ))
-                            .child(render_help_run(
-                                if cfg!(target_os = "macos") {
-                                    &[
-                                        "⌘⇧S toggle secret",
-                                        "⌘D delete",
-                                        "Esc close",
-                                        "⌘Q quit",
-                                        "⌘H hide help",
-                                    ]
-                                } else {
-                                    &[
-                                        "Ctrl+Shift+S toggle secret",
-                                        "Ctrl+D delete",
-                                        "Esc close",
-                                        "Ctrl+Q quit",
-                                        "Ctrl+H hide help",
-                                    ]
-                                },
-                                palette,
-                            )),
-                    )
+                    .child(render_help_run(&command_help_tips(), palette))
             } else {
                 div()
                     .w_full()
@@ -1560,7 +1495,11 @@ impl LauncherView {
             item.item_type == ClipboardItemType::Password && self.is_secret_masked(item.id);
         let preview_settled = Instant::now().duration_since(self.selection_changed_at)
             >= Duration::from_millis(PREVIEW_SETTLE_DELAY_MS);
-        let preview_language = if is_masked_secret {
+        let qr_overlay_active = self
+            .qr_preview
+            .as_ref()
+            .is_some_and(|(id, _)| *id == item.id);
+        let preview_language = if qr_overlay_active || is_masked_secret {
             None
         } else {
             row_data.detected_language
@@ -1598,6 +1537,7 @@ impl LauncherView {
         let preview_syntax_enabled = self.syntax_highlighting
             && self.query.trim().is_empty()
             && !is_masked_secret
+            && !qr_overlay_active
             && preview_settled
             && row_data.expanded_preview.len() <= PREVIEW_PANE_SYNTAX_MAX_CHARS
             && row_data.expanded_preview_line_count <= PREVIEW_PANE_SYNTAX_MAX_LINES;
@@ -1727,8 +1667,33 @@ impl LauncherView {
             );
         }
 
-        pane.child(div().w_full().h(px(1.0)).bg(palette.list_divider))
-            .child(
+        if qr_overlay_active {
+            pane = pane.child(
+                div()
+                    .w_full()
+                    .text_xs()
+                    .text_color(palette.muted_text)
+                    .child("QR preview • Esc to dismiss"),
+            );
+        }
+
+        pane = pane.child(div().w_full().h(px(1.0)).bg(palette.list_divider));
+
+        if qr_overlay_active {
+            let (modules, width) = match self.qr_preview.as_ref() {
+                Some((_, matrix)) => (matrix.modules.clone(), matrix.width),
+                None => (Vec::new(), 0),
+            };
+            pane.child(
+                div()
+                    .w_full()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .child(qr_canvas_element(modules, width)),
+            )
+            .into_any_element()
+        } else {
+            pane.child(
                 div()
                     .id(("preview-scroll", item.id as u64))
                     .w_full()
@@ -1745,6 +1710,7 @@ impl LauncherView {
                     )),
             )
             .into_any_element()
+        }
     }
 
     fn render_result_row(
@@ -1933,6 +1899,54 @@ fn result_meta_chip(label: &str, palette: Palette) -> impl IntoElement {
         .child(label.to_owned())
 }
 
+fn command_help_tips() -> Vec<&'static str> {
+    if cfg!(target_os = "macos") {
+        vec![
+            "⏎ copy",
+            "⌘R reveal",
+            "⌘J/K/L/; nav",
+            "⌘I info",
+            "⌘P param",
+            "Tab transforms",
+            "⌘T +tags",
+            "⌘⇧T -tags",
+            "⌘B bowl",
+            "⌘⇧B -bowl",
+            "⌥⌘B import",
+            ":b search bowl",
+            ":e export bowl",
+            "↹ autocomplete",
+            "⌘⇧S secret",
+            "⌘D delete",
+            "Esc close",
+            "⌘Q quit",
+            "⌘H hide help",
+        ]
+    } else {
+        vec![
+            "⏎ copy",
+            "Ctrl+R reveal",
+            "Ctrl+J/K/L/; nav",
+            "Ctrl+I info",
+            "Ctrl+P param",
+            "Tab transforms",
+            "Ctrl+T +tags",
+            "Ctrl+⇧T -tags",
+            "Ctrl+B bowl",
+            "Ctrl+⇧B -bowl",
+            "Ctrl+Alt+B import",
+            ":b search bowl",
+            ":e export bowl",
+            "↹ autocomplete",
+            "Ctrl+⇧S secret",
+            "Ctrl+D delete",
+            "Esc close",
+            "Ctrl+Q quit",
+            "Ctrl+H hide help",
+        ]
+    }
+}
+
 fn render_help_run(tips: &[&str], palette: Palette) -> impl IntoElement {
     let help_chip_bg = scale_alpha(palette.row_hover_bg, if palette.dark { 0.9 } else { 1.0 });
     let help_chip_border =
@@ -1951,11 +1965,61 @@ fn render_help_run(tips: &[&str], palette: Palette) -> impl IntoElement {
                 .border_color(help_chip_border)
                 .rounded_md()
                 .px_1()
-                .py(px(3.0))
-                .mb(px(4.0))
+                .py(px(2.0))
                 .child((*tip).to_owned()),
         );
     }
 
     div().flex_none().max_w_full().child(chips)
+}
+
+fn qr_canvas_element(modules: Vec<bool>, width: usize) -> AnyElement {
+    if width == 0 || modules.len() != width * width {
+        return div().into_any_element();
+    }
+
+    const QUIET_ZONE: usize = 4;
+    let total = width + 2 * QUIET_ZONE;
+    let dark = hsla(0.0, 0.0, 0.0, 1.0);
+    let light = hsla(0.0, 0.0, 1.0, 1.0);
+
+    canvas(
+        |_bounds, _window, _cx| (),
+        move |bounds, _prepaint, window, _cx| {
+            let available_w = f32::from(bounds.size.width);
+            let available_h = f32::from(bounds.size.height);
+            let side = available_w.min(available_h);
+            if side <= 0.0 {
+                return;
+            }
+            // Snap cell size to whole pixels so modules line up without seams.
+            let cell = (side / total as f32).floor().max(1.0);
+            let qr_side = cell * total as f32;
+            let origin_x = f32::from(bounds.origin.x) + (available_w - qr_side) / 2.0;
+            let origin_y = f32::from(bounds.origin.y) + (available_h - qr_side) / 2.0;
+
+            let bg = gpui::Bounds {
+                origin: point(px(origin_x), px(origin_y)),
+                size: size(px(qr_side), px(qr_side)),
+            };
+            window.paint_quad(fill(bg, light));
+
+            for row in 0..width {
+                for col in 0..width {
+                    if !modules[row * width + col] {
+                        continue;
+                    }
+                    let x = origin_x + (col + QUIET_ZONE) as f32 * cell;
+                    let y = origin_y + (row + QUIET_ZONE) as f32 * cell;
+                    let rect = gpui::Bounds {
+                        origin: point(px(x), px(y)),
+                        size: size(px(cell), px(cell)),
+                    };
+                    window.paint_quad(fill(rect, dark));
+                }
+            }
+        },
+    )
+    .size_full()
+    .into_any_element()
 }

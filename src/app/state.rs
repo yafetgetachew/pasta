@@ -226,6 +226,7 @@ pub(crate) struct LauncherView {
     pub(crate) parameter_fill_focus_index: usize,
     pub(crate) parameter_fill_select_all: bool,
     pub(crate) transform_menu_open: bool,
+    pub(crate) qr_preview: Option<(i64, QrMatrix)>,
     pub(crate) blur_close_armed: bool,
     pub(crate) suppress_auto_hide: bool,
     pub(crate) suppress_auto_hide_until: Option<Instant>,

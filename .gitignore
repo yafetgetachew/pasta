@@ -10,6 +10,7 @@ dist/
 *.swp
 *.swo
 *~
+.codex
 .vscode/
 .idea/
 

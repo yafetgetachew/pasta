@@ -361,6 +361,7 @@ enum TransformAction {
     Sha256Hash,
     ContentStats,
     PublicCertPemInfo,
+    QrCode,
 }
 
 fn transform_action_for_shortcut(
@@ -398,6 +399,7 @@ fn transform_action_for_shortcut(
         "e" => Some(TransformAction::EpochDecode),
         "h" => Some(TransformAction::Sha256Hash),
         "c" => Some(TransformAction::ContentStats),
+        "q" => Some(TransformAction::QrCode),
         _ => None,
     }
 }
@@ -450,6 +452,34 @@ mod tests {
         assert_eq!(
             transform_action_for_shortcut("b", &shift_modifiers),
             Some(TransformAction::Base64Decode)
+        );
+    }
+
+    #[test]
+    fn qr_encode_matrix_rejects_oversize_payload() {
+        let matrix = qr_encode_matrix("https://example.com").expect("qr small");
+        assert!(matrix.width >= 21, "qr width should be at least v1 (21)");
+        assert_eq!(matrix.modules.len(), matrix.width * matrix.width);
+        assert!(
+            matrix.modules.iter().any(|m| *m),
+            "expected at least one dark module"
+        );
+
+        let oversize = "a".repeat(3000);
+        let err = qr_encode_matrix(&oversize).expect_err("qr oversize");
+        assert!(err.to_lowercase().contains("too big"), "err was {err}");
+    }
+
+    #[test]
+    fn qr_shortcut_routes_to_qr_action() {
+        let no_modifiers = gpui::Modifiers::none();
+        assert_eq!(
+            transform_action_for_shortcut("q", &no_modifiers),
+            Some(TransformAction::QrCode)
+        );
+        assert_eq!(
+            transform_action_for_shortcut("Q", &no_modifiers),
+            Some(TransformAction::QrCode)
         );
     }
 

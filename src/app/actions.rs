@@ -85,6 +85,7 @@ impl LauncherView {
             parameter_fill_focus_index: 0,
             parameter_fill_select_all: false,
             transform_menu_open: false,
+            qr_preview: None,
             blur_close_armed: false,
             suppress_auto_hide: false,
             suppress_auto_hide_until: None,
@@ -138,6 +139,7 @@ impl LauncherView {
         self.parameter_fill_focus_index = 0;
         self.parameter_fill_select_all = false;
         self.transform_menu_open = false;
+        self.qr_preview = None;
         self.blur_close_armed = false;
         self.suppress_auto_hide = false;
         self.suppress_auto_hide_until = None;
@@ -258,6 +260,7 @@ impl LauncherView {
 
     pub(crate) fn mark_selection_changed(&mut self, cx: &mut Context<Self>) {
         self.selection_changed_at = Instant::now();
+        self.qr_preview = None;
         self.schedule_preview_settle(cx);
     }
 
@@ -2189,6 +2192,20 @@ impl LauncherView {
             return;
         }
 
+        if matches!(action, TransformAction::QrCode) {
+            match qr_encode_matrix(&item.content) {
+                Ok(matrix) => {
+                    self.qr_preview = Some((item.id, matrix));
+                    self.transform_menu_open = false;
+                    cx.notify();
+                }
+                Err(err) => {
+                    show_macos_notification("Pasta", &err);
+                }
+            }
+            return;
+        }
+
         let outcome = match action {
             TransformAction::ShellQuote => Ok((
                 shell_quote_escape(&item.content),
@@ -2207,6 +2224,7 @@ impl LauncherView {
             TransformAction::Sha256Hash => sha256_hash_transform(&item.content),
             TransformAction::ContentStats => content_stats_transform(&item.content),
             TransformAction::PublicCertPemInfo => public_cert_pem_info_transform(&item.content),
+            TransformAction::QrCode => unreachable!("handled above"),
         };
 
         let (transformed, status_message) = match outcome {
@@ -2308,6 +2326,11 @@ impl LauncherView {
         }
 
         if key == "escape" || key == "esc" {
+            if self.qr_preview.is_some() {
+                self.qr_preview = None;
+                cx.notify();
+                return;
+            }
             self.begin_close_transition(LauncherExitIntent::Hide);
             cx.notify();
             return;

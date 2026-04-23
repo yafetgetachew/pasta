@@ -6,7 +6,18 @@ use base64::{
     },
 };
 use chrono::{DateTime, NaiveDateTime, Utc};
+use qrcode::{EcLevel, QrCode};
 use sha2::{Digest, Sha256};
+
+// QR version 40 with EC level L holds 2953 bytes. Surface the number in the
+// error so users know why oversize payloads are rejected.
+const QR_MAX_BYTES: usize = 2953;
+
+#[derive(Debug)]
+pub(crate) struct QrMatrix {
+    pub modules: Vec<bool>,
+    pub width: usize,
+}
 
 pub(crate) fn shell_quote_escape(input: &str) -> String {
     format!("'{}'", input.replace('\'', "'\"'\"'"))
@@ -366,6 +377,30 @@ fn format_duration_from_now(seconds: i64) -> String {
         return format!("in {days}d");
     }
     format!("in {}y {}d", days / 365, days % 365)
+}
+
+pub(crate) fn qr_encode_matrix(input: &str) -> Result<QrMatrix, String> {
+    if input.is_empty() {
+        return Err("clipboard item is empty".to_owned());
+    }
+    if input.len() > QR_MAX_BYTES {
+        return Err(format!(
+            "too big for QR code ({} bytes, max {QR_MAX_BYTES})",
+            input.len()
+        ));
+    }
+
+    let code = QrCode::with_error_correction_level(input.as_bytes(), EcLevel::L)
+        .map_err(|_| format!("too big for QR code (max {QR_MAX_BYTES} bytes)"))?;
+
+    let width = code.width();
+    let modules = code
+        .to_colors()
+        .into_iter()
+        .map(|color| matches!(color, qrcode::Color::Dark))
+        .collect();
+
+    Ok(QrMatrix { modules, width })
 }
 
 pub(crate) fn sha256_hash_transform(input: &str) -> Result<(String, &'static str), String> {
